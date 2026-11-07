@@ -164,6 +164,11 @@ WebEngineView {
     onContextMenuRequested: function(request) {
         request.accepted = true
         var link = request.linkUrl.toString()
+        if (link.indexOf("almanac:addr/") === 0) {
+            var ap = link.slice(8).split("/")
+            web.openAddressMenu(decodeURIComponent(ap[2] || ""), decodeURIComponent(ap[3] || ""))
+            return
+        }
         var att = null
         if (/^almanac:(att|save|viewtab|viewwin|openmenu)\//.test(link)) {
             var parts = link.slice(8).split("/")
@@ -185,6 +190,53 @@ WebEngineView {
         pageMenu.hasSelection = false
         pageMenu.attOnly = true
         pageMenu.open()
+    }
+    // "Name <a@b>, \"Last, First\" <c@d>, e@f" → [{name, email}] (commas inside
+    // quotes or angle brackets don't split).
+    function parseAddresses(text) {
+        var out = [], cur = "", quoted = false, angle = false
+        var flush = function() {
+            var t = cur.trim(); cur = ""
+            if (!t) return
+            var lt = t.lastIndexOf("<"), gt = t.lastIndexOf(">")
+            var email = lt >= 0 && gt > lt ? t.slice(lt + 1, gt).trim() : t
+            var name = lt >= 0 ? t.slice(0, lt).trim().replace(/^"(.*)"$/, "$1").trim() : ""
+            out.push({ name: name, email: email })
+        }
+        for (var k = 0; k < text.length; k++) {
+            var c = text.charAt(k)
+            if (c === '"') quoted = !quoted
+            else if (c === "<" && !quoted) angle = true
+            else if (c === ">" && !quoted) angle = false
+            if ((c === "," || c === ";") && !quoted && !angle) flush()
+            else cur += c
+        }
+        flush()
+        return out
+    }
+    function chips(i, text) {
+        return parseAddresses(text).map(function(a) {
+            var full = a.name ? a.name + " <" + a.email + ">" : a.email
+            return '<a class="chip" title="' + esc(full) + '" href="almanac:addr/' + i + '/'
+                   + encodeURIComponent(a.email) + '/' + encodeURIComponent(a.name) + '">' + esc(a.name || a.email) + '</a>'
+        }).join("")
+    }
+    function openAddressMenu(email, name) {
+        addressMenu.email = email
+        addressMenu.name = name
+        addressMenu.open()
+    }
+    function copyText(t) { copyHelper.text = t; copyHelper.selectAll(); copyHelper.copy() }
+    TextEdit { id: copyHelper; visible: false }
+    P.Menu {
+        id: addressMenu
+        property string email: ""
+        property string name: ""
+        P.MenuItem { icon.name: "mail-message-new"; text: "New Message to " + (addressMenu.name || addressMenu.email); onTriggered: web.mailto(addressMenu.email) }
+        P.MenuSeparator {}
+        P.MenuItem { icon.name: "edit-copy"; text: "Copy Email Address"; onTriggered: web.copyText(addressMenu.email) }
+        P.MenuItem { visible: addressMenu.name !== ""; icon.name: "edit-copy"; text: "Copy Name"; onTriggered: web.copyText(addressMenu.name) }
+        P.MenuItem { visible: addressMenu.name !== ""; icon.name: "edit-copy"; text: "Copy Name and Address"; onTriggered: web.copyText(addressMenu.name + " <" + addressMenu.email + ">") }
     }
     P.Menu {
         id: pageMenu
@@ -270,6 +322,7 @@ WebEngineView {
             var m = web.messages[parseInt(parts[1])]
             if (!m) return
             if (parts[0] === "sender") web.senderClicked(m)
+            else if (parts[0] === "addr") web.openAddressMenu(decodeURIComponent(parts[2] || ""), decodeURIComponent(parts[3] || ""))
             else if (parts[0] === "remote") web.remoteRequested(m, "message")
             else if (parts[0] === "remote-sender") web.remoteRequested(m, "sender")
             else if (parts[0] === "remote-all") web.remoteRequested(m, "all")
@@ -339,7 +392,10 @@ WebEngineView {
               + '.av{width:40px;height:40px;border-radius:20px;background:linear-gradient(#9cc0fa,#5b8def);color:#fff;font-weight:600;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none}'
               + '.who{flex:1;min-width:0}.top{display:flex;flex-wrap:nowrap;gap:2px 8px;align-items:baseline;min-width:0}.name{flex:0 1 auto;font-weight:700;font-size:14px;color:' + css(Theme.text) + ';text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:40px}'
               + '.grow{flex:1}.when{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px}.fmtline{margin-top:3px}'
-              + '.rcpt{color:' + css(Theme.secondary) + ';font-size:12px;white-space:normal;overflow-wrap:anywhere}.rcpt .lbl{color:' + css(Theme.tertiary) + '}'
+              // People on To and Cc as bubbles, as in compose (click or right-click: copy, write to).
+              + '.rcpt{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:3px;font-size:12px}.rcpt .lbl{color:' + css(Theme.tertiary) + ';margin-right:2px}'
+              + '.chip{display:inline-block;max-width:100%;padding:1px 9px;border-radius:999px;background:' + css(Theme.segment) + ';color:' + css(Theme.text) + ';text-decoration:none;line-height:18px;overflow-wrap:anywhere;cursor:default}'
+              + '.chip:hover{background:' + css(Theme.hover) + '}'
               + '.addr{color:' + css(Theme.tertiary) + ';font-size:12px}.fmt{color:' + css(Theme.accent) + ';font-size:11px;text-decoration:none;white-space:nowrap}'
               + '.rule{height:1px;background:' + css(Theme.borderSoft) + ';margin:10px 0}'
               + '.remote{display:flex;align-items:center;gap:10px;border:1px solid ' + css(Theme.borderSoft) + ';background:' + css(Theme.card) + ';border-radius:7px;padding:7px 10px;margin-bottom:10px;color:' + css(Theme.secondary) + ';font-size:12px}'
@@ -397,8 +453,8 @@ WebEngineView {
                + '</div>'
                + '<div class="when">' + esc(Theme.fmtLongDate(m.date)) + '</div>'
                // To and Cc each on a line of their own, wrapped so every address can be read.
-               + (m.to ? '<div class="rcpt"><span class="lbl">To:</span> ' + esc(m.to) + '</div>' : '')
-               + (m.cc ? '<div class="rcpt"><span class="lbl">Cc:</span> ' + esc(m.cc) + '</div>' : '')
+               + (m.to ? '<div class="rcpt"><span class="lbl">To:</span>' + chips(i, m.to) + '</div>' : '')
+               + (m.cc ? '<div class="rcpt"><span class="lbl">Cc:</span>' + chips(i, m.cc) + '</div>' : '')
                + (m.fromName && m.fromEmail ? '<div class="addr">' + esc(m.fromEmail) + (m.folder ? ' · ' + esc(m.folder) : '') + '</div>' : '')
                + (m.html ? '<div class="fmtline"><a class="fmt" href="almanac:format/' + i + '">' + (web.formatted ? 'Show Plain Text' : 'Show Formatted') + '</a></div>' : '')
                + '</div></div>'
