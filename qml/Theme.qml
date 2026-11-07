@@ -38,6 +38,24 @@ QtObject {
     readonly property color window: dark ? "#141416" : "#ffffff"
     readonly property color dim: dark ? "#0f0f11" : "#fafafb"
     readonly property color toolbar: dark ? "#232327" : "#f7f7f9"
+    // A little depth, as in Apple Mail: bars shaded lighter at the top, the
+    // sidebar a touch darker toward the bottom, a soft shadow under the top
+    // bar and under the chosen segment. (Text on each end is checked too.)
+    readonly property color toolbarTop: dark ? "#303036" : "#fdfdfe"
+    readonly property color toolbarBottom: dark ? "#222226" : "#eeeef2"
+    readonly property color sidebarTop: dark ? "#25252a" : "#f0f1f4"
+    readonly property color sidebarBottom: dark ? "#1c1c20" : "#ebedf1"
+    readonly property color shade: dark ? Qt.rgba(0, 0, 0, 0.5) : Qt.rgba(0, 0, 0, 0.09)
+    readonly property color segmentShade: dark ? Qt.rgba(0, 0, 0, 0.55) : Qt.rgba(0, 0, 0, 0.16)
+    readonly property color sheen: dark ? Qt.rgba(1, 1, 1, 0.07) : Qt.rgba(1, 1, 1, 0.9)
+    readonly property Gradient toolbarGradient: Gradient {
+        GradientStop { position: 0; color: toolbarTop }
+        GradientStop { position: 1; color: toolbarBottom }
+    }
+    readonly property Gradient sidebarGradient: Gradient {
+        GradientStop { position: 0; color: sidebarTop }
+        GradientStop { position: 1; color: sidebarBottom }
+    }
     readonly property color border: dark ? "#55555c" : "#dcdde2"
     readonly property color borderSoft: dark ? "#3a3a40" : "#ececf0"
     readonly property color text: dark ? "#ffffff" : "#1d1d1f"

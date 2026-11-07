@@ -37,7 +37,7 @@ fn ratio(a: &str, b: &str) -> f64 {
 fn every_text_colour_is_readable_on_its_backgrounds() {
     let t = theme();
     // Where text is drawn: the main surfaces, and the highlighted ones.
-    let main = ["window", "sidebar", "card", "toolbar", "popup", "field"];
+    let main = ["window", "sidebar", "card", "toolbar", "popup", "field", "toolbarTop", "toolbarBottom", "sidebarTop", "sidebarBottom"];
     let all = [&main[..], &["hover", "sidebarSelected", "fieldIdle", "segmentOn", "accentSoft"]].concat();
     let rules: Vec<(&str, Vec<&str>, f64)> = vec![
         ("text", all.clone(), 7.0),

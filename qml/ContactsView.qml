@@ -243,7 +243,7 @@ Item {
             visible: page.sidebarShown
             SplitView.preferredWidth: 220
             SplitView.minimumWidth: 150
-            color: Theme.sidebar
+            gradient: Theme.sidebarGradient
             Flickable {
                 id: scroller2
                 // Trackpad scrolling glides on (momentum).

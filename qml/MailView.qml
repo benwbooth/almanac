@@ -783,7 +783,7 @@ Item {
             visible: mail.sidebarShown
             SplitView.preferredWidth: 220
             SplitView.minimumWidth: 150
-            color: Theme.sidebar
+            gradient: Theme.sidebarGradient
             // What's going on (checking, downloading, sending…), as in Apple Mail.
             ActivityPanel {
                 id: activity
@@ -1196,8 +1196,17 @@ Item {
                     Rectangle {
                         z: -1
                         width: parent.width; height: parent.height
-                        color: row.face
+                        color: Theme.window
                         transform: Translate { x: row.swipe }
+                        // Chosen: a rounded highlight set in a little, as in Apple Mail.
+                        Rectangle {
+                            visible: row.sel
+                            anchors.fill: parent
+                            anchors.leftMargin: 6; anchors.rightMargin: 6
+                            anchors.topMargin: mail.classic ? 1 : 3; anchors.bottomMargin: mail.classic ? 1 : 3
+                            radius: mail.classic ? 5 : 8
+                            color: row.face
+                        }
                     }
 
                     Rectangle {

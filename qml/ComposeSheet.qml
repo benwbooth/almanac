@@ -314,7 +314,7 @@ Popup {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: sheet.detached ? Theme.toolbarHeight : sheet.inline ? 42 : 48
-            color: Theme.toolbar
+            gradient: Theme.toolbarGradient
             // In its own window: drag the bar to move it, double-click to zoom.
             DragHandler {
                 enabled: sheet.detached

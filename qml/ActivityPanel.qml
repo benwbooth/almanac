@@ -13,7 +13,7 @@ Rectangle {
     readonly property bool shown: store.statusText !== "" && (working || recent)
     visible: shown
     height: shown ? col.implicitHeight + 18 : 0
-    color: Theme.sidebar
+    color: Theme.sidebarBottom
     Timer { id: fade; interval: 6000; onTriggered: act.recent = false }
     Connections {
         target: act.store

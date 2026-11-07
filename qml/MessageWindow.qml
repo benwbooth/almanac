@@ -100,7 +100,7 @@ Window {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.toolbarHeight
-            color: Theme.toolbar
+            gradient: Theme.toolbarGradient
             DragHandler {
                 target: null
                 grabPermissions: PointerHandler.CanTakeOverFromItems | PointerHandler.CanTakeOverFromHandlersOfDifferentType

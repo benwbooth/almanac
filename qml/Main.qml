@@ -129,8 +129,17 @@ ApplicationWindow {
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.toolbarHeight
-                color: Theme.toolbar
+                gradient: Theme.toolbarGradient
                 z: 2
+                // A soft shadow under the bar, over what's below it.
+                Rectangle {
+                    anchors.top: parent.bottom
+                    width: parent.width; height: 6
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: Theme.shade }
+                        GradientStop { position: 1; color: "transparent" }
+                    }
+                }
                 // Drag the bar to move the window; double-click to zoom it.
                 DragHandler {
                     target: null
@@ -178,6 +187,14 @@ ApplicationWindow {
                                     height: 28
                                     radius: 6
                                     color: win.section === index ? Theme.segmentOn : (segArea.containsMouse ? Theme.hover : "transparent")
+                                    // The chosen one sits a little raised.
+                                    Rectangle {
+                                        z: -1
+                                        visible: win.section === index
+                                        anchors.fill: parent; anchors.topMargin: 1; anchors.bottomMargin: -1
+                                        radius: parent.radius
+                                        color: Theme.segmentShade
+                                    }
                                     Row {
                                         id: segRow
                                         anchors.centerIn: parent

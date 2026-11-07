@@ -284,6 +284,13 @@ Item {
                             required property var modelData
                             width: win.tinyBar ? 32 : 64; height: 26; radius: 6
                             color: page.view === modelData[0] ? Theme.segmentOn : "transparent"
+                            Rectangle {
+                                z: -1
+                                visible: page.view === modelData[0]
+                                anchors.fill: parent; anchors.topMargin: 1; anchors.bottomMargin: -1
+                                radius: parent.radius
+                                color: Theme.segmentShade
+                            }
                             Text { anchors.centerIn: parent; text: win.tinyBar ? modelData[1].charAt(0) : modelData[1]; color: Theme.text; font.pixelSize: Theme.base }
                             ToolTip.visible: win.tinyBar && segTip.containsMouse
                             ToolTip.text: modelData[1]
@@ -395,7 +402,7 @@ Item {
             visible: page.sidebarShown
             SplitView.preferredWidth: 220
             SplitView.minimumWidth: 150
-            color: Theme.sidebar
+            gradient: Theme.sidebarGradient
             Flickable {
                 id: scroller6
                 // Trackpad scrolling glides on (momentum).
