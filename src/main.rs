@@ -14,6 +14,7 @@ mod dav;
 mod discover;
 mod ews;
 mod extras;
+mod gist;
 mod ics;
 mod imap_pipe;
 mod instance;

@@ -1997,6 +1997,8 @@ impl Db {
                     "to": m.to,
                     "cc": m.cc,
                     "subject": m.subject,
+                    // The heart of it, for a closed message in a conversation.
+                    "gist": crate::gist::gist(&body, &html),
                     "body": body,
                     "date": m.date * 1000,
                     "read": m.read,
