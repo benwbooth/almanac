@@ -1464,31 +1464,66 @@ impl Db {
             }
             out
         };
-        let mut known: Vec<String> = ids_in(&m.references);
-        known.extend(ids_in(&m.in_reply_to));
-        let mut cands: Vec<Message> = crate::mailstore::by_message_ids(&known);
-        // Replies can only be newer than the oldest message of the thread found so
-        // far. With none found (its start isn't here, as with GitHub notifications,
-        // which all point at a pull request's first message nobody got), there's no
-        // such bound: limiting to this message's own date found it alone.
-        let oldest = if cands.is_empty() { 0 } else { cands.iter().map(|x| x.date).min().unwrap_or(m.date).min(m.date) };
-        if !m.message_id.is_empty() {
-            known.push(m.message_id.trim().trim_matches(['<', '>']).to_string());
-        }
-        known.extend(cands.iter().map(|x| x.message_id.trim().trim_matches(['<', '>']).to_string()).filter(|x| !x.is_empty()));
-        known.sort();
-        known.dedup();
-        known.truncate(40);
-        if !known.is_empty() {
-            use crate::mailstore::Arg;
-            let mut args: Vec<Arg> = vec![Arg::Integer(oldest)];
+        use crate::mailstore::Arg;
+        // The open conversation is looked up again on every change to the mail
+        // (several a second while mail arrives); the full search is slow on a big
+        // mailbox (seconds, with the window frozen meanwhile: the list stuttered).
+        // So what it found is kept, and later only its messages (by id) and any
+        // newer ones are read.
+        static CACHE: std::sync::Mutex<Option<(String, i64, Vec<String>, Vec<i64>, i64)>> = std::sync::Mutex::new(None);
+        let like = |known: &[String], from: i64| -> (String, Vec<Arg>) {
+            let mut args: Vec<Arg> = vec![Arg::Integer(from)];
             let mut ors = Vec::new();
-            for k in &known {
+            for k in known {
                 args.push(Arg::Text(format!("%{k}%")));
                 ors.push(format!("in_reply_to LIKE ?{0} OR refs LIKE ?{0}", args.len()));
             }
-            let filter = format!("date >= ?1 AND ({})", ors.join(" OR "));
-            cands.extend(crate::mailstore::rows(&filter, &args, "date ASC", 500, 0));
+            (format!("date >= ?1 AND ({})", ors.join(" OR ")), args)
+        };
+        let cached = CACHE.lock().unwrap().clone().filter(|c| c.0 == selection && c.1 == id);
+        let mut cands: Vec<Message>;
+        let known: Vec<String>;
+        if let Some((_, _, k, members, newest)) = cached {
+            known = k;
+            cands = if members.is_empty() {
+                Vec::new()
+            } else {
+                let args: Vec<Arg> = members.iter().map(|x| Arg::Integer(*x)).collect();
+                let marks: Vec<String> = (1..=members.len()).map(|n| format!("?{n}")).collect();
+                crate::mailstore::rows(&format!("id IN ({})", marks.join(", ")), &args, "date ASC", members.len() as i64 + 1, 0)
+            };
+            if !known.is_empty() {
+                let (filter, args) = like(&known, newest);
+                cands.extend(crate::mailstore::rows(&filter, &args, "date ASC", 500, 0));
+            }
+        } else {
+            let mut k: Vec<String> = ids_in(&m.references);
+            k.extend(ids_in(&m.in_reply_to));
+            cands = crate::mailstore::by_message_ids(&k);
+            // Replies can only be newer than the oldest message of the thread found so
+            // far. With none found (its start isn't here, as with GitHub notifications,
+            // which all point at a pull request's first message nobody got), there's no
+            // such bound: limiting to this message's own date found it alone.
+            let oldest = if cands.is_empty() { 0 } else { cands.iter().map(|x| x.date).min().unwrap_or(m.date).min(m.date) };
+            if !m.message_id.is_empty() {
+                k.push(m.message_id.trim().trim_matches(['<', '>']).to_string());
+            }
+            k.extend(cands.iter().map(|x| x.message_id.trim().trim_matches(['<', '>']).to_string()).filter(|x| !x.is_empty()));
+            k.sort();
+            k.dedup();
+            k.truncate(40);
+            if !k.is_empty() {
+                let (filter, args) = like(&k, oldest);
+                cands.extend(crate::mailstore::rows(&filter, &args, "date ASC", 500, 0));
+            }
+            known = k;
+        }
+        {
+            let mut ids: Vec<i64> = cands.iter().map(|x| x.id).collect();
+            ids.sort();
+            ids.dedup();
+            let newest = cands.iter().map(|x| x.date).max().unwrap_or(m.date).max(m.date);
+            *CACHE.lock().unwrap() = Some((selection.to_string(), id, known, ids, newest));
         }
         cands.push(m.clone());
         for r in self.messages.iter() {
