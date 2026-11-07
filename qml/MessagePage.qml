@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import QtWebEngine
 // The system's own menus (quick to open, unlike the browser engine's)
 import Qt.labs.platform as P
@@ -16,8 +17,11 @@ WebEngineView {
     id: web
     // Back from the desktop's overview, or after the window lost and got back the
     // focus, the page could draw black until clicked: the browser engine stopped
-    // drawing meanwhile. Coming back, the page is hidden and shown again for a
-    // moment (which makes the engine draw it afresh) and its content nudged.
+    // drawing meanwhile. Hiding and showing it right away wasn't always enough (it
+    // could happen before a frame was drawn, or before the window was really back).
+    // Now the page is made 1 px shorter for a moment, which makes the engine draw
+    // a fresh frame at the new size, and its content is nudged; this is done
+    // straight away and again shortly after, in case the window came back late.
     Connections {
         target: web.Window.window
         function onActiveChanged() { if (web.Window.window && web.Window.window.active) web.redraw() }
@@ -27,22 +31,31 @@ WebEngineView {
         target: Qt.application
         function onStateChanged() { if (Qt.application.state === Qt.ApplicationActive) web.redraw() }
     }
-    property bool redrawing: false
+    property int redrawPasses: 0
     function redraw() {
-        if (redrawing || !web.visible)
-            return
-        redrawing = true
-        Qt.callLater(function() {
-            web.visible = false
-            Qt.callLater(function() {
-                web.visible = true
-                web.redrawing = false
-                web.runJavaScript("document.documentElement.style.outline = '0 solid transparent';"
-                                  + "requestAnimationFrame(function() { document.documentElement.style.outline = ''; });")
-                web.update()
-            })
-        })
+        if (!web.visible) return
+        // (Already redrawing: start the passes over, from now.)
+        web.redrawPasses = 3
+        if (!shrinkBack.running && !nextPass.running) redrawPass()
     }
+    function redrawPass() {
+        if (!web.visible || web.redrawPasses <= 0) return
+        web.redrawPasses--
+        web.Layout.bottomMargin = 1
+        shrinkBack.restart()
+    }
+    Timer {
+        id: shrinkBack
+        interval: 50
+        onTriggered: {
+            web.Layout.bottomMargin = 0
+            web.runJavaScript("(function(d) { if (!d) return; d.style.outline = '0 solid transparent';"
+                              + " requestAnimationFrame(function() { d.style.outline = ''; }); })(document.documentElement)")
+            web.update()
+            if (web.redrawPasses > 0) nextPass.restart()
+        }
+    }
+    Timer { id: nextPass; interval: 350; onTriggered: web.redrawPass() }
     property var messages: []
     property string subject: ""
     property bool formatted: true
