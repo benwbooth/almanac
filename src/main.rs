@@ -185,6 +185,26 @@ fn main() {
             std::env::set_var("QTWEBENGINE_CHROMIUM_FLAGS", format!("{flags} --enable-features=FluentOverlayScrollbar").trim());
         }
     }
+    // The message pane could stay black after the window came back to the front,
+    // until clicked: Chromium treats a page in a window that's covered, in the
+    // desktop's overview or not focused as in the background and stops drawing
+    // it, and on Wayland it doesn't always start again until there's input.
+    // Keep it drawing (the page is small; this costs next to nothing).
+    {
+        let flags = std::env::var("QTWEBENGINE_CHROMIUM_FLAGS").unwrap_or_default();
+        let mut add = Vec::new();
+        for f in ["--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--disable-background-timer-throttling"] {
+            if !flags.contains(f) {
+                add.push(f.to_string());
+            }
+        }
+        if !flags.contains("CalculateNativeWinOcclusion") {
+            add.push("--disable-features=CalculateNativeWinOcclusion".into());
+        }
+        if !add.is_empty() {
+            std::env::set_var("QTWEBENGINE_CHROMIUM_FLAGS", format!("{flags} {}", add.join(" ")).trim());
+        }
+    }
     if shot.is_some() {
         // Draw off-screen so the picture never depends on the desktop (a
         // locked screen or hidden window would stop the window painting).
