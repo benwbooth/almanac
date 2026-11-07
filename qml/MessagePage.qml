@@ -31,6 +31,32 @@ WebEngineView {
         target: Qt.application
         function onStateChanged() { if (Qt.application.state === Qt.ApplicationActive) web.redraw() }
     }
+    // What happens around a black page, written to the log (ALMANAC-PANE …) so
+    // the next time it happens shows what came before: the window's focus and
+    // visibility, the page's, the engine's state, lost graphics.
+    function paneLog(what) {
+        console.warn("ALMANAC-PANE " + new Date().toISOString() + " " + what
+                     + " | win active=" + (web.Window.window ? web.Window.window.active : "?")
+                     + " vis=" + (web.Window.window ? web.Window.window.visibility : "?")
+                     + " app=" + Qt.application.state + " page visible=" + web.visible
+                     + " life=" + web.lifecycleState + " rec=" + web.recommendedState
+                     + " api=" + GraphicsInfo.api)
+    }
+    Connections {
+        target: web.Window.window
+        function onActiveChanged() { web.paneLog("window active changed") }
+        function onVisibilityChanged() { web.paneLog("window visibility changed") }
+        function onSceneGraphInvalidated() { web.paneLog("scene graph invalidated") }
+        function onSceneGraphError(error, message) { web.paneLog("scene graph error " + error + ": " + message) }
+    }
+    Connections {
+        target: Qt.application
+        function onStateChanged() { web.paneLog("app state changed") }
+    }
+    onVisibleChanged: paneLog("page visible changed")
+    onLifecycleStateChanged: paneLog("lifecycle state changed")
+    onRecommendedStateChanged: paneLog("recommended state changed")
+    onRenderProcessTerminated: function(status, code) { paneLog("render process ended, status " + status + " code " + code) }
     property int redrawPasses: 0
     function redraw() {
         if (!web.visible) return
@@ -41,6 +67,7 @@ WebEngineView {
     function redrawPass() {
         if (!web.visible || web.redrawPasses <= 0) return
         web.redrawPasses--
+        web.paneLog("redraw pass")
         web.Layout.bottomMargin = 1
         shrinkBack.restart()
     }
