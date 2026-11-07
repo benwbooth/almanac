@@ -1,0 +1,49 @@
+# Flatpak manifest. .github/workflows/release.yml replaces @KDE@ with the
+# newest KDE runtime branch that also has a Qt WebEngine BaseApp on Flathub.
+id: io.github.benwbooth.Almanac
+runtime: org.kde.Platform
+runtime-version: '@KDE@'
+sdk: org.kde.Sdk
+base: io.qt.qtwebengine.BaseApp
+base-version: '@KDE@'
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: almanac
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Passwords and tokens in the desktop's keychain
+  - --talk-name=org.freedesktop.secrets
+  # New mail and event alerts, the tray icon, and KDE Plasma window placement
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.kde.KWin
+  # Saving attachments
+  - --filesystem=xdg-download
+  - --env=QTWEBENGINEPROCESS_PATH=/app/bin/QtWebEngineProcess
+cleanup-commands:
+  - /app/cleanup-BaseApp.sh
+modules:
+  - name: almanac
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      # Cargo downloads the crates while building (this repo isn't on Flathub,
+      # so the build may use the network).
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/almanac/cargo-home
+    build-commands:
+      - sh packaging/flatpak/build.sh
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - .flatpak-builder
+          - flatpak-build
+          - flatpak-repo

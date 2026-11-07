@@ -2,6 +2,9 @@
 //! Rust holds the data; the window is drawn with Qt Quick through cxx-qt.
 //! Runs on Linux first, and builds on Windows and macOS with a Qt 6 install.
 
+// Release builds on Windows open no console window next to the app.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod data;
 mod autoreg;
 mod browser;

@@ -1,0 +1,359 @@
+# Release builds: Windows installer and portable zip, macOS dmgs (Apple Silicon
+# and Intel) with a Homebrew cask, an AppImage, and a Flatpak bundle and repo.
+#
+# Runs when a GitHub release is published, and attaches every file to it.
+# It can also be started by hand (Actions > Release > Run workflow) to try the
+# builds; that run keeps the files as workflow artifacts and publishes nothing.
+#
+# Optional repository secrets:
+#   HOMEBREW_TAP_TOKEN        a token that can push to benwbooth/homebrew-tap;
+#                             without it the Homebrew step is skipped
+#   FLATPAK_GPG_PRIVATE_KEY   an ASCII-armoured GPG key to sign the Flatpak
+#                             repo; without it the repo is unsigned
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # The newest Qt 6 release (Almanac follows nixos-unstable's Qt on Linux).
+  QT_VERSION: '6.*'
+  QT_MODULES: 'qtwebengine qtwebchannel qtpositioning qtpdf'
+  AQT_VERSION: '==3.3.*'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = release ]; then
+            tag='${{ github.event.release.tag_name }}'
+            version="${tag#v}"
+          else
+            tag=""
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-dev.${{ github.run_number }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building Almanac $version"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: ${{ env.QT_MODULES }}
+          aqtversion: ${{ env.AQT_VERSION }}
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:QMAKE = Join-Path $env:QT_ROOT_DIR 'bin\qmake.exe'
+          & $env:QMAKE -query QT_VERSION
+          cargo build --release --locked
+      - name: Gather Qt and the C++ runtime next to almanac.exe
+        shell: pwsh
+        run: |
+          $dist = 'dist\Almanac'
+          New-Item -ItemType Directory -Force $dist | Out-Null
+          Copy-Item target\release\almanac.exe $dist
+          & (Join-Path $env:QT_ROOT_DIR 'bin\windeployqt.exe') --release --qmldir qml --no-compiler-runtime "$dist\almanac.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The Visual C++ runtime, app-local, so nothing else needs installing.
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory | Sort-Object FullName | Select-Object -Last 1
+          Write-Host "C++ runtime from $($crt.FullName)"
+          Copy-Item "$($crt.FullName)\*.dll" $dist
+          Get-ChildItem $dist | Format-Table Name, Length
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\Almanac -DestinationPath "dist\Almanac-$env:VERSION-windows-x64-portable.zip"
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc "/DAppVersion=$env:VERSION" "/DSourceDir=$PWD\dist\Almanac" "/DOutputDir=$PWD\dist" packaging\windows\almanac.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*.exe
+
+  macos:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: ${{ env.QT_MODULES }}
+          aqtversion: ${{ env.AQT_VERSION }}
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          "$QMAKE" -query QT_VERSION
+          cargo build --release --locked
+      - name: App bundle
+        run: |
+          app=dist/Almanac.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/almanac "$app/Contents/MacOS/almanac"
+          cp packaging/icons/almanac.icns "$app/Contents/Resources/almanac.icns"
+          sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          "$QT_ROOT_DIR/bin/macdeployqt" "$app" -qmldir=qml -always-overwrite -verbose=1
+          # Not notarized: sign ad hoc so Apple Silicon will run it at all.
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+      - name: Disk image
+        run: |
+          mkdir dist/dmg
+          mv dist/Almanac.app dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname Almanac -srcfolder dist/dmg -ov -format UDZO \
+            "dist/Almanac-$VERSION-macos-${{ matrix.arch }}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*.dmg
+
+  appimage:
+    needs: version
+    # The oldest supported Ubuntu, so the AppImage runs on older systems too.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfuse2 file patchelf pkg-config libgl1-mesa-dev libegl1 libopengl0 libdbus-1-3 \
+            libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xkb1 libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+            libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxkbfile1 libasound2 \
+            libxshmfence1 libgbm1 libcups2
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: ${{ env.QT_MODULES }}
+          aqtversion: ${{ env.AQT_VERSION }}
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          "$QMAKE" -query QT_VERSION
+          cargo build --release --locked
+      - name: AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: |
+          base=https://github.com/linuxdeploy
+          curl -fsSLo linuxdeploy $base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSLo linuxdeploy-plugin-qt $base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          mkdir -p appimage
+          sed -e 's/^Icon=.*/Icon=almanac/' -e '$a StartupWMClass=almanac' \
+            packaging/linux/io.github.benwbooth.Almanac.desktop > appimage/almanac.desktop
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export LD_LIBRARY_PATH="$QT_ROOT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export QML_SOURCES_PATHS="$PWD/qml"
+          # Wayland first (the X11 plugin comes along by default).
+          plugins=""
+          for p in libqwayland.so libqwayland-egl.so libqwayland-generic.so; do
+            [ -f "$QT_ROOT_DIR/plugins/platforms/$p" ] && plugins="$plugins;$p"
+          done
+          export EXTRA_PLATFORM_PLUGINS="${plugins#;}"
+          export EXTRA_QT_MODULES="svg"
+          export OUTPUT="Almanac-$VERSION-x86_64.AppImage"
+          ./linuxdeploy --appdir AppDir \
+            --executable target/release/almanac \
+            --desktop-file appimage/almanac.desktop \
+            --icon-file icons/almanac.svg \
+            --plugin qt --output appimage
+          mkdir -p dist && mv "$OUTPUT" dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/*.AppImage
+
+  flatpak:
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      APP_ID: io.github.benwbooth.Almanac
+      GPG_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Flatpak tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder elfutils
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Pick the KDE runtime
+        run: |
+          # The newest KDE SDK branch that also has a Qt WebEngine BaseApp.
+          sdk=$(flatpak remote-ls --user flathub --runtime --columns=ref | sed -n 's#^runtime/org\.kde\.Sdk/x86_64/\(6\.[0-9]*\)$#\1#p' | sort -u)
+          base=$(flatpak remote-ls --user flathub --app --columns=ref | sed -n 's#^app/io\.qt\.qtwebengine\.BaseApp/x86_64/\(6\.[0-9]*\)$#\1#p' | sort -u)
+          echo "KDE SDKs: $(echo $sdk)"; echo "WebEngine BaseApps: $(echo $base)"
+          kde=$(comm -12 <(echo "$sdk") <(echo "$base") | sort -V | tail -1)
+          [ -n "$kde" ] || { echo "no KDE runtime with a WebEngine BaseApp"; exit 1; }
+          echo "Using KDE runtime $kde"
+          sed "s/@KDE@/$kde/g" packaging/flatpak/$APP_ID.yml > packaging/flatpak/build.yml
+      - name: Signing key
+        if: env.GPG_KEY != ''
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"; mkdir -m 700 "$GNUPGHOME"
+          echo "$GPG_KEY" | gpg --batch --import
+          id=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "GPG_ID=$id" >> "$GITHUB_ENV"
+      - name: Build
+        run: |
+          sign=()
+          [ -n "${GPG_ID:-}" ] && sign=(--gpg-sign="$GPG_ID" --gpg-homedir="$GNUPGHOME")
+          flatpak-builder --user --install-deps-from=flathub --force-clean --disable-rofiles-fuse \
+            --default-branch=stable --repo=flatpak-repo "${sign[@]}" \
+            flatpak-build packaging/flatpak/build.yml
+          flatpak build-update-repo --prune --generate-static-deltas "${sign[@]}" flatpak-repo
+          mkdir -p dist
+          flatpak build-bundle "${sign[@]}" --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            flatpak-repo "dist/Almanac-$VERSION-x86_64.flatpak" $APP_ID stable
+      - name: Repo files for GitHub Pages
+        run: |
+          url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          site=flatpak-repo
+          {
+            echo "[Flatpak Repo]"
+            echo "Title=Almanac"
+            echo "Url=$url/"
+            echo "Homepage=https://github.com/$GITHUB_REPOSITORY"
+            echo "Comment=Mail, Calendar and Contacts"
+            echo "DefaultBranch=stable"
+            [ -n "${GPG_ID:-}" ] && echo "GPGKey=$(gpg --export "$GPG_ID" | base64 -w0)"
+          } > $site/almanac.flatpakrepo
+          {
+            echo "[Flatpak Ref]"
+            echo "Name=$APP_ID"
+            echo "Branch=stable"
+            echo "Title=Almanac"
+            echo "Url=$url/"
+            echo "RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo"
+            echo "IsRuntime=false"
+            [ -n "${GPG_ID:-}" ] && echo "GPGKey=$(gpg --export "$GPG_ID" | base64 -w0)"
+          } > $site/almanac.flatpakref
+          if [ -n "${GPG_ID:-}" ]; then add="flatpak remote-add --user --if-not-exists almanac $url/almanac.flatpakrepo"
+          else add="flatpak remote-add --user --if-not-exists --no-gpg-verify almanac $url/almanac.flatpakrepo"; fi
+          cat > $site/index.html <<HTML
+          <!doctype html><meta charset="utf-8"><title>Almanac Flatpak repository</title>
+          <h1>Almanac Flatpak repository</h1>
+          <pre>$add
+          flatpak install --user almanac $APP_ID</pre>
+          <p>Release $VERSION. Source: <a href="https://github.com/$GITHUB_REPOSITORY">github.com/$GITHUB_REPOSITORY</a></p>
+          HTML
+          touch $site/.nojekyll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: dist/*.flatpak
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'release'
+        with:
+          path: flatpak-repo
+
+  flatpak-pages:
+    # Serves the Flatpak repo at https://<owner>.github.io/almanac/.
+    if: github.event_name == 'release'
+    needs: flatpak
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  publish:
+    # Attaches everything to the release and updates the Homebrew cask.
+    if: github.event_name == 'release'
+    needs: [version, windows, macos, appimage, flatpak]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach to the release
+        run: |
+          ls -la dist
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          gh release upload "$TAG" dist/* --clobber
+      - name: Homebrew cask
+        if: env.TAP_TOKEN != ''
+        run: |
+          arm=$(sha256sum "dist/Almanac-$VERSION-macos-arm64.dmg" | cut -d' ' -f1)
+          intel=$(sha256sum "dist/Almanac-$VERSION-macos-x86_64.dmg" | cut -d' ' -f1)
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          sed -e "s/@VERSION@/$VERSION/g" -e "s/@TAG@/$TAG/g" \
+              -e "s/@SHA_ARM@/$arm/g" -e "s/@SHA_INTEL@/$intel/g" \
+              -e "s#@REPO@#$GITHUB_REPOSITORY#g" \
+              packaging/macos/almanac.rb > tap/Casks/almanac.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/almanac.rb
+          git commit -m "almanac $VERSION" || { echo "cask unchanged"; exit 0; }
+          git push

@@ -50,6 +50,22 @@ or make `.qt-env` a symlink to your Qt install folder:
 QMAKE=/path/to/qt6/bin/qmake cargo run --release
 ```
 
+### Release builds
+
+Publishing a GitHub release runs `.github/workflows/release.yml`, which
+builds and attaches:
+
+- Windows: an installer (`*-windows-x64-setup.exe`) and a portable zip
+- macOS: disk images for Apple Silicon and Intel (signed ad hoc, not notarized)
+- Linux: an AppImage and a `.flatpak` bundle
+
+It also publishes a Flatpak repository on GitHub Pages and updates the
+Homebrew cask in `benwbooth/homebrew-tap` (when the `HOMEBREW_TAP_TOKEN`
+secret is set). Packaging files live in `packaging/`; after changing
+`icons/almanac.svg`, run `scripts/make-icons.py` to remake the `.ico` and
+`.icns`. Run the workflow by hand from the Actions tab to try the builds
+without publishing anything.
+
 ### OAuth clients
 
 Sign-in with Google, Yahoo and AOL needs an OAuth client of your own. You can

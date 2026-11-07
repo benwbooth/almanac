@@ -105,6 +105,17 @@ fn main() {
         ]),
     )
     .include_dir("include");
+    // Windows: the app icon inside almanac.exe (Explorer, the taskbar, shortcuts).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        let ico = manifest.join("packaging").join("icons").join("almanac.ico");
+        let rc = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("almanac.rc");
+        let ico = ico.display().to_string().replace('\\', "\\\\");
+        std::fs::write(&rc, format!("1 ICON \"{ico}\"\n")).unwrap();
+        println!("cargo::rerun-if-changed=packaging/icons/almanac.ico");
+        embed_resource::compile(&rc, embed_resource::NONE).manifest_optional().unwrap();
+    }
+
     for dir in private_includes {
         builder = builder.include_dir(dir);
     }

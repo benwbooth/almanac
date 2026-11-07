@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Almanac
+GenericName=Mail, Calendar and Contacts
+Comment=Mail, calendars and contacts in one app
+Exec=almanac
+Icon=io.github.benwbooth.Almanac
+Categories=Office;Network;Email;Calendar;ContactManagement;
+Terminal=false

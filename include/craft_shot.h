@@ -57,7 +57,9 @@ inline void craftCreateApp(const QString& plugins, const QString& session)
     new QApplication(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("Almanac"));
     QCoreApplication::setOrganizationName(QStringLiteral("Craft Anything"));
-    QGuiApplication::setDesktopFileName(QStringLiteral("almanac"));
+    // Inside a Flatpak the desktop file is named after the app ID.
+    QGuiApplication::setDesktopFileName(qEnvironmentVariableIsSet("FLATPAK_ID")
+        ? qEnvironmentVariable("FLATPAK_ID") : QStringLiteral("almanac"));
     if (!plugins.isEmpty())
         QCoreApplication::addLibraryPath(plugins);
 }

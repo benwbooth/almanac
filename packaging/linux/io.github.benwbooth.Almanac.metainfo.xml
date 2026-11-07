@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.benwbooth.Almanac</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Almanac</name>
+  <summary>Mail, calendars and contacts in one app</summary>
+  <developer id="io.github.benwbooth">
+    <name>Ben Booth</name>
+  </developer>
+  <description>
+    <p>
+      Almanac talks to your accounts directly: IMAP for mail, SMTP for sending,
+      CalDAV for calendars and CardDAV for contacts, with sign-in for Google,
+      Microsoft, Yahoo and AOL. Passwords are kept in the system keychain.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.benwbooth.Almanac.desktop</launchable>
+  <url type="homepage">https://github.com/benwbooth/almanac</url>
+  <url type="bugtracker">https://github.com/benwbooth/almanac/issues</url>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>almanac</binary>
+  </provides>
+</component>
