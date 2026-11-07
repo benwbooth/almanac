@@ -1,14 +1,11 @@
 # The GitHub Pages site: the website from docs/ at the root, and the Flatpak
 # repo from the latest release under /flatpak/.
 #
-# Runs when docs/ changes on main, after the Release workflow attaches a new
-# Flatpak repo (it starts this workflow), or by hand.
+# Runs after the Release workflow attaches a new Flatpak repo (it starts this
+# workflow), or by hand (Actions > Pages > Run workflow) for site-only updates.
 name: Pages
 
 on:
-  push:
-    branches: [main]
-    paths: ['docs/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
