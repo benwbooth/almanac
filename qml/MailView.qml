@@ -1061,10 +1061,14 @@ Item {
                     // With all mail kept on this computer there's nothing older to fetch;
                     // searching the server still helps before the first full download.
                     readonly property bool wanted: mail.serverBox && (!mail.prefs.download_all_mail || mail.query !== "")
-                    height: wanted ? 58 : 0
-                    visible: wanted
+                    // Room for the rows not loaded yet, so the list (and its scroll
+                    // bar) is as long as the whole mailbox from the start.
+                    readonly property real unloaded: messageList.unloadedHeight
+                    height: unloaded + (wanted ? 58 : 0)
                     ToolButtonX {
-                        anchors.centerIn: parent
+                        visible: parent.wanted
+                        anchors.bottom: parent.bottom; anchors.bottomMargin: 14
+                        anchors.horizontalCenter: parent.horizontalCenter
                         icon: mail.query === "" ? "clock" : "search"
                         text: mail.query === "" ? "Load Older Messages" : "Search for “" + mail.query + "” on the Server"
                         tip: mail.query === "" ? "Get the next 200 older messages of this mailbox from the server"
@@ -1073,8 +1077,19 @@ Item {
                     }
                 }
                 // Rows load as the list nears its end.
-                readonly property real rowHeight: count > 0 ? Math.max(30, contentHeight / count) : 86
-                onContentYChanged: if (contentY + height > contentHeight - height * 2) Qt.callLater(mail.loadRows, mail.list.length + mail.pageSize)
+                readonly property real rowHeight: count > 0 ? Math.max(30, (contentHeight - (footerItem ? footerItem.height : 0)) / count) : 86
+                // Rows not loaded yet are estimated at a typical row's height.
+                readonly property real rowEstimate: mail.classic ? 30 : 86
+                readonly property real unloadedHeight: Math.max(0, mail.page.total - mail.list.length) * rowEstimate
+                // Near the end of the loaded rows (or scrolled or dragged into the
+                // room left for the rest): load up to a page past what's on screen.
+                onContentYChanged: {
+                    var loadedEnd = contentHeight - (footerItem ? footerItem.height : 0)
+                    var bottom = contentY - originY + height
+                    if (bottom <= loadedEnd - height * 2) return
+                    var past = Math.max(0, Math.ceil((bottom - loadedEnd) / rowEstimate))
+                    Qt.callLater(mail.loadRows, mail.list.length + past + mail.pageSize)
+                }
                 onCurrentIndexChanged: {
                     if (currentIndex >= 0) mail.lastIndex = currentIndex
                     if (currentIndex >= 0 && currentIndex < mail.list.length && mail.list[currentIndex].id !== mail.selectedId) mail.select(mail.list[currentIndex].id)
