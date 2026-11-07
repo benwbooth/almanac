@@ -1,9 +1,9 @@
 {
   description = "Almanac: Mail, Calendar and Contacts (Rust + Qt Quick)";
 
-  # This machine's nixpkgs (its channel, with Qt 6.11.2), pinned in flake.lock,
-  # so building needs nothing new. `nix flake update` moves the pin.
-  inputs.nixpkgs.url = "path:/nix/store/dz0gmppia7qcndbv578jcrvzlajbxmny-source";
+  # nixos-unstable, pinned in flake.lock (the same revision as the
+  # nixpkgs-unstable input in etc-nixos). `nix flake update` moves the pin.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }:
     let
@@ -73,7 +73,7 @@
         let qtEnv = qtEnvFor pkgs; in
         {
           default = pkgs.mkShell {
-            packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.pkg-config qtEnv pkgs.libGL pkgs.dbus ];
+            packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.pkg-config qtEnv pkgs.libGL pkgs.dbus pkgs.watchexec ];
             QMAKE = "${qtEnv}/bin/qmake";
             shellHook = ''
               # The build also finds Qt through this link when QMAKE isn't set.

@@ -24,9 +24,21 @@ cargo run
 nix build        # or build the package; the binary lands in ./result/bin
 ```
 
-Note: `flake.nix` currently pins `nixpkgs` to a local store path. If that
-path doesn't exist on your machine, point `inputs.nixpkgs.url` at
-`github:NixOS/nixpkgs/nixos-unstable` and run `nix flake update`.
+`flake.nix` follows `nixos-unstable`, pinned in `flake.lock`; run
+`nix flake update` to move the pin.
+
+### Development loop
+
+```sh
+scripts/dev.sh              # rebuild and restart Almanac on every change
+scripts/dev.sh --scratch    # same, with a throwaway data folder instead of your mail
+scripts/dev.sh --release -- --some-almanac-flag
+```
+
+It watches `src/`, `qml/`, `icons/`, `include/`, `build.rs` and `Cargo.toml`
+with watchexec, and only replaces the running Almanac once a build succeeds.
+App output goes to `target/dev-almanac.log`. It enters `nix develop` by itself
+when watchexec or Qt aren't on the PATH.
 
 ### Without Nix
 
