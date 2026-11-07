@@ -62,10 +62,14 @@ jobs:
         shell: bash
         run: |
           pip install -q "aqtinstall$AQT_VERSION"
-          v=$(python -m aqt list-qt windows desktop --spec "$QT_VERSION" --latest-version)
-          archs=$(python -m aqt list-qt windows desktop --arch "$v")
-          echo "Qt $v for Windows: $archs"
-          arch=$(tr ' ' '\n' <<<"$archs" | grep -E '^win64_msvc[0-9]+_64$' | sort -V | tail -1)
+          # The newest Qt 6 that aqt can read for Windows (it may lag the
+          # newest release by a version).
+          for v in $(python -m aqt list-qt windows desktop | tr ' ' '\n' | grep '^6\.' | sort -Vr); do
+            archs=$(python -m aqt list-qt windows desktop --arch "$v" 2>/dev/null) || continue
+            arch=$(tr ' ' '\n' <<<"$archs" | grep -E '^win64_msvc[0-9]+_64$' | sort -V | tail -1)
+            [ -n "$arch" ] && break
+          done
+          echo "Qt $v for Windows ($arch); available: $archs"
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "arch=$arch" >> "$GITHUB_OUTPUT"
       - uses: jurplel/install-qt-action@v4
