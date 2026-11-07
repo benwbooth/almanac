@@ -7,6 +7,8 @@ Rectangle {
     id: btn
     property string icon: ""
     property string text: ""
+    // Size of the text (a symbol used as the icon can be set larger).
+    property int textSize: Theme.base
     property string tip: ""
     property bool checked: false
     property bool primary: false
@@ -42,7 +44,7 @@ Rectangle {
             visible: btn.text !== ""
             text: btn.text
             color: btn.primary ? "white" : (btn.checked ? Theme.accent : Theme.text)
-            font.pixelSize: Theme.base
+            font.pixelSize: btn.textSize
             font.weight: btn.primary ? Font.DemiBold : Font.Normal
             anchors.verticalCenter: parent.verticalCenter
         }

@@ -159,6 +159,7 @@ ApplicationWindow {
                     ToolButtonX {
                         id: menuButton
                         text: "☰"
+                        textSize: 19
                         tip: "Menu: every command, Accounts and Settings"
                         onClicked: appMenu.open(menuButton)
                     }
