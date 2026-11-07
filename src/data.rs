@@ -1467,7 +1467,11 @@ impl Db {
         let mut known: Vec<String> = ids_in(&m.references);
         known.extend(ids_in(&m.in_reply_to));
         let mut cands: Vec<Message> = crate::mailstore::by_message_ids(&known);
-        let oldest = cands.iter().map(|x| x.date).min().unwrap_or(m.date).min(m.date);
+        // Replies can only be newer than the oldest message of the thread found so
+        // far. With none found (its start isn't here, as with GitHub notifications,
+        // which all point at a pull request's first message nobody got), there's no
+        // such bound: limiting to this message's own date found it alone.
+        let oldest = if cands.is_empty() { 0 } else { cands.iter().map(|x| x.date).min().unwrap_or(m.date).min(m.date) };
         if !m.message_id.is_empty() {
             known.push(m.message_id.trim().trim_matches(['<', '>']).to_string());
         }
@@ -4281,10 +4285,54 @@ mod late_mail_tests {
 mod backed_tests {
     use super::*;
 
+    /// The tests here share one database file: one at a time.
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A conversation whose first message isn't here (GitHub notifications all
+    /// point at a pull request's opening message): opening the newest shows all.
+    #[test]
+    fn a_thread_without_its_first_message_shows_whole() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::create_dir_all(data_dir());
+        let src = "live:gh";
+        let inbox = "live:gh:mail/INBOX";
+        crate::mailstore::remove(src, crate::mailstore::Gone::All);
+        let mut db = Db { backed: true, ..Default::default() };
+        db.accounts.push(Account { id: "live:gh:mail".into(), name: "GH".into(), email: "me@gh.example".into(), source: src.into() });
+        db.folders.push(Folder { id: inbox.into(), account: "live:gh:mail".into(), name: "Inbox".into(), kind: "inbox".into(), path: "INBOX".into() });
+        db.next_id = 700_000;
+        let mut newest = 0;
+        for n in 1..=6u32 {
+            let id = db.new_id();
+            newest = id;
+            db.messages.push(Message {
+                id,
+                folder: inbox.into(),
+                source: src.into(),
+                uid: n,
+                date: 1_750_000_000 + n as i64 * 600,
+                from_name: format!("Reviewer {n}"),
+                from_email: "notifications@github.example".into(),
+                subject: "Re: [org/repo] Fix the thing (PR #1)".into(),
+                body: format!("Comment {n}"),
+                message_id: format!("<org/repo/pull/1/c{n}@github.example>"),
+                in_reply_to: "<org/repo/pull/1@github.example>".into(),
+                references: "<org/repo/pull/1@github.example>".into(),
+                ..Default::default()
+            });
+        }
+        assert!(db.save());
+        db.release_saved();
+        let thread = db.thread(&format!("folder:{inbox}"), newest);
+        assert_eq!(thread.as_array().unwrap().len(), 6, "every reply, not just the newest");
+        crate::mailstore::remove(src, crate::mailstore::Gone::All);
+    }
+
     /// Mail in the database, read as needed: lists, conversations, counts,
     /// changes (saved and not yet), changes from the server, search.
     #[test]
     fn mail_read_from_the_database_as_needed() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let _ = std::fs::create_dir_all(data_dir());
         let src = "live:bt";
         let inbox = "live:bt:mail/INBOX";
