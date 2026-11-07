@@ -21,8 +21,7 @@ WebEngineView {
     // could happen before a frame was drawn, or before the window was really back).
     // Now its content is nudged (a style change that makes the engine draw a
     // fresh frame, with no change of size), straight away and again shortly
-    // after, in case the window came back late. Brief hides (under 0.7 s, see
-    // CraftExposeWatch) don't count.
+    // after, in case the window came back late.
     Connections {
         target: web.Window.window
         function onActiveChanged() { if (web.Window.window && web.Window.window.active) web.redraw() }
@@ -94,8 +93,13 @@ WebEngineView {
         id: shrinkBack
         interval: 50
         onTriggered: {
-            web.runJavaScript("(function(d) { if (!d) return; d.style.outline = '0 solid transparent';"
-                              + " requestAnimationFrame(function() { d.style.outline = ''; }); })(document.documentElement)")
+            // A fresh frame without any layout: a tiny invisible fixed dot's opacity
+            // changed and back (compositing only), and an outline that changes nothing.
+            web.runJavaScript("(function(d) { if (!d || !document.body) return;"
+                              + " var k = document.getElementById('almanac-kick'); if (!k) { k = document.createElement('div'); k.id = 'almanac-kick';"
+                              + " k.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none;opacity:1;will-change:opacity'; document.body.appendChild(k) }"
+                              + " k.style.opacity = '0.999'; d.style.outline = '0 solid transparent';"
+                              + " requestAnimationFrame(function() { k.style.opacity = '1'; d.style.outline = ''; }); })(document.documentElement)")
             web.update()
             if (web.redrawPasses > 0) nextPass.restart()
         }

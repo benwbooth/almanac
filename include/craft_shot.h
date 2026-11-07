@@ -56,17 +56,19 @@ public:
                 const QVariant was = w->property("_craftExposed");
                 w->setProperty("_craftExposed", now);
                 if (now && was.isValid() && !was.toBool()) {
-                    // Hidden only for a moment (KWin does this several times a
-                    // minute as other windows move): nothing was lost, and redrawing
-                    // each time made the pane flicker. Only longer ones count.
-                    const qint64 hiddenFor = QDateTime::currentMSecsSinceEpoch() - w->property("_craftHiddenAt").toLongLong();
-                    if (hiddenFor >= 700) {
-                        qWarning("almanac: window shown again after %lld ms hidden by the desktop", hiddenFor);
-                        if (w->metaObject()->indexOfSignal("reexposed()") >= 0)
-                            QMetaObject::invokeMethod(w, "reexposed", Qt::QueuedConnection);
+                    // Every time it's back, however briefly it was hidden (a blip can
+                    // leave the pane black too); a burst of them counts once. The
+                    // pane's redraw changes no sizes, so this doesn't flicker.
+                    const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+                    const qint64 hiddenFor = now_ms - w->property("_craftHiddenAt").toLongLong();
+                    qWarning("almanac: window shown again after %lld ms hidden by the desktop", hiddenFor);
+                    if (now_ms - w->property("_craftToldAt").toLongLong() >= 300 && w->metaObject()->indexOfSignal("reexposed()") >= 0) {
+                        w->setProperty("_craftToldAt", now_ms);
+                        QMetaObject::invokeMethod(w, "reexposed", Qt::QueuedConnection);
                     }
                 } else if (!now && (!was.isValid() || was.toBool())) {
                     w->setProperty("_craftHiddenAt", QDateTime::currentMSecsSinceEpoch());
+                    qWarning("almanac: window hidden by the desktop");
                 }
             }
         }
