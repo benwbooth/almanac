@@ -189,8 +189,19 @@ Item {
         var fresh = []
         for (var k = top; k < rows.length - bottom; k++) fresh.push({ rid: rows[k].id, json: JSON.stringify(rows[k]), msg: rows[k] })
         if (fresh.length === 0) return
+        // Scrolled (or dragged) into the room kept for rows not loaded yet:
+        // the list would make every row between the loaded ones and where it's
+        // scrolled to. Instead it moves next to the loaded rows for the change,
+        // then jumps straight to the row it was scrolled to.
+        var lv = messageList, deepIndex = -1
+        var loadedEnd = lv.contentHeight - (lv.footerItem ? lv.footerItem.height : 0)
+        if (rowsModel.count > 0 && lv.contentY - lv.originY > loadedEnd) {
+            deepIndex = rowsModel.count + Math.floor((lv.contentY - lv.originY - loadedEnd) / lv.rowEstimate)
+            lv.contentY = lv.originY + Math.max(0, loadedEnd - lv.height)
+        }
         if (top === rowsModel.count) rowsModel.append(fresh)
         else for (var f = 0; f < fresh.length; f++) rowsModel.insert(top + f, fresh[f])
+        if (deepIndex >= 0) lv.positionViewAtIndex(Math.min(deepIndex, rowsModel.count - 1), ListView.Beginning)
     }
     onListChanged: {
         syncRows()
@@ -1083,7 +1094,10 @@ Item {
                 readonly property real unloadedHeight: Math.max(0, mail.page.total - mail.list.length) * rowEstimate
                 // Near the end of the loaded rows (or scrolled or dragged into the
                 // room left for the rest): load up to a page past what's on screen.
-                onContentYChanged: {
+                onContentYChanged: loadMoreIfNear()
+                // (Also as rows come in: the ones loaded may still end above what's on screen.)
+                onContentHeightChanged: Qt.callLater(loadMoreIfNear)
+                function loadMoreIfNear() {
                     var loadedEnd = contentHeight - (footerItem ? footerItem.height : 0)
                     var bottom = contentY - originY + height
                     if (bottom <= loadedEnd - height * 2) return
@@ -1111,7 +1125,9 @@ Item {
                         messageList.positionViewAtIndex(to, ListView.Contain)
                         ev.accepted = true
                     } else if ((ev.key === Qt.Key_Home || ev.key === Qt.Key_End) && mail.list.length) {
-                        if (ev.key === Qt.Key_End) mail.loadRows(mail.page.total)
+                        // (The total is an estimate with conversations on, until all are read.)
+                        if (ev.key === Qt.Key_End)
+                            for (var more = 0; more < 10 && mail.list.length < mail.page.total; more++) mail.loadRows(mail.page.total)
                         var i = ev.key === Qt.Key_Home ? 0 : mail.list.length - 1
                         mail.selectedIds = []
                         mail.select(mail.list[i].id)
@@ -1313,7 +1329,8 @@ Item {
                             // picked ones), and opening it doesn't count as reading.
                             if (ev.button === Qt.RightButton) {
                                 if (!mail.isPicked(row.modelData.id)) { mail.selectedIds = []; mail.select(row.modelData.id, true) }
-                                rowMenu.open()
+                                rowMenuLoader.active = true
+                                rowMenuLoader.item.open()
                             } else {
                                 mail.pick(row.modelData.id, row.index, ev.modifiers)
                             }
@@ -1326,63 +1343,71 @@ Item {
                             else mail.openInTab(row.modelData.id)
                         }
                     }
-                    P.Menu {
-                        id: rowMenu
-                        P.MenuItem { icon.name: "mail-mark-unread"; shortcut: "Ctrl+Shift+U"; text: row.modelData.read ? "Mark as Unread" : "Mark as Read"; onTriggered: mail.setCurrentRead(!row.modelData.read) }
-                        P.MenuItem { icon.name: "flag-red"; shortcut: "Ctrl+Shift+L"; text: row.modelData.flagged ? "Unflag" : "Flag"; onTriggered: mail.toggleCurrentFlag() }
+                    // Made when it's opened: a menu (and its shortcuts) in every row made
+                    // long lists slow to build.
+                    Loader {
+                        id: rowMenuLoader
+                        active: false
+                        sourceComponent: Component {
                         P.Menu {
-                            id: rowFlagMenu
-                            title: "Flag Colour"
-                            icon.name: "flag"
-                            Instantiator {
-                                model: 7
-                                onObjectAdded: (i, o) => rowFlagMenu.insertItem(i, o)
-                                onObjectRemoved: (i, o) => rowFlagMenu.removeItem(o)
-                                delegate: P.MenuItem {
-                                    required property int index
-                                    text: Theme.flagNames[index]
-                                    icon.source: mail.flagIcon(index)
-                                    checkable: true
-                                    checked: row.modelData.flagged && (row.modelData.flagColor || 0) === index
-                                    onTriggered: mail.setCurrentFlag(index)
+                            id: rowMenu
+                            P.MenuItem { icon.name: "mail-mark-unread"; shortcut: "Ctrl+Shift+U"; text: row.modelData.read ? "Mark as Unread" : "Mark as Read"; onTriggered: mail.setCurrentRead(!row.modelData.read) }
+                            P.MenuItem { icon.name: "flag-red"; shortcut: "Ctrl+Shift+L"; text: row.modelData.flagged ? "Unflag" : "Flag"; onTriggered: mail.toggleCurrentFlag() }
+                            P.Menu {
+                                id: rowFlagMenu
+                                title: "Flag Colour"
+                                icon.name: "flag"
+                                Instantiator {
+                                    model: 7
+                                    onObjectAdded: (i, o) => rowFlagMenu.insertItem(i, o)
+                                    onObjectRemoved: (i, o) => rowFlagMenu.removeItem(o)
+                                    delegate: P.MenuItem {
+                                        required property int index
+                                        text: Theme.flagNames[index]
+                                        icon.source: mail.flagIcon(index)
+                                        checkable: true
+                                        checked: row.modelData.flagged && (row.modelData.flagColor || 0) === index
+                                        onTriggered: mail.setCurrentFlag(index)
+                                    }
                                 }
                             }
-                        }
-                        P.MenuSeparator {}
-                        P.MenuItem { icon.name: "mail-reply-sender"; shortcut: "Ctrl+R"; text: "Reply"; onTriggered: mail.reply(false) }
-                        P.MenuItem { icon.name: "mail-reply-all"; shortcut: "Ctrl+Shift+R"; text: "Reply All"; onTriggered: mail.reply(true) }
-                        P.MenuItem { icon.name: "mail-forward"; shortcut: "Ctrl+Shift+F"; text: "Forward"; onTriggered: mail.forward() }
-                        P.MenuSeparator {}
-                        P.Menu {
-                            id: rowMoveMenu
-                            title: "Move to"
-                            Instantiator {
-                                model: mail.folders
-                                onObjectAdded: (i, o) => rowMoveMenu.insertItem(i, o)
-                                onObjectRemoved: (i, o) => rowMoveMenu.removeItem(o)
-                                delegate: P.MenuItem {
-                                    required property var modelData
-                                    text: (mail.sidebar.accounts.length > 1 ? modelData.account + " › " : "") + modelData.name
-                                    onTriggered: mail.moveCurrentToFolder(modelData.id)
+                            P.MenuSeparator {}
+                            P.MenuItem { icon.name: "mail-reply-sender"; shortcut: "Ctrl+R"; text: "Reply"; onTriggered: mail.reply(false) }
+                            P.MenuItem { icon.name: "mail-reply-all"; shortcut: "Ctrl+Shift+R"; text: "Reply All"; onTriggered: mail.reply(true) }
+                            P.MenuItem { icon.name: "mail-forward"; shortcut: "Ctrl+Shift+F"; text: "Forward"; onTriggered: mail.forward() }
+                            P.MenuSeparator {}
+                            P.Menu {
+                                id: rowMoveMenu
+                                title: "Move to"
+                                Instantiator {
+                                    model: mail.folders
+                                    onObjectAdded: (i, o) => rowMoveMenu.insertItem(i, o)
+                                    onObjectRemoved: (i, o) => rowMoveMenu.removeItem(o)
+                                    delegate: P.MenuItem {
+                                        required property var modelData
+                                        text: (mail.sidebar.accounts.length > 1 ? modelData.account + " › " : "") + modelData.name
+                                        onTriggered: mail.moveCurrentToFolder(modelData.id)
+                                    }
                                 }
                             }
+                            P.MenuItem { icon.name: "archive-insert"; shortcut: "Ctrl+Shift+A"; text: "Archive"; onTriggered: mail.removeCurrent("archive") }
+                            P.MenuItem { icon.name: "mail-mark-junk"; shortcut: "Ctrl+Shift+J"; text: "Move to Junk"; onTriggered: mail.removeCurrent("junk") }
+                            P.MenuItem { icon.name: "edit-delete"; shortcut: "Del"; text: "Delete"; onTriggered: mail.removeCurrent("delete") }
+                            P.MenuSeparator {}
+                            P.Menu {
+                                title: "Remind Me"
+                                P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+H"; text: "In 1 Hour"; onTriggered: mail.remindIn(3600000) }
+                                P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+T"; text: "Tonight"; onTriggered: mail.remindAt(21, 0) }
+                                P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+O"; text: "Tomorrow Morning"; onTriggered: mail.remindAt(8, 1) }
+                                P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+W"; text: "Next Week"; onTriggered: mail.remindAt(8, 7) }
+                                P.MenuItem { icon.name: "edit-clear-history"; shortcut: "Ctrl+Alt+Shift+X"; text: "Remove Reminder"; onTriggered: store.remindMe(row.modelData.id, 0) }
+                            }
+                            P.MenuItem { icon.name: "mail-thread-ignored"; shortcut: "Ctrl+Shift+M"; text: row.modelData.muted ? "Unmute Conversation" : "Mute Conversation"; onTriggered: store.toggleMute(row.modelData.id) }
+                            P.MenuItem { icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: row.modelData.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs"; onTriggered: store.toggleVip(row.modelData.fromEmail) }
+                            P.MenuItem { icon.name: "im-ban-user"; shortcut: "Ctrl+Alt+B"; text: "Block Sender"; onTriggered: store.toggleBlocked(row.modelData.fromEmail) }
+                            P.MenuItem { icon.name: "document-print"; shortcut: "Ctrl+P"; text: "Print…"; onTriggered: mail.printCurrent() }
                         }
-                        P.MenuItem { icon.name: "archive-insert"; shortcut: "Ctrl+Shift+A"; text: "Archive"; onTriggered: mail.removeCurrent("archive") }
-                        P.MenuItem { icon.name: "mail-mark-junk"; shortcut: "Ctrl+Shift+J"; text: "Move to Junk"; onTriggered: mail.removeCurrent("junk") }
-                        P.MenuItem { icon.name: "edit-delete"; shortcut: "Del"; text: "Delete"; onTriggered: mail.removeCurrent("delete") }
-                        P.MenuSeparator {}
-                        P.Menu {
-                            title: "Remind Me"
-                            P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+H"; text: "In 1 Hour"; onTriggered: mail.remindIn(3600000) }
-                            P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+T"; text: "Tonight"; onTriggered: mail.remindAt(21, 0) }
-                            P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+O"; text: "Tomorrow Morning"; onTriggered: mail.remindAt(8, 1) }
-                            P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+W"; text: "Next Week"; onTriggered: mail.remindAt(8, 7) }
-                            P.MenuItem { icon.name: "edit-clear-history"; shortcut: "Ctrl+Alt+Shift+X"; text: "Remove Reminder"; onTriggered: store.remindMe(row.modelData.id, 0) }
                         }
-                        P.MenuItem { icon.name: "mail-thread-ignored"; shortcut: "Ctrl+Shift+M"; text: row.modelData.muted ? "Unmute Conversation" : "Mute Conversation"; onTriggered: store.toggleMute(row.modelData.id) }
-                        P.MenuItem { icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: row.modelData.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs"; onTriggered: store.toggleVip(row.modelData.fromEmail) }
-                        P.MenuItem { icon.name: "im-ban-user"; shortcut: "Ctrl+Alt+B"; text: "Block Sender"; onTriggered: store.toggleBlocked(row.modelData.fromEmail) }
-                        P.MenuItem { icon.name: "document-print"; shortcut: "Ctrl+P"; text: "Print…"; onTriggered: mail.printCurrent() }
                     }
                 }
 

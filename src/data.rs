@@ -1303,8 +1303,22 @@ impl Db {
                 row
             })
             .collect();
-        // (More rows than shown: total says so, so scrolling asks for them.)
-        let total = if more || groups.len() > shown { (out.len() + 1).max(all.min(out.len() + 10_000)) } else { out.len() };
+        // How many rows the whole list has, so its scroll bar is right from
+        // the start and End reaches the oldest. Without conversations that's
+        // the message count; with them, the message count scaled by how many
+        // conversations the messages read so far made (an estimate until all
+        // are read). With more to read it's always past what's shown, so
+        // scrolling asks for them.
+        let total = if !more {
+            groups.len().max(out.len())
+        } else {
+            let estimate = if threaded && !msgs.is_empty() {
+                (all as f64 * groups.len() as f64 / msgs.len() as f64).round() as usize
+            } else {
+                all
+            };
+            estimate.max(groups.len()).max(out.len() + 1)
+        };
         // (`all` counts messages here, not conversations.)
         json!({"rows": out, "total": total, "all": all.max(out.len()), "unread": unread, "countsMessages": true})
     }
@@ -4317,13 +4331,15 @@ mod backed_tests {
         assert_eq!(rows.len(), 10);
         assert_eq!(rows[0]["subject"], "Subject 30");
         assert_eq!(page["all"], 30);
-        assert!(page["total"].as_u64().unwrap() > 10, "more to scroll to");
+        assert_eq!(page["total"], 30, "the whole list's length, not just past this page");
         assert_eq!(page["unread"], 10);
         let flagged = db.message_page(&sel, "", false, "date", false, false, 0, 50);
         let five = flagged["rows"].as_array().unwrap().iter().find(|r| r["subject"] == "Subject 5").unwrap().clone();
         assert_eq!(five["flagColor"], 4, "flag colour kept");
 
         // Conversations: the reply grouped with what it answers; the thread opened.
+        let first = db.message_page(&sel, "", true, "date", false, false, 0, 10);
+        assert_eq!(first["total"], 29, "30 messages, one reply with what it answers: 29 conversations");
         let threaded = db.message_page(&sel, "", true, "date", false, false, 0, 50);
         let twenty = threaded["rows"].as_array().unwrap().iter().find(|r| r["subject"] == "Subject 20").unwrap().clone();
         assert_eq!(twenty["count"], 2);
