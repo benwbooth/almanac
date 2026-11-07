@@ -1,9 +1,11 @@
 {
   description = "Almanac: Mail, Calendar and Contacts (Rust + Qt Quick)";
 
-  # nixos-unstable, pinned in flake.lock (the same revision as the
-  # nixpkgs-unstable input in etc-nixos). `nix flake update` moves the pin.
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # nixos-26.05, pinned in flake.lock to the same revision as the system's
+  # own nixpkgs (/etc/nixos). Keep the two together: Almanac then uses the very
+  # Qt build the desktop's plugins (Breeze style, Plasma theme) were made for.
+  # On a newer Qt they can't load and menus and dialogs lose the desktop look.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs = { self, nixpkgs }:
     let
