@@ -3362,7 +3362,12 @@ impl Db {
                     .into();
             }
             match m.subject.as_str() {
-                "Project kickoff on Thursday" => m.attachments = vec!["Agenda.pdf".into()],
+                "Project kickoff on Thursday" => {
+                    m.attachments = vec!["Agenda.pdf".into()];
+                    // Several people on To and Cc, as a kickoff invite has.
+                    m.to = "Me <me@example.com>, Alex Kim <alex@example.org>, Jordan Diaz <jordan@example.com>, Morgan Wu <morgan@example.net>".into();
+                    m.cc = "Taylor Brooks <taylor@example.com>, Casey Rivera <casey@example.org>, Drew Patel <drew@example.com>".into();
+                }
                 "Photos from the trip" => m.attachments = vec!["Sunset.jpg".into(), "Lake.jpg".into(), "Trail.jpg".into()],
                 "Quarterly report numbers" => m.attachments = vec!["Q3 Report.xlsx".into()],
                 _ => {}

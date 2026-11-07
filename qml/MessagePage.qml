@@ -339,7 +339,7 @@ WebEngineView {
               + '.av{width:40px;height:40px;border-radius:20px;background:linear-gradient(#9cc0fa,#5b8def);color:#fff;font-weight:600;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none}'
               + '.who{flex:1;min-width:0}.top{display:flex;flex-wrap:nowrap;gap:2px 8px;align-items:baseline;min-width:0}.name{flex:0 1 auto;font-weight:700;font-size:14px;color:' + css(Theme.text) + ';text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:40px}'
               + '.grow{flex:1}.when{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px}.fmtline{margin-top:3px}'
-              + '.sub{color:' + css(Theme.secondary) + ';font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+              + '.rcpt{color:' + css(Theme.secondary) + ';font-size:12px;white-space:normal;overflow-wrap:anywhere}.rcpt .lbl{color:' + css(Theme.tertiary) + '}'
               + '.addr{color:' + css(Theme.tertiary) + ';font-size:12px}.fmt{color:' + css(Theme.accent) + ';font-size:11px;text-decoration:none;white-space:nowrap}'
               + '.rule{height:1px;background:' + css(Theme.borderSoft) + ';margin:10px 0}'
               + '.remote{display:flex;align-items:center;gap:10px;border:1px solid ' + css(Theme.borderSoft) + ';background:' + css(Theme.card) + ';border-radius:7px;padding:7px 10px;margin-bottom:10px;color:' + css(Theme.secondary) + ';font-size:12px}'
@@ -396,7 +396,9 @@ WebEngineView {
                + '<span class="grow"></span>' + (m.flagged ? '<span style="color:' + Theme.flagColors[m.flagColor || 0] + '" title="' + Theme.flagNames[m.flagColor || 0] + ' flag">⚑</span>' : '')
                + '</div>'
                + '<div class="when">' + esc(Theme.fmtLongDate(m.date)) + '</div>'
-               + '<div class="sub">To: ' + esc(m.to) + (m.cc ? '&nbsp;&nbsp; Cc: ' + esc(m.cc) : '') + '</div>'
+               // To and Cc each on a line of their own, wrapped so every address can be read.
+               + (m.to ? '<div class="rcpt"><span class="lbl">To:</span> ' + esc(m.to) + '</div>' : '')
+               + (m.cc ? '<div class="rcpt"><span class="lbl">Cc:</span> ' + esc(m.cc) + '</div>' : '')
                + (m.fromName && m.fromEmail ? '<div class="addr">' + esc(m.fromEmail) + (m.folder ? ' · ' + esc(m.folder) : '') + '</div>' : '')
                + (m.html ? '<div class="fmtline"><a class="fmt" href="almanac:format/' + i + '">' + (web.formatted ? 'Show Plain Text' : 'Show Formatted') + '</a></div>' : '')
                + '</div></div>'
