@@ -1,0 +1,67 @@
+# The GitHub Pages site: the website from docs/ at the root, and the Flatpak
+# repo from the latest release under /flatpak/.
+#
+# Runs when docs/ changes on main, after the Release workflow attaches a new
+# Flatpak repo (it starts this workflow), or by hand.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble the site
+        run: |
+          mkdir -p public
+          if [ -d docs ]; then cp -a docs/. public/; fi
+          # The Flatpak repo from the newest release that has one.
+          for tag in $(gh release list --exclude-drafts --json tagName --jq '.[].tagName'); do
+            if gh release download "$tag" --pattern flatpak-repo.tar.gz --dir "$RUNNER_TEMP" 2>/dev/null; then
+              mkdir -p public/flatpak
+              tar -C public/flatpak -xzf "$RUNNER_TEMP/flatpak-repo.tar.gz"
+              echo "Flatpak repo from $tag"
+              break
+            fi
+          done
+          if [ ! -f public/index.html ]; then
+            # No website yet: a plain page with install instructions.
+            cat > public/index.html <<HTML
+          <!doctype html><meta charset="utf-8"><title>Almanac</title>
+          <h1>Almanac</h1>
+          <p>Mail, Calendar and Contacts in one app. Downloads: <a href="https://github.com/$GITHUB_REPOSITORY/releases/latest">latest release</a>.</p>
+          <h2>Flatpak</h2>
+          <pre>flatpak install --user https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/flatpak/almanac.flatpakref</pre>
+          HTML
+          fi
+          touch public/.nojekyll
+          find public -maxdepth 2 | head -40
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

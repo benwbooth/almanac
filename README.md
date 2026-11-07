@@ -59,7 +59,8 @@ builds and attaches:
 - macOS: disk images for Apple Silicon and Intel (signed ad hoc, not notarized)
 - Linux: an AppImage and a `.flatpak` bundle
 
-It also publishes a Flatpak repository on GitHub Pages and updates the
+It also attaches a Flatpak repository, which `.github/workflows/pages.yml` serves at
+`https://benwbooth.github.io/almanac/flatpak/` next to the website in `docs/`, and updates the
 Homebrew cask in `benwbooth/homebrew-tap` (when the `HOMEBREW_TAP_TOKEN`
 secret is set). Packaging files live in `packaging/`; after changing
 `icons/almanac.svg`, run `scripts/make-icons.py` to remake the `.ico` and

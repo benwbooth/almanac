@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 env:
   # The newest Qt 6 release (Almanac follows nixos-unstable's Qt on Linux).
@@ -276,7 +277,7 @@ jobs:
       - name: Build
         run: |
           sign=()
-          [ -n "${GPG_ID:-}" ] && sign=(--gpg-sign="$GPG_ID" --gpg-homedir="$GNUPGHOME")
+          if [ -n "${GPG_ID:-}" ]; then sign=(--gpg-sign="$GPG_ID" --gpg-homedir="$GNUPGHOME"); fi
           flatpak-builder --user --install-deps-from=flathub --force-clean --disable-rofiles-fuse \
             --default-branch=stable --repo=flatpak-repo "${sign[@]}" \
             flatpak-build packaging/flatpak/build.yml
@@ -286,7 +287,7 @@ jobs:
             flatpak-repo "dist/Almanac-$VERSION-x86_64.flatpak" $APP_ID stable
       - name: Repo files for GitHub Pages
         run: |
-          url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/flatpak"
           site=flatpak-repo
           {
             echo "[Flatpak Repo]"
@@ -295,7 +296,7 @@ jobs:
             echo "Homepage=https://github.com/$GITHUB_REPOSITORY"
             echo "Comment=Mail, Calendar and Contacts"
             echo "DefaultBranch=stable"
-            [ -n "${GPG_ID:-}" ] && echo "GPGKey=$(gpg --export "$GPG_ID" | base64 -w0)"
+            if [ -n "${GPG_ID:-}" ]; then echo "GPGKey=$(gpg --export "$GPG_ID" | base64 -w0)"; fi
           } > $site/almanac.flatpakrepo
           {
             echo "[Flatpak Ref]"
@@ -305,41 +306,18 @@ jobs:
             echo "Url=$url/"
             echo "RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo"
             echo "IsRuntime=false"
-            [ -n "${GPG_ID:-}" ] && echo "GPGKey=$(gpg --export "$GPG_ID" | base64 -w0)"
+            if [ -n "${GPG_ID:-}" ]; then echo "GPGKey=$(gpg --export "$GPG_ID" | base64 -w0)"; fi
           } > $site/almanac.flatpakref
-          if [ -n "${GPG_ID:-}" ]; then add="flatpak remote-add --user --if-not-exists almanac $url/almanac.flatpakrepo"
-          else add="flatpak remote-add --user --if-not-exists --no-gpg-verify almanac $url/almanac.flatpakrepo"; fi
-          cat > $site/index.html <<HTML
-          <!doctype html><meta charset="utf-8"><title>Almanac Flatpak repository</title>
-          <h1>Almanac Flatpak repository</h1>
-          <pre>$add
-          flatpak install --user almanac $APP_ID</pre>
-          <p>Release $VERSION. Source: <a href="https://github.com/$GITHUB_REPOSITORY">github.com/$GITHUB_REPOSITORY</a></p>
-          HTML
-          touch $site/.nojekyll
       - uses: actions/upload-artifact@v4
         with:
           name: flatpak
           path: dist/*.flatpak
-      - uses: actions/upload-pages-artifact@v3
-        if: github.event_name == 'release'
+      - name: Pack the repo for the Pages site
+        run: tar -C flatpak-repo -czf "dist/flatpak-repo.tar.gz" .
+      - uses: actions/upload-artifact@v4
         with:
-          path: flatpak-repo
-
-  flatpak-pages:
-    # Serves the Flatpak repo at https://<owner>.github.io/almanac/.
-    if: github.event_name == 'release'
-    needs: flatpak
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
+          name: flatpak-repo
+          path: dist/flatpak-repo.tar.gz
 
   publish:
     # Attaches everything to the release and updates the Homebrew cask.
@@ -362,6 +340,8 @@ jobs:
           ls -la dist
           (cd dist && sha256sum * > SHA256SUMS.txt)
           gh release upload "$TAG" dist/* --clobber
+          # pages.yml serves the Flatpak repo from that tarball next to the site.
+          gh workflow run pages.yml --ref "${{ github.event.repository.default_branch }}"
       - name: Homebrew cask
         if: env.TAP_TOKEN != ''
         run: |
