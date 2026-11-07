@@ -27,6 +27,9 @@ const WHOLE_BYTES: u32 = 8_000_000;
 const BG_WHOLE_BYTES: u32 = 150_000;
 /// Messages whose text is downloaded per server round trip.
 const TEXT_BATCH: usize = 20;
+/// The longest a new-mail or background download waits, in all, for messages
+/// someone opened to come first.
+const WAIT_FOR_OPENED: std::time::Duration = std::time::Duration::from_secs(10);
 /// How many of each mailbox's newest messages a regular check refreshes the
 /// read / flagged state of.
 const RECENT_FLAGS: usize = 2000;
@@ -1155,7 +1158,7 @@ pub fn fetch_texts(
     if lane != Lane::Opened && total > TEXT_BATCH {
         progress(counted(&label, 0, total));
     }
-    let job = Job { a, lane, round, deliver, progress, done: &done, total, label: &label };
+    let job = Job { a, lane, round, deliver, progress, done: &done, total, label: &label, waited_ms: std::sync::atomic::AtomicU64::new(0) };
     if lane == Lane::Whole && total > 200 {
         // Several connections at once, each with its share (the newest first in each).
         std::thread::scope(|scope| {
@@ -1243,6 +1246,8 @@ struct Job<'a> {
     done: &'a std::sync::atomic::AtomicUsize,
     total: usize,
     label: &'a str,
+    /// How long this download has waited for opened messages, in total (ms).
+    waited_ms: std::sync::atomic::AtomicU64,
 }
 
 impl Job<'_> {
@@ -1256,14 +1261,24 @@ impl Job<'_> {
         }
     }
 
-    /// Messages someone opened go first.
+    /// Messages someone opened go first, but only for a while: waiting up to 90
+    /// seconds before every piece held new mail back for many minutes ("0 of
+    /// 500" for ages) while a slow server answered for an opened conversation.
+    /// Now at most WAIT_FOR_OPENED in all per download.
     fn wait_turn(&self) {
         use std::sync::atomic::Ordering;
-        if self.lane != Lane::Opened {
-            let started = std::time::Instant::now();
-            while OPENING.load(Ordering::SeqCst) > 0 && started.elapsed() < std::time::Duration::from_secs(90) {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+        if self.lane == Lane::Opened {
+            return;
+        }
+        let budget = WAIT_FOR_OPENED.as_millis() as u64;
+        let started = std::time::Instant::now();
+        while OPENING.load(Ordering::SeqCst) > 0 && self.waited_ms.load(Ordering::SeqCst) + (started.elapsed().as_millis() as u64) < budget {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let waited = started.elapsed().as_millis() as u64;
+        if waited >= 500 {
+            let total = self.waited_ms.fetch_add(waited, Ordering::SeqCst) + waited;
+            eprintln!("almanac: {}: waited {:.1} s for opened messages ({:.1} s in all)", self.label, waited as f64 / 1000.0, total as f64 / 1000.0);
         }
     }
 
@@ -1343,6 +1358,7 @@ impl Job<'_> {
                         pieces.push((piece, query.clone(), whole));
                     }
                 }
+                let mut counted_so_far = 0usize;
                 for (uids, query, whole) in pieces {
                     self.wait_turn();
                     if !self.current() {
@@ -1356,6 +1372,7 @@ impl Job<'_> {
                         return Ok(());
                     }
                     let set = uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+                    let piece_started = std::time::Instant::now();
                     let fetched = match s.uid_fetch(&set, &query) {
                         Ok(f) => f,
                         Err(e) => {
@@ -1375,13 +1392,29 @@ impl Job<'_> {
                         }
                         texts.push(Text { id, body: p.body, html: p.html, invite: p.invite, attachments: p.attachments, complete: whole });
                     }
+                    // Slow answers are noted (to see where time goes), and the count
+                    // moves on with each piece, not only at the end of a batch.
+                    let took = piece_started.elapsed();
+                    if took.as_secs() >= 10 {
+                        let bytes: usize = fetched.iter().map(|f| f.body().map_or(0, |b| b.len())).sum();
+                        eprintln!("almanac: {}: {} message(s), {} KB, took {:.1} s", self.label, uids.len(), bytes / 1024, took.as_secs_f32());
+                    }
+                    let done = self.done.fetch_add(uids.len(), Ordering::SeqCst) + uids.len();
+                    counted_so_far += uids.len();
+                    if self.lane != Lane::Opened && self.total > TEXT_BATCH {
+                        (self.progress)(counted(self.label, done.min(self.total), self.total));
+                    }
                 }
                 for (id, _) in chunk {
                     finished.insert(*id);
                 }
-                let done = self.done.fetch_add(chunk.len(), Ordering::SeqCst) + chunk.len();
-                if self.lane != Lane::Opened && self.total > TEXT_BATCH {
-                    (self.progress)(counted(self.label, done, self.total));
+                // (Any of the batch not fetched, e.g. gone from the server, still counts as done.)
+                if chunk.len() > counted_so_far {
+                    let extra = chunk.len() - counted_so_far;
+                    let done = self.done.fetch_add(extra, Ordering::SeqCst) + extra;
+                    if self.lane != Lane::Opened && self.total > TEXT_BATCH {
+                        (self.progress)(counted(self.label, done.min(self.total), self.total));
+                    }
                 }
                 (self.deliver)(texts);
             }
