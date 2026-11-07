@@ -70,6 +70,7 @@ WebEngineView {
         var on = p[3] === "1"
         if (p[2] === "open") web.expandedState[m.id] = on
         else if (p[2] === "details") web.detailsState[m.id] = on
+        else if (p[2] === "fmt") web.formatState[m.id] = on
         else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
     }
     onLoadingChanged: function(info) { paneLog("loading " + ["started", "stopped", "succeeded", "failed"][info.status] + (info.errorString ? " " + info.errorString : "")) }
@@ -110,6 +111,9 @@ WebEngineView {
     // details (To, Cc, address) are shown, by message id. Kept across reloads.
     property var expandedState: ({})
     property var detailsState: ({})
+    // Plain text or formatted, chosen for one message (its link switches it in
+    // place, without redrawing the page); the global choice clears these.
+    property var formatState: ({})
     // Where to scroll once drawn: a conversation newly opened goes to its first
     // unread message (or its newest); drawn again (mail arriving, a message
     // marked read) it stays where it was (keepScroll, read from the page first).
@@ -329,7 +333,7 @@ WebEngineView {
     settings.showScrollBars: true
 
     onMessagesChanged: Qt.callLater(render)
-    onFormattedChanged: Qt.callLater(render)
+    onFormattedChanged: { web.formatState = ({}); Qt.callLater(render) }
     onRemoteLoadedChanged: Qt.callLater(render)
     onLoadRemoteAlwaysChanged: Qt.callLater(render)
     onRemoteSendersChanged: Qt.callLater(render)
@@ -379,14 +383,14 @@ WebEngineView {
     function linkify(t) { return t.replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1">$1</a>') }
     function css(c) { return c.toString() }
 
-    function emailDoc(m, paper, remote) {
+    function emailDoc(m, paper, remote, asRich) {
         // Adapted by the engine's dark mode: written as a light page, which it darkens.
         var lightDoc = paper || web.darkify || !Theme.dark
         var dark = !lightDoc
         var text = lightDoc ? "#1d1d1f" : css(Theme.text)
         var link = lightDoc ? "#0a66d8" : css(Theme.accent)
         var content
-        if (m.html && web.formatted) content = remote ? withRemote(m.html) : m.html
+        if (m.html && (asRich === undefined ? web.formatted : asRich)) content = remote ? withRemote(m.html) : m.html
         else content = '<div style="white-space:pre-wrap">' + linkify(esc(m.body)) + '</div>'
         return '<!doctype html><html><head><meta charset="utf-8"><base target="_blank">'
              + '<style>html{overflow:hidden;overscroll-behavior:none;color-scheme:' + (dark ? 'dark' : 'light') + ';background:' + (paper ? '#ffffff' : 'transparent') + '}'
@@ -441,7 +445,7 @@ WebEngineView {
               + '.row .snip{margin-top:2px;font-size:12px;color:' + css(Theme.text) + ';line-height:1.4;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere}'
               + '.sum{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px;display:flex;gap:6px;min-width:0}'
               + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}'
-              + '.msg:not(.det-on) .details{display:none}'
+              + '.msg:not(.det-on) .details{display:none}.msg.plain .remote{display:none}'
               + '.chev{font-size:11px;padding:0 2px}'
               + '.top .acts{margin-left:6px;align-self:center}'
               // People on To and Cc as bubbles, as in compose (click or right-click: copy, write to).
@@ -493,7 +497,8 @@ WebEngineView {
                          + '<a href="#" data-all="1">Expand All</a><a href="#" data-all="0">Collapse All</a></div>' : '')
         for (var i = 0; i < web.messages.length; i++) {
             var m = web.messages[i]
-            var rich = !!m.html && web.formatted
+            var fmtSet = web.formatState[m.id]
+            var rich = !!m.html && (fmtSet !== undefined ? fmtSet : web.formatted)
             // A white page only when dark backgrounds for messages are turned off.
             var paper = rich && Theme.dark && !web.darkMessages
             var remote = web.loadRemoteAlways || !!web.remoteLoaded[m.id] || senderTrusted(m)
@@ -526,7 +531,7 @@ WebEngineView {
                + (m.to ? '<div class="rcpt"><span class="lbl">To:</span>' + chips(i, m.to) + '</div>' : '')
                + (m.cc ? '<div class="rcpt"><span class="lbl">Cc:</span>' + chips(i, m.cc) + '</div>' : '')
                + (m.fromName && m.fromEmail ? '<div class="addr">' + esc(m.fromEmail) + (m.folder ? ' · ' + esc(m.folder) : '') + '</div>' : '')
-               + (m.html ? '<div class="fmtline"><a class="fmt" href="almanac:format/' + i + '">' + (web.formatted ? 'Show Plain Text' : 'Show Formatted') + '</a></div>' : '')
+               + (m.html ? '<div class="fmtline"><a class="fmt" data-fmt="' + i + '" href="almanac:format/' + i + '">' + (rich ? 'Show Plain Text' : 'Show Formatted') + '</a></div>' : '')
                + '</div>'
                + '</div></div>'
                + '<div class="rule"></div>'
@@ -539,8 +544,11 @@ WebEngineView {
                        + '<a class="more" href="almanac:remote-sender/' + i + '" title="Always load remote content in mail from ' + esc(m.fromEmail) + '">Always from This Sender</a>'
                        + '<a class="more" href="almanac:remote-all/' + i + '" title="Load remote content in every message (Settings › Privacy)">Always</a></div>'
                 // (A closed message's text is loaded when it's opened.)
-                h += '<div class="' + (paper && Theme.dark ? 'paper' : '') + '"><iframe sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" ' + (col ? 'data-doc' : 'srcdoc') + '="'
-                   + esc(emailDoc(m, paper && Theme.dark, remote)) + '"></iframe></div>'
+                // (With the other form, plain or formatted, at hand for its link.)
+                var altPaper = !rich && Theme.dark && !web.darkMessages
+                var alt = m.html ? ' data-alt="' + esc(emailDoc(m, altPaper, remote, !rich)) + '" data-alt-paper="' + (altPaper ? 1 : 0) + '"' : ''
+                h += '<div class="' + (paper && Theme.dark ? 'paper' : '') + '"><iframe sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"' + alt + ' ' + (col ? 'data-doc' : 'srcdoc') + '="'
+                   + esc(emailDoc(m, paper && Theme.dark, remote, rich)) + '"></iframe></div>'
             }
             // Pictures and PDFs right in the message, as in Apple Mail.
             var shown = web.previews[m.id] || []
@@ -613,6 +621,11 @@ WebEngineView {
            + 'if(!t&&!e.target.closest("a")){var c=e.target.closest(".msg.col");if(c)t=c.querySelector("[data-toggle]")}'
            + 'if(t){e.preventDefault();var el=document.querySelector(\'.msg[data-i="\'+t.getAttribute("data-toggle")+\'"]\');var open=el.classList.contains("col");'
            + 'setOpen(el,open);tell("open",el.getAttribute("data-i"),open);return}'
+           + 'var fm=e.target.closest("[data-fmt]");if(fm){e.preventDefault();var me=fm.closest(".msg"),f=me&&me.querySelector("iframe[data-alt]");if(!f)return;'
+           + 'var w=f.parentNode,cur=f.getAttribute("srcdoc")||"",alt=f.getAttribute("data-alt"),ap=f.getAttribute("data-alt-paper")==="1";'
+           + 'f.setAttribute("data-alt",cur);f.setAttribute("data-alt-paper",w.classList.contains("paper")?"1":"0");w.classList.toggle("paper",ap);'
+           + 'var toRich=fm.textContent==="Show Formatted";fm.textContent=toRich?"Show Plain Text":"Show Formatted";me.classList.toggle("plain",!toRich);'
+           + 'f.__ready=null;f.srcdoc=alt;tell("fmt",me.getAttribute("data-i"),toRich);return}'
            + 'var d=e.target.closest("[data-det]");if(d){e.preventDefault();var m=d.closest(".msg");var on=m.classList.toggle("det-on");d.textContent=on?"Hide Details":"Details";tell("details",m.getAttribute("data-i"),on);return}'
            + 'var a=e.target.closest("[data-all]");if(a){e.preventDefault();var open=a.getAttribute("data-all")==="1",changed=[];'
            + '[].forEach.call(document.querySelectorAll(".msg[data-i]"),function(el){if(setOpen(el,open))changed.push(el.getAttribute("data-i"))});'
