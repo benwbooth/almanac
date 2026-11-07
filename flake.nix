@@ -75,9 +75,17 @@
           default = pkgs.mkShell {
             packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.pkg-config qtEnv pkgs.libGL pkgs.dbus pkgs.watchexec ];
             QMAKE = "${qtEnv}/bin/qmake";
+            # Link with this shell's compiler, whatever ~/.cargo/config.toml
+            # names: a system clang links against the system's (older) glibc,
+            # and the binary then can't load this nixpkgs' Qt.
+            "CARGO_TARGET_${pkgs.stdenv.hostPlatform.rust.cargoEnvVarTarget}_LINKER" = "cc";
             shellHook = ''
               # The build also finds Qt through this link when QMAKE isn't set.
               ln -sfn ${qtEnv} .qt-env
+              # mkShell adds "-rpath $out/lib" (under this folder) to the link
+              # flags; a space in the folder path splits it and breaks linking.
+              # Nothing is installed to $out in a dev shell, so drop it.
+              export NIX_LDFLAGS="''${NIX_LDFLAGS//"-rpath $out/lib"/}"
             '';
           };
         });

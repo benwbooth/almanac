@@ -106,6 +106,9 @@ step_args=(--step)
 
 rebuild_and_restart
 
-watchexec --quiet --postpone --debounce 300ms --on-busy-update=queue \
+watchexec --shell=none --quiet --postpone --debounce 300ms --on-busy-update=queue \
   -w src -w qml -w icons -w include -w build.rs -w Cargo.toml -w Cargo.lock \
-  -- "$0" "${step_args[@]}" -- "${app_args[@]}"
+  -- "$0" "${step_args[@]}" -- "${app_args[@]}" &
+# In the background and waited on, so a SIGTERM to this script runs cleanup
+# right away (bash holds traps until a foreground child exits).
+wait $!
