@@ -442,7 +442,6 @@ WebEngineView {
               + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}'
               + '.msg:not(.det-on) .details{display:none}'
               + '.chev{font-size:11px;padding:0 2px}'
-              // Closed rows: a blue ▸ before the name (the open message's ▾ closes it).
               + '.top .acts{margin-left:6px;align-self:center}'
               // People on To and Cc as bubbles, as in compose (click or right-click: copy, write to).
               + '.rcpt{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:3px;font-size:12px}.rcpt .lbl{color:' + css(Theme.tertiary) + ';margin-right:2px}'
