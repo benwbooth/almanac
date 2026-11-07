@@ -867,15 +867,20 @@ pub fn fill_from_copies(source: &str) -> usize {
 
 /// A live account's messages still waiting for their text: (id, folder, uid, date).
 pub fn partial_ids(source: &str) -> Vec<(i64, String, u32, i64)> {
+    partial_ids_with_message_id(source).into_iter().map(|(id, f, u, d, _)| (id, f, u, d)).collect()
+}
+
+/// The same, with each one's Message-ID (to fetch only one of its copies).
+pub fn partial_ids_with_message_id(source: &str) -> Vec<(i64, String, u32, i64, String)> {
     let path = db_path();
     if !path.exists() {
         return Vec::new();
     }
     with_conn(&path, |c| {
         let mut st = c
-            .prepare_cached("SELECT id, folder, uid, date FROM messages INDEXED BY messages_for_list WHERE source = ?1 AND partial = 1 AND uid > 0 AND preview = ''")
+            .prepare_cached("SELECT id, folder, uid, date, message_id FROM messages INDEXED BY messages_for_list WHERE source = ?1 AND partial = 1 AND uid > 0 AND preview = ''")
             .map_err(|e| e.to_string())?;
-        let rows = st.query_map(params![source], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u32, r.get(3)?))).map_err(|e| e.to_string())?;
+        let rows = st.query_map(params![source], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u32, r.get(3)?, r.get(4)?))).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(Result::ok).collect())
     })
     .unwrap_or_default()

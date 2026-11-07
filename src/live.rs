@@ -1073,7 +1073,10 @@ static WHOLE_ROUND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 static OPENING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// The most one background fetch asks for at once (so an opened message never
 /// waits long behind it).
-const PIECE_BYTES: u64 = 3_000_000;
+/// Fetched in pieces of at most this much, one command each: with Gmail
+/// answering every command ~10 s late when it's slowing an account down, fewer,
+/// bigger pieces get far more done (it was 3 MB).
+const PIECE_BYTES: u64 = 12_000_000;
 /// Connections the long download of a whole account uses at once (Thunderbird
 /// uses up to 5 with Gmail; Gmail allows 15).
 const WHOLE_CONNECTIONS: usize = 2;
@@ -1331,7 +1334,8 @@ impl Job<'_> {
             by_folder.entry(path.clone()).or_default().push((*id, *uid));
         }
         let (whole_limit, start_bytes) = if self.lane == Lane::Whole { (BG_WHOLE_BYTES, BG_WHOLE_BYTES) } else { (WHOLE_BYTES, BODY_BYTES) };
-        let batch = if self.lane == Lane::Whole { TEXT_BATCH * 4 } else { TEXT_BATCH };
+        // (Big batches: each starts with a command for the messages' sizes.)
+        let batch = if self.lane == Lane::Whole { 400 } else if self.lane == Lane::Recent { 100 } else { TEXT_BATCH };
         let mut finished: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let rest = |finished: &std::collections::HashSet<i64>| wanted.iter().filter(|w| !finished.contains(&w.0)).cloned().collect::<Vec<_>>();
         for path in order {
@@ -1419,6 +1423,8 @@ impl Job<'_> {
                     if self.lane != Lane::Opened && self.total > TEXT_BATCH {
                         (self.progress)(counted(self.label, done.min(self.total), self.total));
                     }
+                    // Kept as each piece arrives, not at the end of the batch.
+                    (self.deliver)(std::mem::take(&mut texts));
                 }
                 for (id, _) in chunk {
                     finished.insert(*id);

@@ -405,15 +405,18 @@ pub fn partial_wanted(source: &str, folders: &[Folder]) -> Vec<crate::live::Want
     }
     let rank = |k: &str| ["inbox", "sent", "drafts", "archive", "other", "junk", "trash"].iter().position(|x| *x == k).unwrap_or(4);
     let by_id: std::collections::HashMap<&str, &Folder> = folders.iter().map(|f| (f.id.as_str(), f)).collect();
-    let mut list: Vec<(usize, i64, crate::live::Wanted)> = crate::mailstore::partial_ids(source)
+    let mut list: Vec<(usize, i64, crate::live::Wanted, String)> = crate::mailstore::partial_ids_with_message_id(source)
         .into_iter()
-        .filter_map(|(id, folder, uid, date)| {
+        .filter_map(|(id, folder, uid, date, mid)| {
             let f = by_id.get(folder.as_str())?;
-            Some((rank(&f.kind), -date, (id, f.path.clone(), uid)))
+            Some((rank(&f.kind), -date, (id, f.path.clone(), uid), mid))
         })
         .collect();
     list.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-    list.into_iter().map(|x| x.2).collect()
+    // One copy of each message (new mail lands in several Gmail labels at once):
+    // the others are filled in from it next time (fill_from_copies).
+    let mut seen = std::collections::HashSet::new();
+    list.into_iter().filter(|x| x.3.is_empty() || seen.insert(x.3.clone())).map(|x| x.2).collect()
 }
 
 /// Message counts read from the database: by folder, (all, unread, flagged
