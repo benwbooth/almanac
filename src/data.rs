@@ -1480,6 +1480,7 @@ impl Db {
             }
             (format!("date >= ?1 AND ({})", ors.join(" OR ")), args)
         };
+        let search_t = crate::Timed::new("thread: search");
         let cached = CACHE.lock().unwrap().clone().filter(|c| c.0 == selection && c.1 == id);
         let mut cands: Vec<Message>;
         let known: Vec<String>;
@@ -1505,19 +1506,25 @@ impl Db {
             // which all point at a pull request's first message nobody got), there's no
             // such bound: limiting to this message's own date found it alone.
             let oldest = if cands.is_empty() { 0 } else { cands.iter().map(|x| x.date).min().unwrap_or(m.date).min(m.date) };
-            if !m.message_id.is_empty() {
-                k.push(m.message_id.trim().trim_matches(['<', '>']).to_string());
+            // Replies are found by the thread's first message (every reply's
+            // References starts with it) and by this one's own id (direct replies):
+            // two patterns, not one for each message of the thread (up to 40 made
+            // this search take seconds on a big mailbox).
+            let mut look: Vec<String> = Vec::new();
+            if let Some(root) = k.first().cloned() {
+                look.push(root);
             }
-            k.extend(cands.iter().map(|x| x.message_id.trim().trim_matches(['<', '>']).to_string()).filter(|x| !x.is_empty()));
-            k.sort();
-            k.dedup();
-            k.truncate(40);
-            if !k.is_empty() {
-                let (filter, args) = like(&k, oldest);
+            if !m.message_id.is_empty() {
+                look.push(m.message_id.trim().trim_matches(['<', '>']).to_string());
+            }
+            look.dedup();
+            if !look.is_empty() {
+                let (filter, args) = like(&look, oldest);
                 cands.extend(crate::mailstore::rows(&filter, &args, "date ASC", 500, 0));
             }
-            known = k;
+            known = look;
         }
+        drop(search_t);
         {
             let mut ids: Vec<i64> = cands.iter().map(|x| x.id).collect();
             ids.sort();
@@ -1525,6 +1532,7 @@ impl Db {
             let newest = cands.iter().map(|x| x.date).max().unwrap_or(m.date).max(m.date);
             *CACHE.lock().unwrap() = Some((selection.to_string(), id, known, ids, newest));
         }
+        let _keys_t = crate::Timed::new("thread: grouping");
         cands.push(m.clone());
         for r in self.messages.iter() {
             cands.push(r.clone());
@@ -1538,6 +1546,8 @@ impl Db {
         let kinds = self.folder_kinds();
         let mut list: Vec<&Message> = cands.iter().filter(|x| x.id == id || (!key.is_empty() && keys.get(&x.id) == Some(&key) && self.message_in_k(x, selection, Some(&kinds)))).collect();
         list.sort_by_key(|x| x.date);
+        drop(_keys_t);
+        let _json_t = crate::Timed::new("thread: messages");
         Value::Array(list.iter().map(|x| self.message_json(x)).collect())
     }
 

@@ -1094,7 +1094,16 @@ Item {
                 readonly property real unloadedHeight: Math.max(0, mail.page.total - mail.list.length) * rowEstimate
                 // Near the end of the loaded rows (or scrolled or dragged into the
                 // room left for the rest): load up to a page past what's on screen.
-                onContentYChanged: loadMoreIfNear()
+                onContentYChanged: { loadMoreIfNear(); trimLater.restart() }
+                // Back near the top for a moment after going far down: the rows
+                // loaded on the way go again, so a change to the mail (several a
+                // minute) doesn't re-read thousands of them, freezing the window.
+                // (Their room stays, so nothing on screen moves.)
+                Timer {
+                    id: trimLater
+                    interval: 2000
+                    onTriggered: if (messageList.contentY - messageList.originY < messageList.height * 2 && mail.limit > mail.pageSize * 2) mail.resetPage()
+                }
                 // (Also as rows come in: the ones loaded may still end above what's on screen.)
                 onContentHeightChanged: Qt.callLater(loadMoreIfNear)
                 function loadMoreIfNear() {
