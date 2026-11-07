@@ -1,0 +1,59 @@
+[package]
+name = "almanac"
+version = "0.1.0"
+edition = "2021"
+description = "Mail, Calendar and Contacts for Linux, Windows and macOS (Rust + cxx-qt + Qt Quick)"
+
+[[bin]]
+name = "almanac"
+path = "src/main.rs"
+
+[dependencies]
+cxx = "1.0"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"
+encoding_rs = "0.8"
+# Accurate time zones (IANA database) for calendar events
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
+# Live accounts: IMAP mail, SMTP sending, CalDAV/CardDAV over HTTPS, keychain passwords
+imap = { version = "3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
+# (The same parser the imap crate uses, for commands sent several at once: see imap_pipe.rs.)
+imap-proto = "0.16"
+nom = "7"
+# Code blocks in messages: highlighted by language (Sublime syntaxes built in).
+syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
+# Markdown pasted into a message becomes formatting.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "rustls", "ring", "rustls-native-certs"] }
+ureq = "3"
+quick-xml = "0.38"
+keyring = "4"
+# Sign-in with Google / Microsoft (PKCE hashing, random state)
+ring = "0.17"
+# System notifications for alerts and new mail
+notify-rust = "4"
+# Picking app IDs out of pasted text (Sign-in Setup)
+regex = "1"
+# Spelling and grammar while writing (offline, English).
+harper-core = "3"
+
+# POP accounts: an encrypted connection with the system's certificates
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+# (the IMAP library's own TLS connector, to open its connections with time limits)
+rustls-connector = "0.19"
+# KDE Plasma on Wayland: asking KWin to put the window back where it was
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+
+[build-dependencies]
+cxx-qt-build = "0.10"
+
+[profile.dev]
+opt-level = 1

@@ -1,0 +1,151 @@
+import QtQuick
+
+// Scrolling with momentum for a Flickable or ListView (Linux trackpads and
+// mouse wheels don't glide by themselves): the list follows the fingers,
+// then glides on and slows down. Another swipe (or wheel turn) the same way
+// while it glides keeps it going and adds to its speed.
+//
+// Adapted from AcceleratedWheelHandler in lunchpail (MIT, © 2026 Ben Booth):
+// the glide is driven here frame by frame (not with Flickable.flick, whose
+// own wheel handling fights it), and it's attached to the list itself.
+WheelHandler {
+    id: m
+    required property Flickable flick
+    parent: flick
+    target: null
+    // The events are this handler's alone: the list's own wheel scrolling moving
+    // it at the same time made every other flick's glide stop (seen in the trace).
+    blocking: true
+    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+
+    // Glide: speed in px/s (positive: down the list), slowed exponentially.
+    property real velocity: 0
+    property real friction: 3.2
+    property real minimumVelocity: 30
+    property real maximumVelocity: 40000
+    // A swipe in progress, and its smoothed speed.
+    property bool swiping: false
+    property double lastPixelAt: 0
+    property real swipeVelocity: 0
+    property int swipeSamples: 0
+    // Wheel notches close together accelerate.
+    property double lastNotchAt: 0
+    property real burst: 0
+    // Our own moves (so other moves, e.g. a scroll bar drag, stop the glide).
+    property bool moving: false
+    property real lastSetY: NaN
+
+    function lowest() { return flick.originY - flick.topMargin }
+    function highest() { return Math.max(lowest(), flick.originY + flick.contentHeight - flick.height + flick.bottomMargin) }
+    function moveBy(d) {
+        if (!isFinite(d) || d === 0) return
+        moving = true
+        lastSetY = Math.max(lowest(), Math.min(highest(), flick.contentY + d))
+        flick.contentY = lastSetY
+        moving = false
+    }
+    function stop(why) { if (glide.running) note("stop " + (why || "")); glide.stop(); velocity = 0 }
+    // Started with --trace-scroll: every swipe is written to the log
+    // ("ALMANAC-SCROLL list …"), to see why a glide stopped.
+    readonly property bool trace: Qt.application.arguments.indexOf("--trace-scroll") >= 0
+    property var hist: []
+    function note(x) { if (!trace) return; hist.push(Date.now() % 100000 + " " + x); if (!traceTimer.running) traceTimer.start() }
+    property Timer traceTimer: Timer {
+        interval: 1500
+        onTriggered: { if (m.hist.length) console.warn("ALMANAC-SCROLL list " + m.hist.join(" ; ")); m.hist = [] }
+    }
+    function addVelocity(v) {
+        if (!isFinite(v) || v === 0) return
+        if (velocity * v < 0) velocity = 0
+        velocity = Math.max(-maximumVelocity, Math.min(maximumVelocity, velocity + v))
+        if (!glide.running) glide.start()
+    }
+
+    // ------------------------------------------------ trackpad
+    // A glide going on when the fingers come down keeps going while they move
+    // the same way (their movement adds to it); the other way stops it.
+    function beginSwipe() {
+        swiping = true
+        swipeVelocity = 0; swipeSamples = 0; lastPixelAt = 0
+    }
+    function swipeBy(d, phased) {
+        if (!swiping) beginSwipe()
+        if (glide.running && velocity * d < 0) stop("other way")
+        var now = Date.now(), dt = now - lastPixelAt
+        if (lastPixelAt > 0 && dt <= 120) {
+            var sample = d / (Math.max(8, dt) / 1000)
+            swipeVelocity = swipeSamples ? swipeVelocity * 0.35 + sample * 0.65 : sample
+        } else swipeVelocity = d * 60
+        if (swipeVelocity * d < 0) swipeVelocity = 0
+        swipeSamples++
+        lastPixelAt = now
+        moveBy(d)
+        // Trackpads that don't say when the fingers lift: a short pause ends the swipe.
+        if (phased) releaseTimer.stop(); else releaseTimer.restart()
+    }
+    function endSwipe() {
+        releaseTimer.stop()
+        if (!swiping) return
+        swiping = false
+        // (A quick flick of only a couple of events counts too.)
+        var v = swipeSamples >= 1 && Date.now() - lastPixelAt <= 200 ? swipeVelocity : 0
+        note("end v" + Math.round(v) + " n" + swipeSamples + " glide " + Math.round(velocity))
+        // Added to a glide still going the same way: it picks up speed.
+        if (Math.abs(v) >= minimumVelocity) addVelocity(v)
+    }
+
+    // ------------------------------------------------ mouse wheel
+    function notches(steps) {
+        var now = Date.now(), dir = steps < 0 ? -1 : 1
+        burst = now - lastNotchAt <= 250 && dir * velocity >= 0 ? Math.min(8, burst + Math.abs(steps)) : 0
+        lastNotchAt = now
+        var accel = 1 + burst * 0.5
+        // Part at once (it answers straight away), the rest as glide.
+        moveBy(steps * 50 * Math.min(2, accel))
+        addVelocity(steps * 70 * friction * accel)
+    }
+
+    function advance(dt) {
+        if (velocity === 0) { stop(); return }
+        dt = Math.max(0.001, Math.min(0.05, dt))
+        var decay = Math.exp(-friction * dt)
+        var before = flick.contentY
+        moveBy(velocity * (1 - decay) / friction)
+        velocity *= decay
+        var atEdge = Math.abs(flick.contentY - before) < 0.01
+                     && ((velocity < 0 && flick.contentY <= lowest()) || (velocity > 0 && flick.contentY >= highest()))
+        if (atEdge || Math.abs(velocity) < minimumVelocity) stop(atEdge ? "edge" : "slowed")
+    }
+
+    onWheel: function(ev) {
+        var phase = ev.phase
+        if (trace) note("w " + ["none", "begin", "update", "end", "momentum"][phase] + " px" + ev.pixelDelta.y + " a" + ev.angleDelta.y
+                        + (ev.device && ev.device.type === PointerDevice.TouchPad ? " pad" : " mouse") + (glide.running ? " g" + Math.round(velocity) : ""))
+        if (phase === Qt.ScrollEnd) { var was = swiping; endSwipe(); ev.accepted = was; return }
+        // The system's own momentum (macOS): it has its own glide.
+        if (phase === Qt.ScrollMomentum) { stop(); moveBy(-ev.pixelDelta.y); ev.accepted = ev.pixelDelta.y !== 0; return }
+        var canScroll = flick.flickableDirection !== Flickable.HorizontalFlick && flick.contentHeight > flick.height
+        if (!canScroll) { ev.accepted = false; return }
+        if (phase === Qt.ScrollBegin) beginSwipe()
+        var touchpad = ev.device && ev.device.type === PointerDevice.TouchPad
+        var pixels = ev.pixelDelta.y !== 0 && (touchpad || phase !== Qt.NoScrollPhase || ev.angleDelta.y === 0)
+        var d = pixels ? -ev.pixelDelta.y : -ev.angleDelta.y
+        // Fingers down without moving yet: the glide goes on until they move.
+        if (d === 0) { ev.accepted = phase === Qt.ScrollBegin; return }
+        if (pixels) swipeBy(d, phase !== Qt.NoScrollPhase)
+        else notches(d / 120)
+        ev.accepted = true
+    }
+
+    property FrameAnimation glide: FrameAnimation { onTriggered: m.advance(frameTime) }
+    property Timer releaseTimer: Timer { interval: 60; onTriggered: m.endSwipe() }
+    property Connections watch: Connections {
+        target: m.flick
+        // Dragged, or moved by something else (a scroll bar, keyboard, jumping
+        // to a message): the glide stops.
+        function onDraggingChanged() { if (m.flick.dragging) m.stop("dragged") }
+        function onContentYChanged() {
+            if (!m.moving && m.glide.running && Math.abs(m.flick.contentY - m.lastSetY) > 1) m.stop("moved by something else")
+        }
+    }
+}

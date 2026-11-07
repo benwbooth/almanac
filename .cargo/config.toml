@@ -1,0 +1,6 @@
+# Linux (Nix): `.qt-env` is a Qt 6 install with Qt Quick, made with
+#   nix-build -E 'with import <nixpkgs> {}; qt6.env "qt-craft" [qt6.qtdeclarative qt6.qtsvg libGL]' -o .qt-env
+# Windows / macOS / other Linux: set QMAKE to your Qt 6 qmake (it takes priority),
+# or make `.qt-env` a link to your Qt install folder.
+[env]
+QMAKE = { value = ".qt-env/bin/qmake", relative = true, force = false }

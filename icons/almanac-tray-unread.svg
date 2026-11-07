@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Almanac in the system tray with unread mail (none new since you looked):
+       the one-colour letter and a blue dot, as Apple Mail marks unread mail (set
+       off from it by a ring in the panel's colour, PANEL). -->
+  <rect x="3" y="7.4" width="18" height="12.6" rx="2.4" fill="none" stroke="INK" stroke-width="1.6"/>
+  <path d="M5.4 7.4h13.2a2.4 2.4 0 0 1 2.4 2.4v1H3v-1a2.4 2.4 0 0 1 2.4-2.4z" fill="INK"/>
+  <path d="M6 13l6 4 6-4" fill="none" stroke="INK" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="7.1" y="4.4" width="1.9" height="4.6" rx="0.95" fill="INK"/>
+  <rect x="15" y="4.4" width="1.9" height="4.6" rx="0.95" fill="INK"/>
+  <circle cx="19.6" cy="5" r="4.4" fill="PANEL"/>
+  <circle cx="19.6" cy="5" r="3.3" fill="#007AFF"/>
+</svg>

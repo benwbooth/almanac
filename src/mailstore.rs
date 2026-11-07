@@ -1,0 +1,980 @@
+//! Where mail is kept on disk: messages in an SQLite database
+//! (`mail.sqlite`), attachments as ordinary files in a folder per message
+//! (`attachments/<message id>/<file name>`). Everything else (accounts,
+//! calendars, contacts, settings) stays in `data.json`.
+//!
+//! Only what lists and sorting need is kept in memory (sender, subject, date,
+//! flags, a short preview); the text, formatted text and invitations stay in
+//! the database and are read when a message is opened. Searching the text uses
+//! the database's full-text index. Saving writes only the rows that changed.
+
+use crate::data::{data_dir, Message};
+use rusqlite::{params, Connection};
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// What each saved row looked like (a fingerprint per message id).
+static SAVED: Mutex<Option<HashMap<i64, u64>>> = Mutex::new(None);
+/// For messages in memory that are also saved: their folder, read and flagged
+/// as saved (so the counts read from the database can be put right for
+/// changes not saved yet).
+static STATE: Mutex<Option<HashMap<i64, (String, bool, bool)>>> = Mutex::new(None);
+/// Goes up with each save (counts read from the database are kept until then).
+pub static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Raised when the search index must be built again from the stored mail.
+const SEARCH_VERSION: &str = "2";
+
+// A connection to the database per thread, kept for the whole run: the
+// window's queries never wait behind the mail checks' (the database lets
+// several read at once, and one write while they do).
+thread_local! {
+    static CONN: std::cell::RefCell<Option<(PathBuf, Connection)>> = const { std::cell::RefCell::new(None) };
+}
+/// Setting the database up (the first time, or after an update) is done by
+/// one thread; the others wait for it.
+static SETTING_UP: Mutex<()> = Mutex::new(());
+
+fn with_conn<T>(path: &Path, f: impl FnOnce(&mut Connection) -> Result<T, String>) -> Result<T, String> {
+    CONN.with(|cell| {
+        let mut held = cell.borrow_mut();
+        if held.as_ref().map(|(p, _)| p != path).unwrap_or(true) {
+            let c = {
+                let _one = SETTING_UP.lock().unwrap();
+                open_at(path)?
+            };
+            *held = Some((path.to_path_buf(), c));
+        }
+        f(&mut held.as_mut().unwrap().1)
+    })
+}
+
+/// Sender, recipients and copies, for searching.
+fn people(m: &Message) -> String {
+    format!("{} {} {} {}", m.from_name, m.from_email, m.to, m.cc)
+}
+
+pub fn db_path() -> PathBuf {
+    data_dir().join("mail.sqlite")
+}
+
+pub fn attachments_root() -> PathBuf {
+    data_dir().join("attachments")
+}
+
+pub fn attachment_dir(id: i64) -> PathBuf {
+    attachments_root().join(id.to_string())
+}
+
+/// A file name that is safe on every system.
+pub fn safe_name(name: &str) -> String {
+    let n: String = name.chars().map(|c| if "/\\:*?\"<>|".contains(c) || c.is_control() { '_' } else { c }).collect();
+    let n = n.trim().trim_matches('.').to_string();
+    if n.is_empty() {
+        "attachment".into()
+    } else {
+        n
+    }
+}
+
+/// The stored copy of one attachment, if it's been saved already.
+pub fn attachment_file(id: i64, name: &str) -> Option<PathBuf> {
+    let p = attachment_dir(id).join(safe_name(name));
+    p.is_file().then_some(p)
+}
+
+/// Keeps one attachment as a file; returns where it is.
+pub fn store_attachment(id: i64, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let dir = attachment_dir(id);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let p = dir.join(safe_name(name));
+    let tmp = dir.join(format!(".{}.part", safe_name(name)));
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+/// Saves every attachment found in a whole original message.
+pub fn store_attachments_from(id: i64, raw: &[u8], names: &[String]) {
+    for name in names {
+        if attachment_file(id, name).is_none() {
+            if let Some((bytes, _)) = crate::mime::extract_attachment(raw, name) {
+                let _ = store_attachment(id, name, &bytes);
+            }
+        }
+    }
+}
+
+fn open_at(path: &Path) -> Result<Connection, String> {
+    if let Some(d) = path.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let c = Connection::open(path).map_err(|e| e.to_string())?;
+    // (Another thread writing: waited for, not an error.)
+    let _ = c.busy_timeout(std::time::Duration::from_secs(15));
+    c.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         -- (A row replaced, as messages with their text are saved, counts as
+         -- deleted too, so the folder counts' triggers see it go.)
+         PRAGMA recursive_triggers=ON;
+         CREATE TABLE IF NOT EXISTS messages(
+             id INTEGER PRIMARY KEY,
+             folder TEXT NOT NULL,
+             source TEXT NOT NULL DEFAULT '',
+             uid INTEGER NOT NULL DEFAULT 0,
+             date INTEGER NOT NULL DEFAULT 0,
+             from_name TEXT NOT NULL DEFAULT '',
+             from_email TEXT NOT NULL DEFAULT '',
+             to_addr TEXT NOT NULL DEFAULT '',
+             cc TEXT NOT NULL DEFAULT '',
+             subject TEXT NOT NULL DEFAULT '',
+             body TEXT NOT NULL DEFAULT '',
+             html TEXT NOT NULL DEFAULT '',
+             invite TEXT NOT NULL DEFAULT '',
+             read INTEGER NOT NULL DEFAULT 0,
+             flagged INTEGER NOT NULL DEFAULT 0,
+             attachments TEXT NOT NULL DEFAULT '[]',
+             raw_ref TEXT NOT NULL DEFAULT '',
+             remind_at INTEGER NOT NULL DEFAULT 0,
+             message_id TEXT NOT NULL DEFAULT '',
+             partial INTEGER NOT NULL DEFAULT 0,
+             in_reply_to TEXT NOT NULL DEFAULT '',
+             refs TEXT NOT NULL DEFAULT '',
+             reply_to TEXT NOT NULL DEFAULT ''
+         );
+         CREATE INDEX IF NOT EXISTS messages_by_folder ON messages(folder, date);
+         CREATE INDEX IF NOT EXISTS messages_by_server ON messages(source, folder, uid);
+         CREATE INDEX IF NOT EXISTS messages_by_message_id ON messages(message_id);
+         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         -- Full-text search over subject, people and text (words, any language).
+         CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(subject, people, body,
+             content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');",
+    )
+    .map_err(|e| e.to_string())?;
+    // Files made by earlier versions lack the newer columns.
+    for col in ["in_reply_to", "refs", "reply_to", "preview"] {
+        let _ = c.execute_batch(&format!("ALTER TABLE messages ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"));
+    }
+    let _ = c.execute_batch("ALTER TABLE messages ADD COLUMN flag_color INTEGER NOT NULL DEFAULT 0");
+    // Flag colours other than red, in a small table of their own: read at start
+    // in a moment (a column of the messages would mean remaking the list's index
+    // or reading scattered rows of a file of gigabytes).
+    c.execute_batch("CREATE TABLE IF NOT EXISTS flag_colors(id INTEGER PRIMARY KEY, color INTEGER NOT NULL)").map_err(|e| e.to_string())?;
+    // Mail stored before there was a search index (or by an older Almanac
+    // since it was built): index all of it once.
+    let built: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'search'", [], |r| r.get(0)).ok();
+    if built.as_deref() != Some(SEARCH_VERSION) {
+        c.execute_batch(
+            "BEGIN;
+             DELETE FROM search;
+             INSERT INTO search(rowid, subject, people, body)
+                 SELECT id, subject, from_name || ' ' || from_email || ' ' || to_addr || ' ' || cc, body FROM messages;
+             COMMIT;",
+        )
+        .map_err(|e| e.to_string())?;
+        c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('search', ?1)", params![SEARCH_VERSION]).map_err(|e| e.to_string())?;
+    }
+    // The message list's fields in an index of their own, every message with its
+    // preview line stored: starting up reads just that (a few tens of MB), not
+    // the rows that also hold all the text and formatting (gigabytes for a big
+    // mailbox, which made starting slow). Done once for older files.
+    let listed: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'list'", [], |r| r.get(0)).ok();
+    // (Version 2 also held the flag colour; reading that from the rows of the
+    // few flagged messages instead spares remaking the index, which takes
+    // minutes on a big mailbox: the version 1 index serves as it is.)
+    if listed.as_deref() != Some("1") && listed.as_deref() != Some("2") {
+        let missing: Vec<(i64, String)> = {
+            let mut st = c.prepare("SELECT id, substr(body, 1, 1200) FROM messages WHERE preview = '' AND body <> ''").map_err(|e| e.to_string())?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok).collect()
+        };
+        let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+        {
+            let mut up = tx.prepare("UPDATE messages SET preview = ?1 WHERE id = ?2").map_err(|e| e.to_string())?;
+            for (id, body) in &missing {
+                up.execute(params![crate::data::strip_preview(body), id]).map_err(|e| e.to_string())?;
+            }
+        }
+        // (Made again when the list gains a field.)
+        tx.execute_batch(&format!("DROP INDEX IF EXISTS messages_for_list; CREATE INDEX messages_for_list ON messages({LIST_COLUMNS});"))
+            .map_err(|e| e.to_string())?;
+        tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('list', '1')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    // Mail whose "plain text" was really HTML (tags shown in the message list's
+    // preview): its text made from the HTML, once.
+    let fixed: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'html_text'", [], |r| r.get(0)).ok();
+    if fixed.as_deref() != Some("1") {
+        let wrong: Vec<(i64, String, String)> = {
+            let mut st = c
+                .prepare("SELECT id, body, html FROM messages WHERE ltrim(body) LIKE '<%' OR ltrim(preview) LIKE '<%'")
+                .map_err(|e| e.to_string())?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok).filter(|(_, body, _)| crate::mime::looks_like_html(body)).collect()
+        };
+        let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+        {
+            let mut up = tx.prepare("UPDATE messages SET body = ?1, preview = ?2 WHERE id = ?3").map_err(|e| e.to_string())?;
+            for (id, body, html) in &wrong {
+                let text = crate::mime::html_to_text(if html.is_empty() { body } else { html });
+                up.execute(params![text, crate::data::strip_preview(&text), id]).map_err(|e| e.to_string())?;
+            }
+        }
+        tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('html_text', '1')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    // Each folder's counts (all, unread, flagged) in a small table the
+    // database keeps right itself as messages are added, changed or deleted:
+    // the sidebar reads a few rows, however much mail there is. Counted once.
+    // (Version 2: counted again, as rows replaced weren't seen going before.)
+    let counted: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'counts'", [], |r| r.get(0)).ok();
+    if counted.as_deref() != Some("2") {
+        let _t = crate::Timed::new("counting the mail once (for the sidebar)");
+        c.execute_batch(
+            "BEGIN;
+             DROP TRIGGER IF EXISTS counts_add;
+             DROP TRIGGER IF EXISTS counts_drop;
+             DROP TRIGGER IF EXISTS counts_change;
+             DROP TABLE IF EXISTS folder_counts;
+             CREATE TABLE folder_counts(folder TEXT PRIMARY KEY, total INTEGER NOT NULL DEFAULT 0,
+                                        unread INTEGER NOT NULL DEFAULT 0, flagged INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO folder_counts(folder, total, unread, flagged)
+                 SELECT folder, COUNT(*), SUM(read = 0), SUM(flagged = 1) FROM messages INDEXED BY messages_for_list GROUP BY folder;
+             CREATE TRIGGER counts_add AFTER INSERT ON messages BEGIN
+                 INSERT INTO folder_counts(folder) VALUES (NEW.folder) ON CONFLICT(folder) DO NOTHING;
+                 UPDATE folder_counts SET total = total + 1, unread = unread + (NEW.read = 0), flagged = flagged + (NEW.flagged = 1)
+                     WHERE folder = NEW.folder;
+             END;
+             CREATE TRIGGER counts_drop AFTER DELETE ON messages BEGIN
+                 UPDATE folder_counts SET total = total - 1, unread = unread - (OLD.read = 0), flagged = flagged - (OLD.flagged = 1)
+                     WHERE folder = OLD.folder;
+             END;
+             CREATE TRIGGER counts_change AFTER UPDATE OF folder, read, flagged ON messages BEGIN
+                 UPDATE folder_counts SET total = total - 1, unread = unread - (OLD.read = 0), flagged = flagged - (OLD.flagged = 1)
+                     WHERE folder = OLD.folder;
+                 INSERT INTO folder_counts(folder) VALUES (NEW.folder) ON CONFLICT(folder) DO NOTHING;
+                 UPDATE folder_counts SET total = total + 1, unread = unread + (NEW.read = 0), flagged = flagged + (NEW.flagged = 1)
+                     WHERE folder = NEW.folder;
+             END;
+             INSERT OR REPLACE INTO meta(key, value) VALUES('counts', '2');
+             COMMIT;",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(c)
+}
+
+/// The text, formatted text and invitation of one message.
+pub fn text(id: i64) -> Option<(String, String, String)> {
+    text_at(&db_path(), id)
+}
+
+fn text_at(path: &Path, id: i64) -> Option<(String, String, String)> {
+    if !path.exists() {
+        return None;
+    }
+    with_conn(path, |c| {
+        c.query_row("SELECT body, html, invite FROM messages WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())
+    })
+    .ok()
+}
+
+/// The messages whose subject, people or text contain every word of `query`
+/// (words starting with what's typed). None when there's no database (or the
+/// query has no words).
+pub fn search(query: &str) -> Option<std::collections::HashSet<i64>> {
+    search_at(&db_path(), query)
+}
+
+fn search_at(path: &Path, query: &str) -> Option<std::collections::HashSet<i64>> {
+    if !path.exists() {
+        return None;
+    }
+    let words: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"*", w.replace('"', "")))
+        .collect();
+    if words.is_empty() {
+        return None;
+    }
+    with_conn(path, |c| {
+        let mut st = c.prepare_cached("SELECT rowid FROM search WHERE search MATCH ?1").map_err(|e| e.to_string())?;
+        let ids = st.query_map(params![words.join(" ")], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?;
+        Ok(ids.filter_map(Result::ok).collect())
+    })
+    .ok()
+}
+
+/// Tells whether a message's header fields changed since it was last saved.
+/// (Its text is written whenever it's in memory: it's only there between
+/// arriving and being saved.)
+fn fingerprint(m: &Message) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (m.id, &m.folder, &m.source, m.uid, m.date, &m.from_name, &m.from_email, &m.to, &m.cc, &m.subject).hash(&mut h);
+    (m.read, m.flagged, &m.attachments, &m.raw_ref, m.remind_at, &m.message_id, m.partial, &m.in_reply_to, &m.references, &m.reply_to, &m.preview).hash(&mut h);
+    m.flag_color.hash(&mut h);
+    h.finish()
+}
+
+/// Whether a message carries its text in memory (to be written, then dropped).
+pub fn has_text(m: &Message) -> bool {
+    !m.body.is_empty() || !m.html.is_empty() || !m.invite.is_empty()
+}
+
+/// What the message list needs (and the order of the index that holds it).
+const LIST_COLUMNS: &str = "date, id, folder, source, uid, from_name, from_email, to_addr, cc, subject, preview, read, flagged, \
+                            attachments, raw_ref, remind_at, message_id, partial, in_reply_to, refs, reply_to";
+
+fn load_from(path: &Path) -> Result<Vec<Message>, String> {
+    let c = open_at(path)?;
+    // From the list's index alone (see open_at).
+    let mut st = c
+        .prepare(
+            "SELECT id, folder, source, uid, date, from_name, from_email, to_addr, cc, subject, preview,
+                    read, flagged, attachments, raw_ref, remind_at, message_id, partial, in_reply_to, refs, reply_to
+             FROM messages INDEXED BY messages_for_list ORDER BY date",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map([], |r| {
+            let attachments: String = r.get(13)?;
+            Ok(Message {
+                id: r.get(0)?,
+                folder: r.get(1)?,
+                source: r.get(2)?,
+                uid: r.get::<_, i64>(3)? as u32,
+                date: r.get(4)?,
+                from_name: r.get(5)?,
+                from_email: r.get(6)?,
+                to: r.get(7)?,
+                cc: r.get(8)?,
+                subject: r.get(9)?,
+                preview: r.get(10)?,
+                read: r.get(11)?,
+                flagged: r.get(12)?,
+                attachments: serde_json::from_str(&attachments).unwrap_or_default(),
+                raw_ref: r.get(14)?,
+                remind_at: r.get(15)?,
+                message_id: r.get(16)?,
+                partial: r.get(17)?,
+                in_reply_to: r.get(18)?,
+                references: r.get(19)?,
+                reply_to: r.get(20)?,
+                ..Default::default()
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut all: Vec<Message> = rows.filter_map(Result::ok).collect();
+    let mut colors: HashMap<i64, u8> = HashMap::new();
+    let mut st = c.prepare("SELECT id, color FROM flag_colors").map_err(|e| e.to_string())?;
+    for r in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(|e| e.to_string())?.flatten() {
+        colors.insert(r.0, r.1.clamp(0, 6) as u8);
+    }
+    for m in all.iter_mut().filter(|m| m.flagged) {
+        m.flag_color = colors.get(&m.id).copied().unwrap_or(0);
+    }
+    Ok(all)
+}
+
+fn save_to(path: &Path, messages: &[Message], saved: &mut HashMap<i64, u64>) -> Result<Vec<i64>, String> {
+    let now: HashMap<i64, u64> = messages.iter().map(|m| (m.id, fingerprint(m))).collect();
+    let changed: Vec<&Message> = messages.iter().filter(|m| has_text(m) || saved.get(&m.id) != now.get(&m.id)).collect();
+    let gone: Vec<i64> = saved.keys().filter(|id| !now.contains_key(id)).copied().collect();
+    if changed.is_empty() && gone.is_empty() {
+        return Ok(vec![]);
+    }
+    with_conn(path, |c| {
+        let tx = c.transaction().map_err(|e| e.to_string())?;
+        {
+            let mut full = tx
+                .prepare_cached(
+                    "INSERT OR REPLACE INTO messages(id, folder, source, uid, date, from_name, from_email, to_addr, cc, subject, body, html,
+                         invite, read, flagged, attachments, raw_ref, remind_at, message_id, partial, in_reply_to, refs, reply_to, preview, flag_color)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                )
+                .map_err(|e| e.to_string())?;
+            // Header fields only: the stored text stays as it is.
+            let mut head = tx
+                .prepare_cached(
+                    "INSERT INTO messages(id, folder, source, uid, date, from_name, from_email, to_addr, cc, subject,
+                         read, flagged, attachments, raw_ref, remind_at, message_id, partial, in_reply_to, refs, reply_to, preview, flag_color)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                     ON CONFLICT(id) DO UPDATE SET folder = excluded.folder, source = excluded.source, uid = excluded.uid,
+                         date = excluded.date, from_name = excluded.from_name, from_email = excluded.from_email,
+                         to_addr = excluded.to_addr, cc = excluded.cc, subject = excluded.subject, read = excluded.read,
+                         flagged = excluded.flagged, attachments = excluded.attachments, raw_ref = excluded.raw_ref,
+                         remind_at = excluded.remind_at, message_id = excluded.message_id, partial = excluded.partial,
+                         in_reply_to = excluded.in_reply_to, refs = excluded.refs, reply_to = excluded.reply_to, flag_color = excluded.flag_color,
+                         preview = CASE WHEN excluded.preview <> '' THEN excluded.preview ELSE messages.preview END",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut unindex = tx.prepare_cached("DELETE FROM search WHERE rowid = ?1").map_err(|e| e.to_string())?;
+            let mut index = tx.prepare_cached("INSERT INTO search(rowid, subject, people, body) VALUES(?1, ?2, ?3, ?4)").map_err(|e| e.to_string())?;
+            for m in &changed {
+                let attachments = serde_json::to_string(&m.attachments).unwrap_or_else(|_| "[]".into());
+                let fresh = !saved.contains_key(&m.id);
+                if has_text(m) {
+                    let preview = if m.preview.is_empty() { crate::data::strip_preview(&m.body) } else { m.preview.clone() };
+                    full.execute(params![
+                        m.id, m.folder, m.source, m.uid as i64, m.date, m.from_name, m.from_email, m.to, m.cc, m.subject,
+                        m.body, m.html, m.invite, m.read, m.flagged, attachments, m.raw_ref, m.remind_at, m.message_id,
+                        m.partial, m.in_reply_to, m.references, m.reply_to, preview, m.flag_color,
+                    ])
+                    .map_err(|e| e.to_string())?;
+                    unindex.execute(params![m.id]).map_err(|e| e.to_string())?;
+                    index.execute(params![m.id, m.subject, people(m), m.body]).map_err(|e| e.to_string())?;
+                } else {
+                    head.execute(params![
+                        m.id, m.folder, m.source, m.uid as i64, m.date, m.from_name, m.from_email, m.to, m.cc, m.subject,
+                        m.read, m.flagged, attachments, m.raw_ref, m.remind_at, m.message_id, m.partial, m.in_reply_to,
+                        m.references, m.reply_to, m.preview, m.flag_color,
+                    ])
+                    .map_err(|e| e.to_string())?;
+                    if fresh {
+                        index.execute(params![m.id, m.subject, people(m), ""]).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            let mut color = tx.prepare_cached("INSERT OR REPLACE INTO flag_colors(id, color) VALUES(?1, ?2)").map_err(|e| e.to_string())?;
+            let mut uncolor = tx.prepare_cached("DELETE FROM flag_colors WHERE id = ?1").map_err(|e| e.to_string())?;
+            for m in &changed {
+                if m.flagged && m.flag_color != 0 {
+                    color.execute(params![m.id, m.flag_color]).map_err(|e| e.to_string())?;
+                } else {
+                    uncolor.execute(params![m.id]).map_err(|e| e.to_string())?;
+                }
+            }
+            let mut del = tx.prepare_cached("DELETE FROM messages WHERE id = ?1").map_err(|e| e.to_string())?;
+            for id in &gone {
+                del.execute(params![id]).map_err(|e| e.to_string())?;
+                unindex.execute(params![id]).map_err(|e| e.to_string())?;
+                uncolor.execute(params![id]).map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())
+    })?;
+    *saved = now;
+    Ok(gone)
+}
+
+#[cfg(test)]
+pub fn save_for_test(path: &Path, messages: &[Message], saved: &mut HashMap<i64, u64>) {
+    save_to(path, messages, saved).unwrap();
+}
+
+/// Reads every message (at start-up).
+pub fn load() -> Vec<Message> {
+    let list = {
+        let _t = crate::Timed::new("reading the message list");
+        load_from(&db_path()).unwrap_or_default()
+    };
+    let _t = crate::Timed::new("noting what's saved");
+    *SAVED.lock().unwrap() = Some(list.iter().map(|m| (m.id, fingerprint(m))).collect());
+    list
+}
+
+/// Writes what changed since the last save; deleted messages also lose
+/// their attachment files.
+pub fn save(messages: &[Message]) -> bool {
+    let mut guard = SAVED.lock().unwrap();
+    let saved = guard.get_or_insert_with(HashMap::new);
+    // No mail at all where there was plenty: something went wrong (mail not
+    // read yet?), not thousands of messages deleted at once. Nothing is saved.
+    if messages.is_empty() && saved.len() > 1000 {
+        eprintln!("almanac: not saving an empty mailbox over {} messages", saved.len());
+        return false;
+    }
+    match save_to(&db_path(), messages, saved) {
+        Ok(gone) => {
+            let mut state = STATE.lock().unwrap();
+            let state = state.get_or_insert_with(HashMap::new);
+            for id in &gone {
+                state.remove(id);
+            }
+            for m in messages {
+                state.insert(m.id, (m.folder.clone(), m.read, m.flagged));
+            }
+            for id in gone {
+                let _ = std::fs::remove_dir_all(attachment_dir(id));
+            }
+            SAVES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            true
+        }
+        Err(e) => {
+            eprintln!("almanac: couldn't save mail: {e}");
+            false
+        }
+    }
+}
+
+// ------------------------------------------------- reading on demand
+//
+// The mail isn't all read into memory: the list, the counts and lookups ask
+// the database for what's needed (a page of a mailbox, one message), from the
+// list's index (see open_at). Memory holds only messages just changed or
+// arrived, until they're saved (see Db::backed).
+
+/// The list's columns, in the order `row_message` reads them.
+const ROW_COLS: &str = "id, folder, source, uid, date, from_name, from_email, to_addr, cc, subject, preview, \
+                        read, flagged, attachments, raw_ref, remind_at, message_id, partial, in_reply_to, refs, reply_to";
+
+fn row_message(r: &rusqlite::Row) -> rusqlite::Result<Message> {
+    let attachments: String = r.get(13)?;
+    Ok(Message {
+        id: r.get(0)?,
+        folder: r.get(1)?,
+        source: r.get(2)?,
+        uid: r.get::<_, i64>(3)? as u32,
+        date: r.get(4)?,
+        from_name: r.get(5)?,
+        from_email: r.get(6)?,
+        to: r.get(7)?,
+        cc: r.get(8)?,
+        subject: r.get(9)?,
+        preview: r.get(10)?,
+        read: r.get(11)?,
+        flagged: r.get(12)?,
+        attachments: serde_json::from_str(&attachments).unwrap_or_default(),
+        raw_ref: r.get(14)?,
+        remind_at: r.get(15)?,
+        message_id: r.get(16)?,
+        partial: r.get(17)?,
+        in_reply_to: r.get(18)?,
+        references: r.get(19)?,
+        reply_to: r.get(20)?,
+        ..Default::default()
+    })
+}
+
+/// A value for a query's `?` (text or a number).
+pub type Arg = rusqlite::types::Value;
+
+/// Flag colours of the given messages (those not red).
+fn colors_of(c: &Connection, msgs: &mut [Message]) {
+    if !msgs.iter().any(|m| m.flagged) {
+        return;
+    }
+    let Ok(mut st) = c.prepare_cached("SELECT color FROM flag_colors WHERE id = ?1") else { return };
+    for m in msgs.iter_mut().filter(|m| m.flagged) {
+        m.flag_color = st.query_row(params![m.id], |r| r.get::<_, i64>(0)).map(|c| c.clamp(0, 6) as u8).unwrap_or(0);
+    }
+}
+
+/// A page of messages: those matching `filter` (SQL over the list's columns,
+/// with `args` for its ?1, ?2…), in `order`.
+pub fn rows(filter: &str, args: &[Arg], order: &str, limit: i64, offset: i64) -> Vec<Message> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let sql = format!("SELECT {ROW_COLS} FROM messages INDEXED BY messages_for_list WHERE {filter} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
+        let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let found = st.query_map(rusqlite::params_from_iter(args.iter()), row_message).map_err(|e| e.to_string())?;
+        let mut list: Vec<Message> = found.filter_map(Result::ok).collect();
+        drop(st);
+        colors_of(c, &mut list);
+        Ok(list)
+    })
+    .unwrap_or_default()
+}
+
+/// How many messages match `filter`.
+pub fn count(filter: &str, args: &[Arg]) -> i64 {
+    let path = db_path();
+    if !path.exists() {
+        return 0;
+    }
+    with_conn(&path, |c| {
+        let sql = format!("SELECT COUNT(*) FROM messages INDEXED BY messages_for_list WHERE {filter}");
+        c.query_row(&sql, rusqlite::params_from_iter(args.iter()), |r| r.get(0)).map_err(|e| e.to_string())
+    })
+    .unwrap_or(0)
+}
+
+/// One message (its list fields; the text is read with `text`).
+pub fn by_id(id: i64) -> Option<Message> {
+    let path = db_path();
+    if !path.exists() {
+        return None;
+    }
+    with_conn(&path, |c| {
+        // Its date from the row (it comes before the text), then the rest from the list's index.
+        let date: i64 = c.query_row("SELECT date FROM messages WHERE id = ?1", params![id], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let sql = format!("SELECT {ROW_COLS} FROM messages INDEXED BY messages_for_list WHERE date = ?1 AND id = ?2");
+        let mut m = c.query_row(&sql, params![date, id], row_message).map_err(|e| e.to_string())?;
+        colors_of(c, std::slice::from_mut(&mut m));
+        Ok(m)
+    })
+    .ok()
+}
+
+/// The message on the server at (source, folder, uid), if it's here.
+pub fn id_at(source: &str, folder: &str, uid: u32) -> Option<i64> {
+    let path = db_path();
+    if !path.exists() {
+        return None;
+    }
+    with_conn(&path, |c| {
+        c.query_row("SELECT id FROM messages WHERE source = ?1 AND folder = ?2 AND uid = ?3", params![source, folder, uid as i64], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    })
+    .ok()
+}
+
+/// Each folder's server UIDs of a live account's messages here.
+pub fn known_uids(source: &str) -> HashMap<String, Vec<u32>> {
+    let path = db_path();
+    let mut out: HashMap<String, Vec<u32>> = HashMap::new();
+    if !path.exists() {
+        return out;
+    }
+    let _ = with_conn(&path, |c| {
+        let mut st = c.prepare_cached("SELECT folder, uid FROM messages WHERE source = ?1 AND uid > 0").map_err(|e| e.to_string())?;
+        let rows = st.query_map(params![source], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u32))).map_err(|e| e.to_string())?;
+        for (f, u) in rows.flatten() {
+            out.entry(f).or_default().push(u);
+        }
+        Ok(())
+    });
+    out
+}
+
+/// Message counts by folder: (folder, read, flagged) → how many.
+/// Each folder's (all, unread, flagged) counts, from the table the database
+/// keeps (see open_at).
+pub fn folder_counts() -> Vec<(String, i64, i64, i64)> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let mut st = c.prepare_cached("SELECT folder, total, unread, flagged FROM folder_counts WHERE total > 0").map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(Result::ok).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// Flagged messages that have a colour other than red: (folder, colour).
+pub fn colored_flags() -> Vec<(String, u8)> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let mut st = c
+            .prepare_cached("SELECT (SELECT folder FROM messages WHERE id = f.id), f.color FROM flag_colors f WHERE (SELECT flagged FROM messages WHERE id = f.id) = 1")
+            .map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)?.clamp(0, 6) as u8))).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(Result::ok).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// The full-text search's words for a query ("" when it has none).
+pub fn match_expr(query: &str) -> String {
+    query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"*", w.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Read / flagged changes found on the server, for messages not in memory:
+/// written straight to the database.
+pub fn update_flags(source: &str, changes: &[(String, u32, bool, bool, u8)]) {
+    let path = db_path();
+    if changes.is_empty() || !path.exists() {
+        return;
+    }
+    let _ = with_conn(&path, |c| {
+        let tx = c.transaction().map_err(|e| e.to_string())?;
+        {
+            let mut find = tx.prepare_cached("SELECT id, read, flagged FROM messages WHERE source = ?1 AND folder = ?2 AND uid = ?3").map_err(|e| e.to_string())?;
+            let mut set = tx.prepare_cached("UPDATE messages SET read = ?2, flagged = ?3 WHERE id = ?1").map_err(|e| e.to_string())?;
+            let mut color = tx.prepare_cached("INSERT OR REPLACE INTO flag_colors(id, color) VALUES(?1, ?2)").map_err(|e| e.to_string())?;
+            let mut uncolor = tx.prepare_cached("DELETE FROM flag_colors WHERE id = ?1").map_err(|e| e.to_string())?;
+            for (folder, uid, read, flagged, c) in changes {
+                let Ok((id, was_read, was_flagged)) = find.query_row(params![source, folder, *uid as i64], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?, r.get::<_, bool>(2)?))) else {
+                    continue;
+                };
+                if was_read != *read || was_flagged != *flagged {
+                    set.execute(params![id, read, flagged]).map_err(|e| e.to_string())?;
+                }
+                if !flagged || *c == 0 {
+                    uncolor.execute(params![id]).map_err(|e| e.to_string())?;
+                } else if *c != crate::data::NO_COLOR {
+                    color.execute(params![id, *c as i64]).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())
+    });
+}
+
+/// Messages gone from the server (or from a mailbox or account that's gone),
+/// for those not in memory: deleted from the database with their attachments.
+/// `which` picks them: (folder, uid) pairs of `source`, or every message of
+/// `source` outside the `keep` folders, or all of `source`.
+pub enum Gone<'a> {
+    Uids(&'a [(String, u32)]),
+    FoldersNotIn(&'a [String]),
+    All,
+}
+pub fn remove(source: &str, which: Gone) -> Vec<i64> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    let ids: Vec<i64> = with_conn(&path, |c| {
+        let mut ids = Vec::new();
+        match which {
+            Gone::Uids(list) => {
+                let mut st = c.prepare_cached("SELECT id FROM messages WHERE source = ?1 AND folder = ?2 AND uid = ?3").map_err(|e| e.to_string())?;
+                for (f, u) in list {
+                    if let Ok(id) = st.query_row(params![source, f, *u as i64], |r| r.get::<_, i64>(0)) {
+                        ids.push(id);
+                    }
+                }
+            }
+            Gone::FoldersNotIn(keep) => {
+                // (The account's folders from the small counts table, not from every message.)
+                let mut st = c.prepare_cached("SELECT folder FROM folder_counts WHERE substr(folder, 1, length(?1) + 1) = ?1 || ':' AND total > 0").map_err(|e| e.to_string())?;
+                let folders: Vec<String> = st.query_map(params![source], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+                let mut of = c.prepare_cached("SELECT id FROM messages WHERE source = ?1 AND folder = ?2").map_err(|e| e.to_string())?;
+                for f in folders.iter().filter(|f| !keep.contains(f)) {
+                    ids.extend(of.query_map(params![source, f], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?.filter_map(Result::ok));
+                }
+            }
+            Gone::All => {
+                let mut st = c.prepare_cached("SELECT id FROM messages WHERE source = ?1").map_err(|e| e.to_string())?;
+                ids.extend(st.query_map(params![source], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?.filter_map(Result::ok));
+            }
+        }
+        if ids.is_empty() {
+            return Ok(ids);
+        }
+        let tx = c.transaction().map_err(|e| e.to_string())?;
+        {
+            let mut del = tx.prepare_cached("DELETE FROM messages WHERE id = ?1").map_err(|e| e.to_string())?;
+            let mut unindex = tx.prepare_cached("DELETE FROM search WHERE rowid = ?1").map_err(|e| e.to_string())?;
+            let mut uncolor = tx.prepare_cached("DELETE FROM flag_colors WHERE id = ?1").map_err(|e| e.to_string())?;
+            for id in &ids {
+                del.execute(params![id]).map_err(|e| e.to_string())?;
+                unindex.execute(params![id]).map_err(|e| e.to_string())?;
+                uncolor.execute(params![id]).map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(ids)
+    })
+    .unwrap_or_default();
+    if let Some(saved) = SAVED.lock().unwrap().as_mut() {
+        for id in &ids {
+            saved.remove(id);
+        }
+    }
+    for id in &ids {
+        let _ = std::fs::remove_dir_all(attachment_dir(*id));
+    }
+    ids
+}
+
+/// A message read from the database into memory (to be changed): noted as
+/// saved, so only real changes are written back.
+pub fn note_loaded(m: &Message) {
+    SAVED.lock().unwrap().get_or_insert_with(HashMap::new).insert(m.id, fingerprint(m));
+    STATE.lock().unwrap().get_or_insert_with(HashMap::new).insert(m.id, (m.folder.clone(), m.read, m.flagged));
+}
+
+/// Whether a message is tracked (read into memory, or saved from it, and not
+/// let go since): one not in memory any more is waiting to be deleted.
+pub fn is_tracked(id: i64) -> bool {
+    SAVED.lock().unwrap().as_ref().is_some_and(|s| s.contains_key(&id))
+}
+
+/// Every tracked message (see `is_tracked`).
+pub fn tracked_ids() -> std::collections::HashSet<i64> {
+    SAVED.lock().unwrap().as_ref().map(|s| s.keys().copied().collect()).unwrap_or_default()
+}
+
+/// A tracked message's folder, read and flagged as saved.
+pub fn saved_state(id: i64) -> Option<(String, bool, bool)> {
+    STATE.lock().unwrap().as_ref().and_then(|s| s.get(&id).cloned())
+}
+
+/// A live account's messages still waiting for their text: (id, folder, uid, date).
+pub fn partial_ids(source: &str) -> Vec<(i64, String, u32, i64)> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let mut st = c
+            .prepare_cached("SELECT id, folder, uid, date FROM messages INDEXED BY messages_for_list WHERE source = ?1 AND partial = 1 AND uid > 0 AND preview = ''")
+            .map_err(|e| e.to_string())?;
+        let rows = st.query_map(params![source], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u32, r.get(3)?))).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(Result::ok).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// The lowest server UID held for a folder (older mail is below it).
+pub fn lowest_uid(source: &str, folder: &str) -> u32 {
+    let path = db_path();
+    if !path.exists() {
+        return 0;
+    }
+    with_conn(&path, |c| {
+        c.query_row("SELECT MIN(uid) FROM messages WHERE source = ?1 AND folder = ?2 AND uid > 0", params![source, folder], |r| r.get::<_, Option<i64>>(0))
+            .map(|v| v.unwrap_or(0) as u32)
+            .map_err(|e| e.to_string())
+    })
+    .unwrap_or(0)
+}
+
+/// Messages by their Message-ID (a conversation's earlier messages).
+pub fn by_message_ids(ids: &[String]) -> Vec<Message> {
+    let path = db_path();
+    if ids.is_empty() || !path.exists() {
+        return Vec::new();
+    }
+    let found: Vec<i64> = with_conn(&path, |c| {
+        // (Kept as written, usually <in angle brackets>: both looked for.)
+        let mut st = c.prepare_cached("SELECT id FROM messages WHERE message_id IN (?1, ?2)").map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for mid in ids {
+            let bare = mid.trim().trim_matches(['<', '>']);
+            out.extend(st.query_map(params![bare, format!("<{bare}>")], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?.filter_map(Result::ok));
+        }
+        Ok(out)
+    })
+    .unwrap_or_default();
+    found.into_iter().filter_map(by_id).collect()
+}
+
+/// Messages let go from memory after saving: no longer tracked (so they
+/// aren't taken for deleted).
+pub fn forget(ids: &[i64]) {
+    if let Some(saved) = SAVED.lock().unwrap().as_mut() {
+        for id in ids {
+            saved.remove(id);
+        }
+    }
+    if let Some(state) = STATE.lock().unwrap().as_mut() {
+        for id in ids {
+            state.remove(id);
+        }
+    }
+}
+
+/// Everyone in the mail (for address suggestions): `f` with each message's
+/// folder, sender and recipients and date, newest first, up to `limit`.
+pub fn each_person_row(limit: i64, mut f: impl FnMut(&str, &str, &str, &str, &str, i64)) {
+    let path = db_path();
+    if !path.exists() {
+        return;
+    }
+    let _ = with_conn(&path, |c| {
+        let mut st = c
+            .prepare_cached("SELECT folder, from_name, from_email, to_addr, cc, date FROM messages INDEXED BY messages_for_list ORDER BY date DESC LIMIT ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = st.query(params![limit]).map_err(|e| e.to_string())?;
+        while let Ok(Some(r)) = rows.next() {
+            let get = |i: usize| r.get_ref(i).ok().and_then(|v| v.as_str().ok()).unwrap_or("").to_string();
+            f(&get(0), &get(1), &get(2), &get(3), &get(4), r.get(5).unwrap_or(0));
+        }
+        Ok(())
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saves_only_changes_and_reads_back() {
+        let dir = std::env::temp_dir().join(format!("almanac-mailstore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("mail.sqlite");
+        let mut msgs: Vec<Message> = (1..=3)
+            .map(|i| Message {
+                id: i,
+                folder: "live:a:mail/INBOX".into(),
+                subject: format!("Hello {i}"),
+                body: "Text ünïcode".into(),
+                date: 1_700_000_000 + i,
+                uid: i as u32,
+                attachments: vec!["report.pdf".into()],
+                partial: i == 3,
+                flagged: i == 2,
+                flag_color: if i == 2 { 4 } else { 0 },
+                ..Default::default()
+            })
+            .collect();
+        let mut saved = HashMap::new();
+        save_to(&path, &msgs, &mut saved).unwrap();
+        let back = load_from(&path).unwrap();
+        assert_eq!(back.len(), 3);
+        assert_eq!(back.iter().map(|m| (m.flagged, m.flag_color)).collect::<Vec<_>>(), vec![(false, 0), (true, 4), (false, 0)], "the flag's colour is kept");
+        // Memory gets a preview; the text stays in the database.
+        assert!(back[0].body.is_empty());
+        assert_eq!(back[0].preview, "Text ünïcode");
+        assert_eq!(text_at(&path, 1).unwrap().0, "Text ünïcode");
+        assert_eq!(back[0].attachments, vec!["report.pdf".to_string()]);
+        assert!(back[2].partial && !back[0].partial);
+        // Found by a word of its text (accents or not), and by a word's start.
+        assert_eq!(search_at(&path, "unicode").unwrap().len(), 3);
+        assert!(search_at(&path, "Hell").unwrap().contains(&2));
+        assert!(search_at(&path, "nowhere").unwrap().is_empty());
+
+        // Text dropped from memory, then a header change: the stored text stays.
+        for m in msgs.iter_mut() {
+            m.preview = "Text ünïcode".into();
+            m.body.clear();
+        }
+        save_to(&path, &msgs, &mut saved).unwrap();
+        // One changed, one removed: only those touch the database.
+        msgs[0].read = true;
+        msgs.remove(1);
+        let gone = save_to(&path, &msgs, &mut saved).unwrap();
+        assert_eq!(gone, vec![2]);
+        let back = load_from(&path).unwrap();
+        assert_eq!(back.len(), 2);
+        assert!(back.iter().find(|m| m.id == 1).unwrap().read);
+        assert_eq!(text_at(&path, 1).unwrap().0, "Text ünïcode", "a header change keeps the text");
+        assert!(!search_at(&path, "Hello").unwrap().contains(&2), "a removed message leaves the search index");
+        // Nothing changed: nothing written.
+        assert!(save_to(&path, &msgs, &mut saved).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// How long the list takes to read at start from the real file (read-only):
+    /// ALMANAC_REAL_DATA=~/.local/share/almanac cargo test --release list_read_time -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn list_read_time() {
+        let Some(dir) = std::env::var_os("ALMANAC_REAL_DATA").map(std::path::PathBuf::from) else { return };
+        let c = rusqlite::Connection::open_with_flags(dir.join("mail.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let t = std::time::Instant::now();
+        let n: i64 = c.query_row("SELECT count(*) FROM (SELECT id, folder, source, uid, date, from_name, from_email, to_addr, cc, subject, preview, read, flagged, attachments, raw_ref, remind_at, message_id, partial, in_reply_to, refs, reply_to FROM messages INDEXED BY messages_for_list)", [], |r| r.get(0)).unwrap();
+        eprintln!("list of {n}: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let f: i64 = c.query_row("SELECT count(*) FROM flag_colors", [], |r| r.get(0)).unwrap_or(0);
+        eprintln!("flag colours of {f}: {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn attachment_names_are_safe() {
+        assert_eq!(safe_name("../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(safe_name("a:b?.pdf"), "a_b_.pdf");
+        assert_eq!(safe_name(""), "attachment");
+    }
+}
