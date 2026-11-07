@@ -435,7 +435,7 @@ WebEngineView {
               + '.row{display:flex;gap:10px;align-items:flex-start;min-width:0}'
               + '.row .av{width:28px;height:28px;font-size:11px;margin-top:1px}'
               + '.row .rb{flex:1;min-width:0}.row .rt{display:flex;gap:8px;align-items:baseline}'
-              + '.row .rn{font-weight:600;font-size:12.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+              + '.row .rn{font-weight:600;font-size:12.5px;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
               + '.row .rd{flex:none;color:' + css(Theme.secondary) + ';font-size:11.5px}'
               + '.row .snip{margin-top:2px;font-size:12px;color:' + css(Theme.text) + ';line-height:1.4;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere}'
               + '.sum{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px;display:flex;gap:6px;min-width:0}'
@@ -443,7 +443,6 @@ WebEngineView {
               + '.msg:not(.det-on) .details{display:none}'
               + '.chev{font-size:11px;padding:0 2px}'
               // Closed rows: a blue ▸ before the name (the open message's ▾ closes it).
-              + '.row .rchev{flex:none;color:' + css(Theme.accent) + ';font-size:11px;width:9px;margin-right:-4px}'
               + '.top .acts{margin-left:6px;align-self:center}'
               // People on To and Cc as bubbles, as in compose (click or right-click: copy, write to).
               + '.rcpt{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:3px;font-size:12px}.rcpt .lbl{color:' + css(Theme.tertiary) + ';margin-right:2px}'
@@ -510,7 +509,7 @@ WebEngineView {
             h += '<div class="msg' + (col ? ' col' : '') + (det ? ' det-on' : '') + '" data-i="' + i + '"' + (m.read ? '' : ' data-unread="1"') + '>'
                // The one-line form: who, the start of the text, when.
                + '<div class="row" data-toggle="' + i + '"><div class="av">' + esc(Theme.initials(name)) + '</div>'
-               + '<div class="rb"><div class="rt"><span class="rchev" title="Open this message">▸</span><span class="rn">' + esc(name) + '</span><span class="rd">' + esc(Theme.fmtListDate(m.date)) + '</span></div>'
+               + '<div class="rb"><div class="rt"><span class="rn">' + esc(name) + '</span><span class="chev" title="Open this message">▸</span><span class="grow"></span><span class="rd">' + esc(Theme.fmtListDate(m.date)) + '</span></div>'
                + '<div class="snip">' + esc(m.gist || snippet(m)) + '</div></div></div>'
                + '<div class="full"><div class="hdr"><div class="av">' + esc(Theme.initials(name)) + '</div><div class="who">'
                // Name, the message's buttons and its flag; the date; who it went to, with
