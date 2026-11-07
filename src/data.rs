@@ -399,6 +399,10 @@ pub struct Db {
 /// A live account's messages still waiting for their text, from the database
 /// (inbox first, newest first), for the download on the sync's thread.
 pub fn partial_wanted(source: &str, folders: &[Folder]) -> Vec<crate::live::Wanted> {
+    let filled = crate::mailstore::fill_from_copies(source);
+    if filled > 0 {
+        eprintln!("almanac: {filled} message(s) filled in from their copies in other folders (not downloaded again)");
+    }
     let rank = |k: &str| ["inbox", "sent", "drafts", "archive", "other", "junk", "trash"].iter().position(|x| *x == k).unwrap_or(4);
     let by_id: std::collections::HashMap<&str, &Folder> = folders.iter().map(|f| (f.id.as_str(), f)).collect();
     let mut list: Vec<(usize, i64, crate::live::Wanted)> = crate::mailstore::partial_ids(source)
@@ -4350,6 +4354,35 @@ mod backed_tests {
 
     /// The tests here share one database file: one at a time.
     static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A message waiting for its text in one Gmail label is filled in from its
+    /// copy already downloaded in another (All Mail), not fetched again.
+    #[test]
+    fn copies_in_other_folders_are_filled_not_downloaded() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::create_dir_all(data_dir());
+        let src = "live:dup";
+        crate::mailstore::remove(src, crate::mailstore::Gone::All);
+        let mut db = Db { backed: true, ..Default::default() };
+        db.accounts.push(Account { id: "live:dup:mail".into(), name: "Dup".into(), email: "me@dup.example".into(), source: src.into() });
+        for (id, kind, path) in [("live:dup:mail/[Gmail]/All Mail", "archive", "[Gmail]/All Mail"), ("live:dup:mail/[Gmail]/Important", "other", "[Gmail]/Important")] {
+            db.folders.push(Folder { id: id.into(), account: "live:dup:mail".into(), name: path.into(), kind: kind.into(), path: path.into() });
+        }
+        db.next_id = 800_000;
+        let (a, b) = (db.new_id(), db.new_id());
+        db.messages.push(Message { id: a, folder: "live:dup:mail/[Gmail]/All Mail".into(), source: src.into(), uid: 1, date: 1_760_000_000,
+            subject: "Receipt".into(), body: "Thanks for your order.".into(), message_id: "<order-1@shop.example>".into(), ..Default::default() });
+        db.messages.push(Message { id: b, folder: "live:dup:mail/[Gmail]/Important".into(), source: src.into(), uid: 9, date: 1_760_000_000,
+            subject: "Receipt".into(), partial: true, message_id: "<order-1@shop.example>".into(), ..Default::default() });
+        assert!(db.save());
+        db.release_saved();
+        // (On the sync's own thread, as the app does it: it can take a while.)
+        let wanted = partial_wanted(src, &db.folders);
+        assert!(wanted.is_empty(), "the copy is filled from All Mail, not downloaded: {wanted:?}");
+        assert_eq!(db.thread(&format!("folder:live:dup:mail/[Gmail]/Important"), b)[0]["body"], "Thanks for your order.");
+        assert!(crate::mailstore::search("order").is_some_and(|hits| hits.contains(&b)), "searchable too");
+        crate::mailstore::remove(src, crate::mailstore::Gone::All);
+    }
 
     /// A conversation whose first message isn't here (GitHub notifications all
     /// point at a pull request's opening message): opening the newest shows all.

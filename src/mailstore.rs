@@ -810,6 +810,61 @@ pub fn saved_state(id: i64) -> Option<(String, bool, bool)> {
     STATE.lock().unwrap().as_ref().and_then(|s| s.get(&id).cloned())
 }
 
+/// Messages waiting for their text that are already here in another folder
+/// (Gmail shows one message in every label it has: Inbox, All Mail, Important,
+/// …), filled in from that copy instead of being downloaded again, as
+/// Thunderbird does for Gmail. Returns how many were filled.
+pub fn fill_from_copies(source: &str) -> usize {
+    let path = db_path();
+    if !path.exists() {
+        return 0;
+    }
+    let _t = crate::Timed::new("filling in messages from their copies");
+    with_conn(&path, |c| {
+        let pairs: Vec<(i64, i64)> = {
+            let mut st = c
+                .prepare_cached(
+                    "SELECT p.id, (SELECT q.id FROM messages q WHERE q.message_id = p.message_id AND q.id <> p.id AND q.preview <> '' LIMIT 1)
+                     FROM messages p WHERE p.source = ?1 AND p.partial = 1 AND p.uid > 0 AND p.preview = '' AND p.message_id <> ''",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = st.query_map(params![source], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))).map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok).filter_map(|(a, b)| b.map(|b| (a, b))).collect()
+        };
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        let tx = c.transaction().map_err(|e| e.to_string())?;
+        {
+            // (Still partial when the copy had attachments: they're fetched for
+            // this one when it's opened.)
+            let mut copy = tx
+                .prepare_cached(
+                    "UPDATE messages SET (body, html, invite, preview, attachments, partial) =
+                         (SELECT body, html, invite, preview, attachments, CASE WHEN partial = 0 AND attachments = '[]' THEN 0 ELSE 1 END
+                          FROM messages WHERE id = ?2)
+                     WHERE id = ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut unindex = tx.prepare_cached("DELETE FROM search WHERE rowid = ?1").map_err(|e| e.to_string())?;
+            let mut index = tx
+                .prepare_cached(
+                    "INSERT INTO search(rowid, subject, people, body)
+                     SELECT id, subject, from_name || ' ' || from_email || ' ' || to_addr || ' ' || cc, body FROM messages WHERE id = ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            for (to, from) in &pairs {
+                copy.execute(params![to, from]).map_err(|e| e.to_string())?;
+                let _ = unindex.execute(params![to]);
+                index.execute(params![to]).map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(pairs.len())
+    })
+    .unwrap_or(0)
+}
+
 /// A live account's messages still waiting for their text: (id, folder, uid, date).
 pub fn partial_ids(source: &str) -> Vec<(i64, String, u32, i64)> {
     let path = db_path();
