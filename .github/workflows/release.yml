@@ -22,7 +22,7 @@ permissions:
   actions: write
 
 env:
-  # The newest Qt 6 release (Almanac follows nixos-unstable's Qt on Linux).
+  # The newest Qt 6 release (Windows takes the newest one aqt can install).
   QT_VERSION: '6.*'
   # (qtserialport: Qt Positioning's NMEA plugin needs it)
   QT_MODULES: 'qtwebengine qtwebchannel qtpositioning qtpdf qtserialport'
