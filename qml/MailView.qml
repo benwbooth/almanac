@@ -1156,7 +1156,7 @@ Item {
                     property bool strong: sel && messageList.activeFocus
                     width: ListView.view.width
                     // As tall as what's in it (a subject can take two lines).
-                    height: mail.classic ? 30 : Math.max(86, rowText.implicitHeight + 10)
+                    height: mail.classic ? 30 : Math.max(86, rowText.implicitHeight + 18)
                     color: "transparent"
                     property color face: sel ? (messageList.activeFocus ? Theme.accentFill : Theme.accentSoft) : Theme.window
                     property color main: strong ? Theme.accentInk : Theme.text
