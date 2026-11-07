@@ -1149,17 +1149,31 @@ pub fn fetch_texts(
             Err(e) => eprintln!("almanac: opening a message the quick way: {e}"),
         }
     }
-    let done = AtomicUsize::new(0);
-    let total = wanted.len();
+    // Gmail's daily allowance already used: said straight away (finding out
+    // after connecting took a minute of "0%" on a slowed-down account).
+    if lane == Lane::Whole && is_gmail(a) && downloaded_today(&a.id, 0) >= GMAIL_DAILY_BYTES {
+        progress(format!("{}: older mail continues tomorrow (Gmail allows only so much downloading a day)", a.name));
+        return Ok(());
+    }
     let label = match lane {
         Lane::Whole => format!("{}: downloading older mail in the background", a.name),
         _ => format!("{}: downloading new mail", a.name),
     };
-    if lane != Lane::Opened && total > TEXT_BATCH {
-        progress(counted(&label, 0, total));
+    // The long download counts the whole account (what's already here as done),
+    // not just what's left, which read "0% of 60,736" each time it went on.
+    let left = wanted.len();
+    let (base, total) = if lane == Lane::Whole {
+        let all = crate::mailstore::count("source = ?1 AND uid > 0", &[crate::mailstore::Arg::Text(a.source())]).max(0) as usize;
+        (all.saturating_sub(left), all.max(left))
+    } else {
+        (0, left)
+    };
+    let done = AtomicUsize::new(base);
+    if lane != Lane::Opened && left > TEXT_BATCH {
+        progress(counted(&label, base, total));
     }
     let job = Job { a, lane, round, deliver, progress, done: &done, total, label: &label, waited_ms: std::sync::atomic::AtomicU64::new(0) };
-    if lane == Lane::Whole && total > 200 {
+    if lane == Lane::Whole && left > 200 {
         // Several connections at once, each with its share (the newest first in each).
         std::thread::scope(|scope| {
             for k in 0..WHOLE_CONNECTIONS {
