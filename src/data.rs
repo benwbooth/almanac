@@ -2058,11 +2058,27 @@ impl Db {
 
     /// Puts downloaded text into messages that only had their headers.
     pub fn fill_texts(&mut self, texts: Vec<crate::live::Text>) -> bool {
+        /// The preview of a message whose text just arrived: from its plain text,
+        /// else its HTML, else an invisible mark. Never empty: an empty preview
+        /// means "text not fetched yet", and messages with no text of their own
+        /// (photos with an empty line of HTML) were fetched again on every check
+        /// for new mail, ahead of the new mail itself.
+        fn fetched_preview(body: &str, html: &str) -> String {
+            let p = strip_preview(body);
+            if !p.trim().is_empty() {
+                return p;
+            }
+            let h = strip_preview(&crate::mime::html_to_text(html));
+            if !h.trim().is_empty() {
+                return h;
+            }
+            "\u{200B}".into()
+        }
         let _t = crate::Timed::new("filling in message text");
         let mut any = false;
         for t in texts {
             if let Some(m) = self.msg_mut(t.id).filter(|m| m.partial) {
-                m.preview = strip_preview(&t.body);
+                m.preview = fetched_preview(&t.body, &t.html);
                 m.body = t.body;
                 m.html = t.html;
                 m.invite = t.invite;
@@ -4471,5 +4487,23 @@ mod notes_tests {
         let id = d.save_event(&serde_json::json!({"id": id, "title": "A", "start": "2026-01-05T10:00", "end": "2026-01-05T11:00",
             "notes": "Just words", "notesHtml": page("<p style=\" margin-top:0px;\">Just words</p>")}));
         assert_eq!(d.events.iter().find(|e| e.id == id).unwrap().notes_html, "");
+    }
+}
+
+#[cfg(test)]
+mod fetched_text_tests {
+    use super::*;
+
+    /// A message whose text is only an empty line of HTML (photos sent with no
+    /// words) isn't asked for again once fetched.
+    #[test]
+    fn a_message_without_words_is_fetched_once() {
+        let mut db = Db::empty();
+        db.folders.push(Folder { id: "live:x:mail/INBOX".into(), account: "live:x:mail".into(), name: "Inbox".into(), kind: "inbox".into(), path: "INBOX".into() });
+        db.messages.push(Message { id: 9001, folder: "live:x:mail/INBOX".into(), source: "live:x".into(), uid: 7, partial: true, subject: "Ergo pics".into(), ..Default::default() });
+        assert_eq!(db.partial_messages("live:x").len(), 1, "waiting for its text");
+        db.fill_texts(vec![crate::live::Text { id: 9001, body: String::new(), html: "<div dir=\"ltr\"><br></div>".into(), invite: String::new(), attachments: vec!["photo.jpg".into()], complete: false }]);
+        assert!(db.partial_messages("live:x").is_empty(), "fetched: not asked for again");
+        assert!(db.messages.iter().any(|m| m.id == 9001 && !m.preview.is_empty() && m.partial), "kept partial (the rest comes when opened), preview set");
     }
 }
