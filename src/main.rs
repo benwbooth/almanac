@@ -194,7 +194,11 @@ fn main() {
     {
         let flags = std::env::var("QTWEBENGINE_CHROMIUM_FLAGS").unwrap_or_default();
         let mut add = Vec::new();
-        for f in ["--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--disable-background-timer-throttling"] {
+        // (And mail pages composited on the processor, handed over as pictures
+        // rather than a graphics surface shared with Qt that could be lost while
+        // the window was hidden, leaving the pane black; cheap for mail. Qt's own
+        // drawing keeps the graphics card.)
+        for f in ["--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows", "--disable-background-timer-throttling", "--disable-gpu-compositing"] {
             if !flags.contains(f) {
                 add.push(f.to_string());
             }

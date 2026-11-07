@@ -52,6 +52,14 @@ public:
     {
         if (e->type() == QEvent::Expose) {
             if (auto* w = qobject_cast<QQuickWindow*>(o)) {
+                // Keep each window's graphics and scene while it's hidden: released
+                // (Qt's default allows it), the message pane's picture from the
+                // browser engine could be lost and come back black.
+                if (!w->property("_craftPersistent").toBool()) {
+                    w->setProperty("_craftPersistent", true);
+                    w->setPersistentGraphics(true);
+                    w->setPersistentSceneGraph(true);
+                }
                 const bool now = w->isExposed();
                 const QVariant was = w->property("_craftExposed");
                 w->setProperty("_craftExposed", now);
