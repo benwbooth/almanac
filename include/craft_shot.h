@@ -39,6 +39,34 @@ inline bool craftPrintPdf(const QString& html, const QString& path)
 #endif
 #endif
 
+// A window hidden by the desktop (on another virtual desktop, fully covered,
+// in the overview) stops being drawn; shown again without getting the focus,
+// nothing told the page, and the browser engine's message pane stayed black
+// until clicked. This notices a window coming back into view and tells it
+// (its QML `reexposed()` signal), so the pane draws again.
+class CraftExposeWatch : public QObject {
+public:
+    using QObject::QObject;
+    bool eventFilter(QObject* o, QEvent* e) override
+    {
+        if (e->type() == QEvent::Expose) {
+            if (auto* w = qobject_cast<QQuickWindow*>(o)) {
+                const bool now = w->isExposed();
+                const QVariant was = w->property("_craftExposed");
+                w->setProperty("_craftExposed", now);
+                if (now && was.isValid() && !was.toBool()) {
+                    qWarning("almanac: window shown again (it was hidden by the desktop)");
+                    if (w->metaObject()->indexOfSignal("reexposed()") >= 0)
+                        QMetaObject::invokeMethod(w, "reexposed", Qt::QueuedConnection);
+                } else if (!now && (!was.isValid() || was.toBool())) {
+                    qWarning("almanac: window hidden by the desktop");
+                }
+            }
+        }
+        return false;
+    }
+};
+
 // The application object (a widgets one, so print dialogs work).
 inline void craftCreateApp(const QString& plugins, const QString& session)
 {
@@ -55,6 +83,7 @@ inline void craftCreateApp(const QString& plugins, const QString& session)
         argc = 3;
     }
     new QApplication(argc, argv);
+    qApp->installEventFilter(new CraftExposeWatch(qApp));
     QCoreApplication::setApplicationName(QStringLiteral("Almanac"));
     QCoreApplication::setOrganizationName(QStringLiteral("Craft Anything"));
     // Inside a Flatpak the desktop file is named after the app ID.

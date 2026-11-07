@@ -7,6 +7,9 @@ import QtQuick.Layouts
 // list, as in Apple Mail. With more than one, they're in tabs, which can be
 // dragged along, out into a window of their own, or into another window.
 Window {
+    // Back in view after the desktop hid it (on another desktop, covered…): see
+    // CraftExposeWatch in include/craft_shot.h.
+    signal reexposed()
     id: w
     property var store
     // The Mail view: replies, forwards and the reading settings come from it.

@@ -8,6 +8,9 @@ import QtCore
 import org.craft.pim
 
 ApplicationWindow {
+    // Back in view after the desktop hid it (on another desktop, covered…): see
+    // CraftExposeWatch in include/craft_shot.h.
+    signal reexposed()
     id: win
     width: 1280
     height: 800

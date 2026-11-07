@@ -26,6 +26,8 @@ WebEngineView {
         target: web.Window.window
         function onActiveChanged() { if (web.Window.window && web.Window.window.active) web.redraw() }
         function onVisibilityChanged() { web.redraw() }
+        // Back in view without getting the focus (the black-pane case).
+        function onReexposed() { web.paneLog("window shown again"); web.redraw() }
     }
     Connections {
         target: Qt.application
