@@ -442,6 +442,8 @@ WebEngineView {
               + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}'
               + '.msg:not(.det-on) .details{display:none}'
               + '.chev{font-size:11px;padding:0 2px}'
+              // Closed rows: a blue ▸ before the name (the open message's ▾ closes it).
+              + '.row .rchev{flex:none;color:' + css(Theme.accent) + ';font-size:11px;width:9px;margin-right:-4px}'
               + '.top .acts{margin-left:6px;align-self:center}'
               // People on To and Cc as bubbles, as in compose (click or right-click: copy, write to).
               + '.rcpt{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:3px;font-size:12px}.rcpt .lbl{color:' + css(Theme.tertiary) + ';margin-right:2px}'
@@ -508,7 +510,7 @@ WebEngineView {
             h += '<div class="msg' + (col ? ' col' : '') + (det ? ' det-on' : '') + '" data-i="' + i + '"' + (m.read ? '' : ' data-unread="1"') + '>'
                // The one-line form: who, the start of the text, when.
                + '<div class="row" data-toggle="' + i + '"><div class="av">' + esc(Theme.initials(name)) + '</div>'
-               + '<div class="rb"><div class="rt"><span class="rn">' + esc(name) + '</span><span class="rd">' + esc(Theme.fmtListDate(m.date)) + '</span></div>'
+               + '<div class="rb"><div class="rt"><span class="rchev" title="Open this message">▸</span><span class="rn">' + esc(name) + '</span><span class="rd">' + esc(Theme.fmtListDate(m.date)) + '</span></div>'
                + '<div class="snip">' + esc(m.gist || snippet(m)) + '</div></div></div>'
                + '<div class="full"><div class="hdr"><div class="av">' + esc(Theme.initials(name)) + '</div><div class="who">'
                // Name, the message's buttons and its flag; the date; who it went to, with
