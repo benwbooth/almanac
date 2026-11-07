@@ -93,11 +93,13 @@ WebEngineView {
         id: shrinkBack
         interval: 50
         onTriggered: {
-            // A fresh frame without any layout: a tiny invisible fixed dot's opacity
-            // changed and back (compositing only), and an outline that changes nothing.
+            // A fresh frame of the whole pane without any layout: an invisible layer
+            // over all of it (0.2% dark) has its opacity changed and back, which the
+            // engine composites anew everywhere (a 1 px dot only redrew that dot, and
+            // the pane could stay black), plus an outline that changes nothing.
             web.runJavaScript("(function(d) { if (!d || !document.body) return;"
                               + " var k = document.getElementById('almanac-kick'); if (!k) { k = document.createElement('div'); k.id = 'almanac-kick';"
-                              + " k.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none;opacity:1;will-change:opacity'; document.body.appendChild(k) }"
+                              + " k.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;background:rgba(0,0,0,0.002);opacity:1;will-change:opacity;z-index:2147483647'; document.body.appendChild(k) }"
                               + " k.style.opacity = '0.999'; d.style.outline = '0 solid transparent';"
                               + " requestAnimationFrame(function() { k.style.opacity = '1'; d.style.outline = ''; }); })(document.documentElement)")
             web.update()
@@ -105,6 +107,14 @@ WebEngineView {
         }
     }
     Timer { id: nextPass; interval: 350; onTriggered: web.redrawPass() }
+    // Also while the window isn't the one in use: the pane could go black with
+    // no sign of it at all (left alone for a while), so it's nudged now and then.
+    Timer {
+        interval: 15000
+        repeat: true
+        running: web.visible && !!web.Window.window && !web.Window.window.active
+        onTriggered: { web.redrawPasses = 1; if (!shrinkBack.running && !nextPass.running) web.redrawPass() }
+    }
     property var messages: []
     property string subject: ""
     property bool formatted: true
