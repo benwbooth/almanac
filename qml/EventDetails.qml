@@ -29,13 +29,13 @@ Popup {
     readonly property var end: ev && ev.end ? Theme.parseDT(ev.end) : null
     readonly property string when: {
         if (!start || !end) return ""
-        var long = function(x) { return x.toLocaleDateString(Qt.locale(), Locale.LongFormat) }
+        var longDate = function(x) { return x.toLocaleDateString(Qt.locale(), Locale.LongFormat) }
         if (ev.allDay) {
             var last = Theme.addDays(end, -1)
-            return last > start ? long(start) + " – " + long(last) : long(start) + ", all day"
+            return last > start ? longDate(start) + " – " + longDate(last) : longDate(start) + ", all day"
         }
-        if (Theme.isoDate(start) === Theme.isoDate(end)) return long(start) + "\n" + Theme.fmtTime(start) + " – " + Theme.fmtTime(end)
-        return long(start) + ", " + Theme.fmtTime(start) + " –\n" + long(end) + ", " + Theme.fmtTime(end)
+        if (Theme.isoDate(start) === Theme.isoDate(end)) return longDate(start) + "\n" + Theme.fmtTime(start) + " – " + Theme.fmtTime(end)
+        return longDate(start) + ", " + Theme.fmtTime(start) + " –\n" + longDate(end) + ", " + Theme.fmtTime(end)
     }
     readonly property string repeatText: {
         var r = ev && ev.rrule ? ev.rrule : ""
