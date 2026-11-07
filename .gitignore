@@ -11,3 +11,4 @@ result-*
 .env.*
 oauth-clients.json
 *.local.json
+aqtinstall.log
