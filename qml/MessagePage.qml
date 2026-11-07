@@ -109,6 +109,11 @@ WebEngineView {
     // details (To, Cc, address) are shown, by message id. Kept across reloads.
     property var expandedState: ({})
     property var detailsState: ({})
+    // Where to scroll once drawn: a conversation newly opened goes to its first
+    // unread message (or its newest); drawn again (mail arriving, a message
+    // marked read) it stays where it was (keepScroll, read from the page first).
+    property string shownConv: ""
+    property real keepScroll: -1
     // Senders whose remote content always loads (Settings › Privacy).
     property var remoteSenders: []
     // Pictures and PDFs to show inside each message: a function (message id
@@ -498,7 +503,7 @@ WebEngineView {
             var ccCount = parseAddresses(m.cc || "").length
             var toLine = (people.length ? "To: " + people.slice(0, 3).join(", ") + (people.length > 3 ? " & " + (people.length - 3) + " more" : "") : "")
                        + (ccCount ? (people.length ? " · " : "") + "Cc: " + ccCount : "")
-            h += '<div class="msg' + (col ? ' col' : '') + (det ? ' det-on' : '') + '" data-i="' + i + '">'
+            h += '<div class="msg' + (col ? ' col' : '') + (det ? ' det-on' : '') + '" data-i="' + i + '"' + (m.read ? '' : ' data-unread="1"') + '>'
                // The one-line form: who, the start of the text, when.
                + '<div class="row" data-toggle="' + i + '"><div class="av">' + esc(Theme.initials(name)) + '</div>'
                + '<span class="rn">' + esc(name) + '</span><span class="snip">' + esc(snippet(m)) + '</span>'
@@ -610,6 +615,14 @@ WebEngineView {
            + '[].forEach.call(document.querySelectorAll(".msg[data-i]"),function(el){if(setOpen(el,open))changed.push(el.getAttribute("data-i"))});'
            + 'if(changed.length)tell("all",changed[0],open)}});'
            + '[].forEach.call(document.querySelectorAll(".msg.det-on [data-det]"),function(d){d.textContent="Hide Details"});'
+           // Scrolled into place once laid out (again as frames fill in), unless the
+           // person scrolls first: the first unread message of a conversation (its
+           // newest when all are read) at the top, or the same place as before.
+           + 'var KEEP=' + web.keepScroll + ',moved=false;'
+           + '["wheel","keydown","mousedown","touchstart"].forEach(function(t){addEventListener(t,function(){moved=true},{passive:true,capture:true})});'
+           + 'function place(){if(moved)return;if(KEEP>=0){scrollTo(0,KEEP);return}var ms=document.querySelectorAll(".msg[data-i]");if(ms.length<2)return;'
+           + 'var t=document.querySelector(".msg[data-unread]")||ms[ms.length-1];scrollTo(0,Math.max(0,t.offsetTop-8))}'
+           + 'place();setTimeout(place,250);setTimeout(place,700);setTimeout(place,1500);'
            // Shown as soon as the email's text is there, not when every picture has
            // arrived (a slow or unreachable picture server would keep the whole
            // message hidden until it gave up): sized and tinted as soon as its
@@ -718,6 +731,18 @@ WebEngineView {
         if (key === shownKey) return
         paneLog("page reloaded (" + web.messages.length + " message(s))")
         shownKey = key
+        var conv = web.messages.length ? web.messages[0].id + "|" + web.subject : ""
+        if (conv !== "" && conv === web.shownConv) {
+            // The same conversation again: keep the place it's scrolled to.
+            web.runJavaScript("window.scrollY", function(y) { web.keepScroll = y || 0; web.loadPage(pv) })
+            return
+        }
+        web.shownConv = conv
+        web.keepScroll = -1
+        loadPage(pv)
+    }
+    function loadPage(pv) {
+        if (typeof web.page !== "function") return
         web.previews = pv
         var doc = page()
         var file = doc.length > 1800000 && web.store ? web.store.pageFile(web.slot, doc) : ""
