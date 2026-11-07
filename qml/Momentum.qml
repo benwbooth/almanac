@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 // Scrolling with momentum for a Flickable or ListView (Linux trackpads and
 // mouse wheels don't glide by themselves): the list follows the fingers,
@@ -43,6 +44,15 @@ WheelHandler {
         lastSetY = Math.max(lowest(), Math.min(highest(), flick.contentY + d))
         flick.contentY = lastSetY
         moving = false
+        showBar()
+    }
+    // Setting contentY doesn't count as the list moving, so its scroll bar
+    // wouldn't show: show it while scrolling, and let it fade a moment after.
+    readonly property ScrollBar bar: flick.ScrollBar.vertical
+    function showBar() { if (!bar) return; bar.active = true; barTimer.restart() }
+    property Timer barTimer: Timer {
+        interval: 300
+        onTriggered: if (m.bar && !m.bar.hovered && !m.bar.pressed) m.bar.active = false
     }
     function stop(why) { if (glide.running) note("stop " + (why || "")); glide.stop(); velocity = 0 }
     // Started with --trace-scroll: every swipe is written to the log
