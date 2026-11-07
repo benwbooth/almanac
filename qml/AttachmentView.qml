@@ -43,7 +43,8 @@ Item {
         return null
     }
     function show() {
-        if (!picture) { page.url = fileUrl; return }
+        // PDFs start with the viewer's side panel (page thumbnails, contents) closed.
+        if (!picture) { page.url = /\.pdf$/i.test(v.name) && fileUrl !== "" && fileUrl.indexOf("#") < 0 ? fileUrl + "#navpanes=0" : fileUrl; return }
         page.loadHtml('<!doctype html><html><body style="margin:0;background:' + Theme.window + ';display:flex;align-items:center;justify-content:center;min-height:100vh">'
                       + '<img style="max-width:100%;max-height:100vh;object-fit:contain" src="data:' + picture.mime + ';base64,' + picture.data + '"></body></html>')
     }
