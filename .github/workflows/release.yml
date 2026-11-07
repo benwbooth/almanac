@@ -156,6 +156,7 @@ jobs:
           cp target/release/almanac "$app/Contents/MacOS/almanac"
           cp packaging/icons/almanac.icns "$app/Contents/Resources/almanac.icns"
           sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
           "$QT_ROOT_DIR/bin/macdeployqt" "$app" -qmldir=qml -always-overwrite -verbose=1
           # Not notarized: sign ad hoc so Apple Silicon will run it at all.
           # Inside out: libraries, nested helper apps, frameworks, then the app.

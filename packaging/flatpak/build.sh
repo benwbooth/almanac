@@ -38,3 +38,4 @@ install -Dm755 target/release/almanac /app/bin/almanac
 install -Dm644 packaging/linux/io.github.benwbooth.Almanac.desktop /app/share/applications/io.github.benwbooth.Almanac.desktop
 install -Dm644 packaging/linux/io.github.benwbooth.Almanac.metainfo.xml /app/share/metainfo/io.github.benwbooth.Almanac.metainfo.xml
 install -Dm644 icons/almanac.svg /app/share/icons/hicolor/scalable/apps/io.github.benwbooth.Almanac.svg
+install -Dm644 packaging/icons/almanac-512.png /app/share/icons/hicolor/512x512/apps/io.github.benwbooth.Almanac.png

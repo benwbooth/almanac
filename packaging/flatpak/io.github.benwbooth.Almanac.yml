@@ -9,6 +9,9 @@ base-version: '@KDE@'
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: almanac
+# Skip the AppStream catalogue (only Flathub-style software centres read it;
+# Ubuntu's appstreamcli can't read the files on the build runner).
+appstream-compose: false
 finish-args:
   - --share=ipc
   - --share=network
