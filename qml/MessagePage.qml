@@ -58,6 +58,19 @@ WebEngineView {
     onVisibleChanged: paneLog("page visible changed")
     onLifecycleStateChanged: paneLog("lifecycle state changed")
     onRecommendedStateChanged: paneLog("recommended state changed")
+    // The page tells which messages were opened or closed, and whose details are
+    // shown, through its title ("state/<message>/<open|details|all>/<1|0>/<n>"):
+    // kept, so the next redraw keeps them.
+    onTitleChanged: {
+        var p = String(web.title).split("/")
+        if (p[0] !== "state") return
+        var m = web.messages[parseInt(p[1])]
+        if (!m) return
+        var on = p[3] === "1"
+        if (p[2] === "open") web.expandedState[m.id] = on
+        else if (p[2] === "details") web.detailsState[m.id] = on
+        else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
+    }
     onLoadingChanged: function(info) { paneLog("loading " + ["started", "stopped", "succeeded", "failed"][info.status] + (info.errorString ? " " + info.errorString : "")) }
     onRenderProcessTerminated: function(status, code) { paneLog("render process ended, status " + status + " code " + code) }
     property int redrawPasses: 0
@@ -92,6 +105,10 @@ WebEngineView {
     property bool darkMessages: true
     property bool loadRemoteAlways: false
     property var remoteLoaded: ({})
+    // In a conversation: which messages were opened or closed by hand, and whose
+    // details (To, Cc, address) are shown, by message id. Kept across reloads.
+    property var expandedState: ({})
+    property var detailsState: ({})
     // Senders whose remote content always loads (Settings › Privacy).
     property var remoteSenders: []
     // Pictures and PDFs to show inside each message: a function (message id
@@ -216,6 +233,13 @@ WebEngineView {
         }
         flush()
         return out
+    }
+    // The start of a message's text, on one line (for a closed message).
+    function snippet(m) {
+        var t = m.body || (m.html ? String(m.html).replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ")
+                                           .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">") : "")
+        t = t.split("\n").filter(function(l) { return !/^\s*>/.test(l) }).join(" ")
+        return t.replace(/\s+/g, " ").trim().slice(0, 220)
     }
     function chips(i, text) {
         return parseAddresses(text).map(function(a) {
@@ -395,6 +419,23 @@ WebEngineView {
               + '.av{width:40px;height:40px;border-radius:20px;background:linear-gradient(#9cc0fa,#5b8def);color:#fff;font-weight:600;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none}'
               + '.who{flex:1;min-width:0}.top{display:flex;flex-wrap:nowrap;gap:2px 8px;align-items:baseline;min-width:0}.name{flex:0 1 auto;font-weight:700;font-size:14px;color:' + css(Theme.text) + ';text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:40px}'
               + '.grow{flex:1}.when{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px}.fmtline{margin-top:3px}'
+              // Compact, as in Apple Mail: in a conversation older messages are one line
+              // each (opened with a click), and an open one's header is short, with
+              // its people and address under Details.
+              + '.convbar{display:flex;gap:14px;align-items:center;margin:-8px 0 12px;font-size:12px;color:' + css(Theme.secondary) + '}'
+              + '.convbar a,.det,.chev{color:' + css(Theme.accent) + ';text-decoration:none}'
+              + '.msg.col{padding:8px 12px;margin-bottom:6px;cursor:pointer}.msg.col:hover{background:' + css(Theme.hover) + '}'
+              + '.msg.col .full,.msg:not(.col) .row{display:none}'
+              + '.row{display:flex;gap:10px;align-items:center;min-width:0}'
+              + '.row .av{width:26px;height:26px;font-size:11px}'
+              + '.row .rn{font-weight:600;flex:none;max-width:35%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+              + '.row .snip{flex:1;min-width:0;color:' + css(Theme.secondary) + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+              + '.row .rd{flex:none;color:' + css(Theme.secondary) + ';font-size:12px}'
+              + '.sum{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px;display:flex;gap:6px;min-width:0}'
+              + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}'
+              + '.msg:not(.det-on) .details{display:none}'
+              + '.chev{font-size:11px;padding:0 2px}'
+              + '.top .acts{margin-left:6px;align-self:center}'
               // People on To and Cc as bubbles, as in compose (click or right-click: copy, write to).
               + '.rcpt{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:3px;font-size:12px}.rcpt .lbl{color:' + css(Theme.tertiary) + ';margin-right:2px}'
               + '.chip{display:inline-block;max-width:100%;padding:1px 9px;border-radius:999px;background:' + css(Theme.segment) + ';color:' + css(Theme.text) + ';text-decoration:none;line-height:18px;overflow-wrap:anywhere;cursor:default}'
@@ -411,7 +452,6 @@ WebEngineView {
               + '::-webkit-scrollbar-thumb{background-color:transparent;border-radius:6px;border:3px solid transparent;background-clip:padding-box}'
               // The message's buttons, as in Apple Mail: one pill under the header,
               // Reply | Reply All | Forward | Delete.
-              + '.actsrow{text-align:center;margin-top:10px}'
               // A little raised: a soft top-to-bottom shade and a slight shadow.
               + '.acts{display:inline-flex;border:1px solid ' + css(Theme.border) + ';border-radius:999px;overflow:hidden;'
               + 'background:linear-gradient(' + (Theme.dark ? 'rgba(255,255,255,.10),rgba(255,255,255,.03)' : '#ffffff,#eceef2') + ');'
@@ -441,6 +481,8 @@ WebEngineView {
               // The thumb's colour lives in a style sheet of its own (filled in by the fade below).
               + '</style><style id="sbshow"></style></head><body>'
               + '<h1>' + esc(web.subject || "(No Subject)") + '</h1>'
+              + (boxed ? '<div class="convbar"><span>' + web.messages.length + ' messages</span>'
+                         + '<a href="#" data-all="1">Expand All</a><a href="#" data-all="0">Collapse All</a></div>' : '')
         for (var i = 0; i < web.messages.length; i++) {
             var m = web.messages[i]
             var rich = !!m.html && web.formatted
@@ -448,21 +490,38 @@ WebEngineView {
             var paper = rich && Theme.dark && !web.darkMessages
             var remote = web.loadRemoteAlways || !!web.remoteLoaded[m.id] || senderTrusted(m)
             var name = m.fromName || m.fromEmail
-            h += '<div class="msg"><div class="hdr"><div class="av">' + esc(Theme.initials(name)) + '</div><div class="who">'
-               // Name; then the date, the people it went to, the address, and the
-               // Plain Text / Formatted switch, each on a line of its own.
+            // Closed: older, read messages of a conversation (unless opened by hand).
+            var st = web.expandedState[m.id]
+            var col = boxed && (st === false || (st !== true && i < web.messages.length - 1 && m.read))
+            var det = !!web.detailsState[m.id]
+            var people = parseAddresses(m.to || "").map(function(a) { return a.name || a.email })
+            var ccCount = parseAddresses(m.cc || "").length
+            var toLine = (people.length ? "To: " + people.slice(0, 3).join(", ") + (people.length > 3 ? " & " + (people.length - 3) + " more" : "") : "")
+                       + (ccCount ? (people.length ? " · " : "") + "Cc: " + ccCount : "")
+            h += '<div class="msg' + (col ? ' col' : '') + (det ? ' det-on' : '') + '" data-i="' + i + '">'
+               // The one-line form: who, the start of the text, when.
+               + '<div class="row" data-toggle="' + i + '"><div class="av">' + esc(Theme.initials(name)) + '</div>'
+               + '<span class="rn">' + esc(name) + '</span><span class="snip">' + esc(snippet(m)) + '</span>'
+               + '<span class="rd">' + esc(Theme.fmtListDate(m.date)) + '</span></div>'
+               + '<div class="full"><div class="hdr"><div class="av">' + esc(Theme.initials(name)) + '</div><div class="who">'
+               // Name, the message's buttons and its flag; the date; who it went to, with
+               // Details for the people as bubbles, the address and Plain Text.
                + '<div class="top">' + (m.vip ? '★ ' : '') + '<a class="name" title="' + esc((m.fromName ? m.fromName + ' <' + m.fromEmail + '>' : m.fromEmail)) + '" href="almanac:sender/' + i + '">' + esc(name) + '</a>'
+               + (boxed ? '<a class="chev" href="#" data-toggle="' + i + '" title="Close this message">▾</a>' : '')
                + '<span class="grow"></span>' + (m.flagged ? '<span style="color:' + Theme.flagColors[m.flagColor || 0] + '" title="' + Theme.flagNames[m.flagColor || 0] + ' flag">⚑</span>' : '')
+               + '<span class="acts">' + actions(i) + '</span>'
                + '</div>'
                + '<div class="when">' + esc(Theme.fmtLongDate(m.date)) + '</div>'
+               + '<div class="sum"><span class="who2">' + esc(toLine) + '</span><a class="det" href="#" data-det="' + i + '">Details</a></div>'
+               + '<div class="details">'
                // To and Cc each on a line of their own, wrapped so every address can be read.
                + (m.to ? '<div class="rcpt"><span class="lbl">To:</span>' + chips(i, m.to) + '</div>' : '')
                + (m.cc ? '<div class="rcpt"><span class="lbl">Cc:</span>' + chips(i, m.cc) + '</div>' : '')
                + (m.fromName && m.fromEmail ? '<div class="addr">' + esc(m.fromEmail) + (m.folder ? ' · ' + esc(m.folder) : '') + '</div>' : '')
                + (m.html ? '<div class="fmtline"><a class="fmt" href="almanac:format/' + i + '">' + (web.formatted ? 'Show Plain Text' : 'Show Formatted') + '</a></div>' : '')
+               + '</div>'
                + '</div></div>'
-               // Centred under the header, across the whole message.
-               + '<div class="actsrow"><span class="acts">' + actions(i) + '</span></div><div class="rule"></div>'
+               + '<div class="rule"></div>'
             if (m.partial && !m.html && !m.body) {
                 h += '<div class="wait">Downloading this message…</div>'
             } else {
@@ -471,7 +530,8 @@ WebEngineView {
                        + '<a href="almanac:remote/' + i + '">Load Remote Content</a>'
                        + '<a class="more" href="almanac:remote-sender/' + i + '" title="Always load remote content in mail from ' + esc(m.fromEmail) + '">Always from This Sender</a>'
                        + '<a class="more" href="almanac:remote-all/' + i + '" title="Load remote content in every message (Settings › Privacy)">Always</a></div>'
-                h += '<div class="' + (paper && Theme.dark ? 'paper' : '') + '"><iframe sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" srcdoc="'
+                // (A closed message's text is loaded when it's opened.)
+                h += '<div class="' + (paper && Theme.dark ? 'paper' : '') + '"><iframe sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" ' + (col ? 'data-doc' : 'srcdoc') + '="'
                    + esc(emailDoc(m, paper && Theme.dark, remote)) + '"></iframe></div>'
             }
             // Pictures and PDFs right in the message, as in Apple Mail.
@@ -508,7 +568,7 @@ WebEngineView {
                 }
                 h += '</div>'
             }
-            h += '</div>'
+            h += '</div></div>'
         }
         // Each email's frame grows to its full height (and width, for wide ones).
         h += '<script nonce="' + nonce + '">(function(){'
@@ -526,6 +586,20 @@ WebEngineView {
            + 'el.style.setProperty("background-blend-mode",modes.join(","),"important");'
            + 'if(/rgba\\(0, 0, 0, 0\\)|transparent/.test(cs.backgroundColor))el.style.setProperty("background-color","#26262b","important")}}'
            + 'var fr=[].slice.call(document.querySelectorAll("iframe"));'
+           // Opening and closing messages, and their details, right here (no reload);
+           // Almanac is told so the choice stays when the page is next drawn.
+           + 'var told=0;function tell(k,i,v){document.title="state/"+i+"/"+k+"/"+(v?1:0)+"/"+(++told)}'
+           + 'function setOpen(el,open){var was=!el.classList.contains("col");if(was===open)return false;el.classList.toggle("col",!open);'
+           + 'if(open)[].forEach.call(el.querySelectorAll("iframe[data-doc]"),function(f){f.srcdoc=f.getAttribute("data-doc");f.removeAttribute("data-doc")});return true}'
+           + 'document.addEventListener("click",function(e){var t=e.target.closest("[data-toggle]");'
+           + 'if(!t&&!e.target.closest("a")){var c=e.target.closest(".msg.col");if(c)t=c.querySelector("[data-toggle]")}'
+           + 'if(t){e.preventDefault();var el=document.querySelector(\'.msg[data-i="\'+t.getAttribute("data-toggle")+\'"]\');var open=el.classList.contains("col");'
+           + 'setOpen(el,open);tell("open",el.getAttribute("data-i"),open);return}'
+           + 'var d=e.target.closest("[data-det]");if(d){e.preventDefault();var m=d.closest(".msg");var on=m.classList.toggle("det-on");d.textContent=on?"Hide Details":"Details";tell("details",m.getAttribute("data-i"),on);return}'
+           + 'var a=e.target.closest("[data-all]");if(a){e.preventDefault();var open=a.getAttribute("data-all")==="1",changed=[];'
+           + '[].forEach.call(document.querySelectorAll(".msg[data-i]"),function(el){if(setOpen(el,open))changed.push(el.getAttribute("data-i"))});'
+           + 'if(changed.length)tell("all",changed[0],open)}});'
+           + '[].forEach.call(document.querySelectorAll(".msg.det-on [data-det]"),function(d){d.textContent="Hide Details"});'
            // Shown as soon as the email's text is there, not when every picture has
            // arrived (a slow or unreachable picture server would keep the whole
            // message hidden until it gave up): sized and tinted as soon as its
