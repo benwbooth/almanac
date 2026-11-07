@@ -23,7 +23,8 @@ permissions:
 env:
   # The newest Qt 6 release (Almanac follows nixos-unstable's Qt on Linux).
   QT_VERSION: '6.*'
-  QT_MODULES: 'qtwebengine qtwebchannel qtpositioning qtpdf'
+  # (qtserialport: Qt Positioning's NMEA plugin needs it)
+  QT_MODULES: 'qtwebengine qtwebchannel qtpositioning qtpdf qtserialport'
   AQT_VERSION: '==3.3.*'
   CARGO_TERM_COLOR: always
 
@@ -56,9 +57,21 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - name: Find the Qt build for MSVC
+        id: qt
+        shell: bash
+        run: |
+          pip install -q "aqtinstall$AQT_VERSION"
+          v=$(python -m aqt list-qt windows desktop --spec "$QT_VERSION" --latest-version)
+          archs=$(python -m aqt list-qt windows desktop --arch "$v")
+          echo "Qt $v for Windows: $archs"
+          arch=$(tr ' ' '\n' <<<"$archs" | grep -E '^win64_msvc[0-9]+_64$' | sort -V | tail -1)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "arch=$arch" >> "$GITHUB_OUTPUT"
       - uses: jurplel/install-qt-action@v4
         with:
-          version: ${{ env.QT_VERSION }}
+          version: ${{ steps.qt.outputs.version }}
+          arch: ${{ steps.qt.outputs.arch }}
           modules: ${{ env.QT_MODULES }}
           aqtversion: ${{ env.AQT_VERSION }}
           cache: true
@@ -141,8 +154,12 @@ jobs:
           sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
           "$QT_ROOT_DIR/bin/macdeployqt" "$app" -qmldir=qml -always-overwrite -verbose=1
           # Not notarized: sign ad hoc so Apple Silicon will run it at all.
-          codesign --force --deep --sign - "$app"
-          codesign --verify --deep --strict "$app"
+          # Inside out: libraries, nested helper apps, frameworks, then the app.
+          find "$app/Contents" -type f \( -name '*.dylib' -o -name '*.so' \) -print0 | xargs -0 -n1 codesign --force --sign -
+          find "$app/Contents/Frameworks" -depth -type d -name '*.app' -print0 | xargs -0 -n1 codesign --force --sign -
+          find "$app/Contents/Frameworks" -depth -type d -name '*.framework' -print0 | xargs -0 -n1 codesign --force --sign -
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
       - name: Disk image
         run: |
           mkdir dist/dmg

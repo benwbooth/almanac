@@ -3,18 +3,34 @@
 set -eu
 
 # Qt itself is in the KDE SDK (/usr); Qt WebEngine, WebChannel and Pdf come
-# from the BaseApp in /app. qmake only knows /usr, so point the compiler and
-# linker at /app's headers and libraries as well.
-export QMAKE="$(command -v qmake6 || command -v qmake)"
-inc=""
-for d in /app/include /app/include/qt6 /app/include/Qt*  /app/include/qt6/Qt*; do
-    [ -d "$d" ] && inc="$inc:$d"
+# from the BaseApp in /app. cxx-qt finds Qt through qmake, which only knows
+# /usr, so give it one folder of headers and one of libraries holding both,
+# and a qmake that names those folders.
+sysqmake="$(command -v qmake6 || command -v qmake)"
+merged="$PWD/qt-merged"
+rm -rf "$merged"; mkdir -p "$merged/lib" "$merged/include" "$merged/bin"
+for d in "$("$sysqmake" -query QT_INSTALL_LIBS)" /app/lib /app/lib/x86_64-linux-gnu /app/lib64; do
+    [ -d "$d" ] || continue
+    for f in "$d"/libQt6* "$d"/libQt6*.prl; do [ -e "$f" ] && ln -sf "$f" "$merged/lib/"; done
 done
-export CPATH="${inc#:}${CPATH:+:$CPATH}"
-export LIBRARY_PATH="/app/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
-export RUSTFLAGS="-L native=/app/lib"
-echo "QMAKE=$QMAKE  Qt $($QMAKE -query QT_VERSION)"
-echo "CPATH=$CPATH"
+for d in "$("$sysqmake" -query QT_INSTALL_HEADERS)" /app/include /app/include/qt6; do
+    [ -d "$d" ] || continue
+    for f in "$d"/Qt*; do [ -d "$f" ] && ln -sfn "$f" "$merged/include/"; done
+done
+cat > "$merged/bin/qmake" <<SH
+#!/bin/sh
+if [ "\$1" = -query ]; then
+    case "\${2:-}" in
+        QT_INSTALL_LIBS) echo "$merged/lib"; exit 0 ;;
+        QT_INSTALL_HEADERS) echo "$merged/include"; exit 0 ;;
+    esac
+fi
+exec "$sysqmake" "\$@"
+SH
+chmod +x "$merged/bin/qmake"
+export QMAKE="$merged/bin/qmake"
+export LIBRARY_PATH="$merged/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+echo "Qt $("$QMAKE" -query QT_VERSION); Qt libraries: $(ls "$merged/lib" | grep -c prl) modules"
 
 cargo build --release --locked
 
