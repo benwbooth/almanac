@@ -572,9 +572,19 @@ WebEngineView {
         }
         // Each email's frame grows to its full height (and width, for wide ones).
         h += '<script nonce="' + nonce + '">(function(){'
-           + 'function fit(f){try{var d=f.contentDocument;if(!d||!d.documentElement)return;f.__n=(f.__n||0)+1;if(f.__n>400)return;'
-           + 'f.style.width="100%";var de=d.documentElement,b=d.body||de;var w=Math.max(de.scrollWidth,b.scrollWidth);'
-           + 'if(w>f.clientWidth+1)f.style.width=w+"px";var hh=Math.max(de.scrollHeight,b.scrollHeight,b.offsetHeight);f.style.height=hh+"px";}catch(e){}}'
+           // Sized without feedback loops (an email sized to its frame made the frame
+           // grow, then the email, every frame: the pane flickered): only real changes
+           // are written, small ones ignored; measured afresh (the frame shrunk to
+           // nothing first, so "100% high" content can't hold it up) only on loading
+           // and when the window's width changes; growing on and on stops.
+           + 'function fit(f,fresh){try{var d=f.contentDocument;if(!d||!d.documentElement)return;var de=d.documentElement,b=d.body||de;'
+           + 'if(fresh){f.style.width="100%";f.__w=0;f.style.height="1px";f.__h=0;f.__gc=0}'
+           + 'var cw=f.parentNode?f.parentNode.clientWidth:f.clientWidth,w=Math.max(de.scrollWidth,b.scrollWidth),ww=w>cw+1?w:0;'
+           + 'if(ww>(f.__w||0)){f.style.width=ww+"px";f.__w=ww}'
+           + 'var hh=Math.max(de.scrollHeight,b.scrollHeight,b.offsetHeight),cur=f.__h||0;'
+           + 'if(cur&&Math.abs(hh-cur)<=2)return;'
+           + 'var now=Date.now();if(!f.__gt||now-f.__gt>2000){f.__gt=now;f.__gc=0}if(cur&&hh>cur&&++f.__gc>30)return;'
+           + 'f.style.height=hh+"px";f.__h=hh}catch(e){}}'
            // Dark mode, as dark-mode browser extensions do it: the engine darkens the
            // email's colours but not its background pictures, so each picture is
            // blended ("multiply") with a dark colour: white turns dark, patterns and
@@ -604,14 +614,18 @@ WebEngineView {
            // arrived (a slow or unreachable picture server would keep the whole
            // message hidden until it gave up): sized and tinted as soon as its
            // body exists, and again as pictures come in.
-           + 'fr.forEach(function(f){function go(){fit(f)}'
+           + 'fr.forEach(function(f){function go(){if(f.__raf)return;f.__raf=requestAnimationFrame(function(){f.__raf=0;fit(f)})}'
            + 'function ready(){var d;try{d=f.contentDocument}catch(e){return false}if(!d||!d.body||f.__ready===d)return !!(d&&d.body);'
-           + 'f.__ready=d;f.__n=0;tint(d);go();'
-           + 'try{new ResizeObserver(go).observe(d.body)}catch(e){}'
+           + 'f.__ready=d;tint(d);fit(f,true);'
+           // (Not a ResizeObserver on the email's body: watching bodies in other
+           // frames made Chromium report changes every frame, a page busy redrawing
+           // at 60 per second. A light look twice a second instead, for frames on screen.)
            + '[].slice.call(d.images||[]).forEach(function(im){im.addEventListener("load",go);im.addEventListener("error",go)});return true}'
            + 'var tries=0,iv=setInterval(function(){tries++;if(ready()&&tries>3)clearInterval(iv);else if(tries>100)clearInterval(iv)},50);'
-           + 'f.addEventListener("load",function(){f.__n=0;ready();go();setTimeout(go,150);setTimeout(go,800)});go()});'
-           + 'window.addEventListener("resize",function(){fr.forEach(function(f){f.__n=0;fit(f)})});'
+           + 'f.addEventListener("load",function(){ready();fit(f,true);setTimeout(go,150);setTimeout(go,800)});go()});'
+           // (A change of height only, e.g. the pane nudged to redraw, needs no fresh measuring.)
+           + 'setInterval(function(){fr.forEach(function(f){if(f.offsetParent&&f.__ready)fit(f)})},400);'
+           + 'var lastW=innerWidth;window.addEventListener("resize",function(){var fresh=innerWidth!==lastW;lastW=innerWidth;fr.forEach(function(f){if(fresh)fit(f,true);else if(f.__raf===undefined||!f.__raf)fit(f)})});'
            // Scrollbar: shown only while scrolling or while the pointer is over the
            // scrollbar's strip at the right edge, as on macOS.
            // It fades in and out: the engine can't animate scrollbar colours, so the
