@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QtCore/QString>
+#include <QtCore/QDateTime>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QIcon>
 #include <QtGui/QImage>
@@ -55,11 +56,17 @@ public:
                 const QVariant was = w->property("_craftExposed");
                 w->setProperty("_craftExposed", now);
                 if (now && was.isValid() && !was.toBool()) {
-                    qWarning("almanac: window shown again (it was hidden by the desktop)");
-                    if (w->metaObject()->indexOfSignal("reexposed()") >= 0)
-                        QMetaObject::invokeMethod(w, "reexposed", Qt::QueuedConnection);
+                    // Hidden only for a moment (KWin does this several times a
+                    // minute as other windows move): nothing was lost, and redrawing
+                    // each time made the pane flicker. Only longer ones count.
+                    const qint64 hiddenFor = QDateTime::currentMSecsSinceEpoch() - w->property("_craftHiddenAt").toLongLong();
+                    if (hiddenFor >= 700) {
+                        qWarning("almanac: window shown again after %lld ms hidden by the desktop", hiddenFor);
+                        if (w->metaObject()->indexOfSignal("reexposed()") >= 0)
+                            QMetaObject::invokeMethod(w, "reexposed", Qt::QueuedConnection);
+                    }
                 } else if (!now && (!was.isValid() || was.toBool())) {
-                    qWarning("almanac: window hidden by the desktop");
+                    w->setProperty("_craftHiddenAt", QDateTime::currentMSecsSinceEpoch());
                 }
             }
         }

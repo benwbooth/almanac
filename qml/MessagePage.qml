@@ -19,9 +19,10 @@ WebEngineView {
     // focus, the page could draw black until clicked: the browser engine stopped
     // drawing meanwhile. Hiding and showing it right away wasn't always enough (it
     // could happen before a frame was drawn, or before the window was really back).
-    // Now the page is made 1 px shorter for a moment, which makes the engine draw
-    // a fresh frame at the new size, and its content is nudged; this is done
-    // straight away and again shortly after, in case the window came back late.
+    // Now its content is nudged (a style change that makes the engine draw a
+    // fresh frame, with no change of size), straight away and again shortly
+    // after, in case the window came back late. Brief hides (under 0.7 s, see
+    // CraftExposeWatch) don't count.
     Connections {
         target: web.Window.window
         function onActiveChanged() { if (web.Window.window && web.Window.window.active) web.redraw() }
@@ -77,21 +78,21 @@ WebEngineView {
     function redraw() {
         if (!web.visible) return
         // (Already redrawing: start the passes over, from now.)
-        web.redrawPasses = 3
+        web.redrawPasses = 2
         if (!shrinkBack.running && !nextPass.running) redrawPass()
     }
     function redrawPass() {
         if (!web.visible || web.redrawPasses <= 0) return
         web.redrawPasses--
         web.paneLog("redraw pass")
-        web.Layout.bottomMargin = 1
+        // (No change of size: making the page 1 px shorter re-laid it all out,
+        // seen as a flicker every time the desktop hid the window for a moment.)
         shrinkBack.restart()
     }
     Timer {
         id: shrinkBack
         interval: 50
         onTriggered: {
-            web.Layout.bottomMargin = 0
             web.runJavaScript("(function(d) { if (!d) return; d.style.outline = '0 solid transparent';"
                               + " requestAnimationFrame(function() { d.style.outline = ''; }); })(document.documentElement)")
             web.update()
