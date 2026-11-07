@@ -56,6 +56,7 @@ WebEngineView {
     onVisibleChanged: paneLog("page visible changed")
     onLifecycleStateChanged: paneLog("lifecycle state changed")
     onRecommendedStateChanged: paneLog("recommended state changed")
+    onLoadingChanged: function(info) { paneLog("loading " + ["started", "stopped", "succeeded", "failed"][info.status] + (info.errorString ? " " + info.errorString : "")) }
     onRenderProcessTerminated: function(status, code) { paneLog("render process ended, status " + status + " code " + code) }
     property int redrawPasses: 0
     function redraw() {
@@ -625,6 +626,7 @@ WebEngineView {
         var key = JSON.stringify([web.messages, web.subject, web.formatted, web.darkMessages, web.darkify, web.loadRemoteAlways,
                                   web.remoteLoaded, web.remoteSenders, Theme.dark, pvKey])
         if (key === shownKey) return
+        paneLog("page reloaded (" + web.messages.length + " message(s))")
         shownKey = key
         web.previews = pv
         var doc = page()
