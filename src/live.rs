@@ -1081,9 +1081,10 @@ const WHOLE_CONNECTIONS: usize = 2;
 /// Gmail lets an account download about 2.5 GB a day over IMAP (every mail app
 /// together) and past that answers every command ~10 seconds late, so even a
 /// check for new mail takes many minutes. The long background download stops
-/// for the day at this much (opened and new messages don't count), leaving
-/// room for the rest.
-const GMAIL_DAILY_BYTES: u64 = 1_000_000_000;
+/// for the day at this much (new mail counts too; opened messages don't),
+/// leaving room for the rest. (It was 1 GB, which made a big mailbox take
+/// many days; Thunderbird has no limit of its own.)
+const GMAIL_DAILY_BYTES: u64 = 2_200_000_000;
 
 fn is_gmail(a: &LiveAccount) -> bool {
     let h = a.imap_host.to_lowercase();
@@ -1394,7 +1395,7 @@ impl Job<'_> {
                             return Err((e.to_string(), rest(&finished)));
                         }
                     };
-                    if self.lane == Lane::Whole {
+                    if self.lane != Lane::Opened {
                         downloaded_today(&self.a.id, fetched.iter().map(|f| f.body().map_or(0, |b| b.len() as u64)).sum());
                     }
                     for f in fetched.iter() {
