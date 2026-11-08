@@ -1894,6 +1894,8 @@ pub struct OutMsg {
     pub sign: bool,
     /// OpenPGP: encrypted to every recipient and the sender
     pub encrypt: bool,
+    /// Signed / encrypted with S/MIME (certificates) rather than OpenPGP.
+    pub smime: bool,
 }
 
 impl OutMsg {
@@ -1917,6 +1919,7 @@ impl OutMsg {
             draft: false,
             sign: v.get("sign").and_then(serde_json::Value::as_bool).unwrap_or(false),
             encrypt: v.get("encrypt").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            smime: v.get("secure").and_then(serde_json::Value::as_str) == Some("smime"),
         }
     }
 }
@@ -2020,7 +2023,62 @@ pub fn build_message(a: &LiveAccount, m: &OutMsg) -> Result<lettre::Message, Str
     };
     // OpenPGP (PGP/MIME, RFC 3156): what's signed or encrypted is the content
     // part exactly as it's written out (drafts are left as they are).
-    let content = if (m.sign || m.encrypt) && !m.draft {
+    // S/MIME (RFC 8551): signed as multipart/signed with an
+    // application/pkcs7-signature part; encrypted as application/pkcs7-mime
+    // (of the signed message, when it's both).
+    let content = if m.smime && (m.sign || m.encrypt) && !m.draft {
+        use lettre::message::header::{ContentDisposition, ContentTransferEncoding};
+        let mut part = match &content {
+            Content::One(p) => p.formatted(),
+            Content::Many(p) => p.formatted(),
+        };
+        if part.ends_with(b"\r\n") {
+            part.truncate(part.len() - 2);
+        }
+        let signed = if m.sign {
+            let sig = crate::smime::sign_detached(&part, &a.email)?;
+            let multi = MultiPart::signed("application/pkcs7-signature".into(), "sha-256".into());
+            let multi = match content {
+                Content::One(p) => multi.singlepart(p),
+                Content::Many(p) => multi.multipart(p),
+            };
+            Content::Many(
+                multi.singlepart(
+                    SinglePart::builder()
+                        .header(ContentType::parse("application/pkcs7-signature; name=\"smime.p7s\"").map_err(|e| e.to_string())?)
+                        .header(ContentTransferEncoding::Base64)
+                        .header(ContentDisposition::attachment("smime.p7s"))
+                        .body(sig),
+                ),
+            )
+        } else {
+            content
+        };
+        if m.encrypt {
+            let mut to: Vec<String> = Vec::new();
+            for list in [&m.to, &m.cc, &m.bcc] {
+                to.extend(crate::pgp::addresses(list));
+            }
+            let missing = crate::smime::missing_certificates(&to);
+            if !missing.is_empty() {
+                return Err(format!("No certificate to encrypt to {} (one comes with a signed message from them)", missing.join(", ")));
+            }
+            let entity = match &signed {
+                Content::One(p) => p.formatted(),
+                Content::Many(p) => p.formatted(),
+            };
+            let der = crate::smime::encrypt_to(&entity, &to, &a.email)?;
+            Content::One(
+                SinglePart::builder()
+                    .header(ContentType::parse("application/pkcs7-mime; smime-type=enveloped-data; name=\"smime.p7m\"").map_err(|e| e.to_string())?)
+                    .header(ContentTransferEncoding::Base64)
+                    .header(ContentDisposition::attachment("smime.p7m"))
+                    .body(der),
+            )
+        } else {
+            signed
+        }
+    } else if (m.sign || m.encrypt) && !m.draft {
         let mut part = match &content {
             Content::One(p) => p.formatted(),
             Content::Many(p) => p.formatted(),
