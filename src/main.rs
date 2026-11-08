@@ -18,6 +18,7 @@ mod cloudfiles;
 mod gist;
 mod pgp;
 mod smime;
+mod unsubscribe;
 mod ics;
 mod imap_pipe;
 mod instance;
