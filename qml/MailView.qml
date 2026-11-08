@@ -116,7 +116,7 @@ Item {
         pullError = ""
         pullAnswer = "-"
         pullStarted = Date.now()
-        pullToken = store.checkMail()
+        pullToken = store.checkMail(selection)
         pullDone.restart()
     }
     function pullFinished(error) {

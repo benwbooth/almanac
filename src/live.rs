@@ -460,7 +460,7 @@ pub fn sync_mail(
     if a.is_ews() {
         return crate::ews::sync(a, imp, known, all, progress);
     }
-    if !deep && quick_check(a, imp, known, marks, progress, batch)? {
+    if !deep && quick_check(a, imp, known, marks, progress, batch, None)? {
         return Ok(());
     }
     let mut delta = crate::data::MailDelta::default();
@@ -715,6 +715,8 @@ fn quick_check(
     marks: &HashMap<String, crate::data::FolderMark>,
     progress: &dyn Fn(String),
     batch: Option<&dyn Fn(Vec<Message>)>,
+    // Only these mailboxes (folder ids) looked into: the others as they were.
+    only: Option<&[String]>,
 ) -> Result<bool, String> {
     use crate::imap_pipe::{quote, Auth, Pipe};
     if imap_starttls(a.imap_port) || is_local(&a.imap_host) {
@@ -773,6 +775,9 @@ fn quick_check(
     let mut cmds: Vec<String> = Vec::new();
     for (path, pretty, _) in &folders {
         let id = format!("{account}/{path}");
+        if only.is_some_and(|o| !o.contains(&id)) {
+            continue;
+        }
         let here = known.get(&id).map_or(0, |h| h.len());
         let now = status[path];
         let before = marks.get(&id).copied().filter(|b| now.validity > 0 && now.modseq > 0 && b.validity == now.validity && b.modseq > 0);
@@ -1712,7 +1717,7 @@ mod connection_tests {
         for round in 0..2 {
             let mut imp = crate::data::Imported::default();
             let t = std::time::Instant::now();
-            let done = super::quick_check(&a, &mut imp, &known, &marks, &say, None).expect("checks");
+            let done = super::quick_check(&a, &mut imp, &known, &marks, &say, None, None).expect("checks");
             let d = imp.mail_delta.unwrap_or_default();
             eprintln!("quick check {round}: done {done} in {:?}: {} new, {} flag rows, {} gone, {} mailboxes marked, {} folders", t.elapsed(), d.new.len(), d.flags.len(), d.gone.len(), d.marks.len(), imp.folders.len());
             marks.extend(d.marks);
@@ -2364,6 +2369,20 @@ fn sync_contacts(a: &LiveAccount, dav: &Dav, imp: &mut Imported, progress: &dyn 
 /// don't stop the others.
 /// A regular check of an account. `fresh` gets new messages a mailbox at a
 /// time (Inbox first), so they show up without waiting for the whole check.
+/// Pull to refresh: new mail in a few mailboxes only (the one shown and the
+/// inboxes, folder ids), quickly (one listing of every mailbox's counters, then
+/// what changed in those). Err when the server can't be checked that way.
+pub fn check_now(a: &LiveAccount, known: &HashMap<String, Vec<u32>>, marks: &HashMap<String, crate::data::FolderMark>, only: &[String], progress: &dyn Fn(String)) -> Result<Imported, String> {
+    let mut imp = Imported { source: a.source(), server_truth: true, failed: vec!["calendars".into(), "contacts".into()], ..Default::default() };
+    if a.imap_host.is_empty() || a.is_pop() || a.is_ews() {
+        return Err("not an IMAP account".into());
+    }
+    if !quick_check(a, &mut imp, known, marks, progress, None, Some(only))? {
+        return Err("the server can't be checked quickly".into());
+    }
+    Ok(imp)
+}
+
 pub fn sync(
     a: &LiveAccount,
     known: &HashMap<String, Vec<u32>>,
@@ -2374,11 +2393,13 @@ pub fn sync(
 ) -> (Imported, Vec<String>) {
     let mut imp = Imported { source: a.source(), server_truth: true, ..Default::default() };
     let mut errors = Vec::new();
+    let started = std::time::Instant::now();
     if !a.imap_host.is_empty() {
         if let Err(e) = sync_mail(a, &mut imp, known, marks, all, progress, fresh, false) {
             errors.push(format!("Mail: {e}"));
         }
     }
+    let mail_ms = started.elapsed().as_millis();
     if a.provider == crate::oauth::GOOGLE || a.provider == crate::oauth::MICROSOFT {
         match token(a, crate::oauth::Resource::Data) {
             Err(e) => errors.push(format!("Calendars: {e}")),
@@ -2414,6 +2435,7 @@ pub fn sync(
             }
         }
     }
+    eprintln!("ALMANAC-CHECK {}: full check {} ms (mail {} ms, calendars and contacts {} ms)", a.name, started.elapsed().as_millis(), mail_ms, started.elapsed().as_millis() - mail_ms);
     (imp, errors)
 }
 

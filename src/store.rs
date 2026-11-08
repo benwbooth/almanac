@@ -129,7 +129,7 @@ pub mod qobject {
         /// answered in mailCheckDone once every account's new mail is fetched,
         /// saved and in the list (or the check failed).
         #[qinvokable]
-        fn check_mail(self: Pin<&mut Store>) -> i32;
+        fn check_mail(self: Pin<&mut Store>, selection: &QString) -> i32;
         /// Reads the next older messages of the shown mailbox from the server.
         #[qinvokable]
         fn load_older(self: Pin<&mut Store>, selection: &QString);
@@ -1089,7 +1089,7 @@ impl qobject::Store {
         self.start_jobs(ids, live);
     }
 
-    fn check_mail(mut self: Pin<&mut Self>) -> i32 {
+    fn check_mail(mut self: Pin<&mut Self>, selection: &QString) -> i32 {
         let token = {
             let mut r = self.as_mut().rust_mut();
             let r = r.get_mut();
@@ -1097,6 +1097,11 @@ impl qobject::Store {
             r.check_waiting.push(r.next_check);
             r.next_check
         };
+        // Quickly: the mailbox shown and the inboxes; the rest after, in the background.
+        if !self.busy && !crate::offline() && self.db.live.iter().any(|a| !a.imap_host.is_empty() && !a.is_pop() && !a.is_ews()) {
+            self.as_mut().quick_pull(&selection.to_string());
+            return token;
+        }
         self.as_mut().refresh_all();
         // Nothing started (no accounts, or a check running: then it's answered
         // after the one that runs next).
@@ -1105,6 +1110,71 @@ impl qobject::Store {
             self.as_mut().checks_done(error);
         }
         token
+    }
+
+    /// Pull to refresh's check: new mail in the mailbox shown and the inboxes
+    /// (each account's mailbox counters in one go, then what changed in
+    /// those), the pulls answered, then the full check in the background.
+    fn quick_pull(mut self: Pin<&mut Self>, selection: &str) {
+        let mut only: Vec<String> = self.db.folders.iter().filter(|f| f.kind == "inbox").map(|f| f.id.clone()).collect();
+        only.extend(self.db.live_folders_for(selection).into_iter().map(|(id, _, _)| id));
+        let live: Vec<crate::live::LiveAccount> = self.db.live.iter().filter(|a| !a.imap_host.is_empty() && !a.is_pop() && !a.is_ews()).cloned().collect();
+        let backed = self.db.backed;
+        if backed {
+            self.as_mut().flush();
+        }
+        let known_here: std::collections::HashMap<String, std::collections::HashMap<String, Vec<u32>>> =
+            if backed { Default::default() } else { live.iter().map(|a| (a.id.clone(), self.db.known_uids(&a.source()))).collect() };
+        let marks = self.db.folder_marks.clone();
+        let tokens = std::mem::take(&mut self.as_mut().rust_mut().get_mut().check_waiting);
+        self.as_mut().set_busy(true);
+        self.as_mut().set_status_text(QString::from("Checking for new mail…"));
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let mut errors: Vec<String> = Vec::new();
+            let mut fall_back = false;
+            for a in &live {
+                let t0 = std::time::Instant::now();
+                let known = known_here.get(&a.id).cloned().unwrap_or_else(|| crate::mailstore::known_uids(&a.source()));
+                match crate::live::check_now(a, &known, &marks, &only, &|_| {}) {
+                    Ok(imp) => {
+                        eprintln!("ALMANAC-CHECK {}: pulled check {} ms", a.name, t0.elapsed().as_millis());
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let _ = thread.queue(move |mut store| {
+                            let new_ids = store.as_mut().db_mut().apply_import(imp);
+                            store.as_mut().after_new_mail(new_ids);
+                            if store.db.backed {
+                                store.as_mut().flush();
+                            }
+                            store.changed();
+                            let _ = tx.send(());
+                        });
+                        // (In the list before the pull is answered.)
+                        let _ = rx.recv_timeout(std::time::Duration::from_secs(30));
+                    }
+                    Err(e) if e.contains("can't be checked quickly") || e.contains("not an IMAP") => fall_back = true,
+                    Err(e) => {
+                        eprintln!("ALMANAC-CHECK {}: pulled check failed after {} ms: {e}", a.name, t0.elapsed().as_millis());
+                        errors.push(a.name.clone());
+                    }
+                }
+            }
+            eprintln!("ALMANAC-CHECK pulled check done in {} ms", started.elapsed().as_millis());
+            let _ = thread.queue(move |mut store| {
+                store.as_mut().set_busy(false);
+                if fall_back && errors.is_empty() {
+                    // (Answered by the full check.)
+                    store.as_mut().rust_mut().get_mut().check_waiting.extend(tokens);
+                } else {
+                    let error = if errors.is_empty() { String::new() } else { format!("Couldn't check {}", errors.join(", ")) };
+                    store.as_mut().answer_checks(tokens, &error);
+                    store.as_mut().set_status_text(QString::from(if error.is_empty() { "Checked for new mail" } else { error.as_str() }));
+                }
+                // Everything else (other mailboxes, calendars, contacts), in the background.
+                store.as_mut().refresh_all();
+            });
+        });
     }
 
     /// Answers the checks waiting (mailCheckDone, one at a time).
