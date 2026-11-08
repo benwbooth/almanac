@@ -285,3 +285,31 @@ fn main() {
     }
     std::process::exit(code);
 }
+
+#[cfg(test)]
+mod qml_checks {
+    /// Pull to refresh, with made-up trackpad and wheel gestures (tests/qml/
+    /// pull_check.qml): scrolled up to the top and pulling on in the same
+    /// gesture refreshes; a fling into the top or the system's momentum never
+    /// does. Needs Qt's `qml` tool (in the development shell).
+    #[test]
+    fn pull_to_refresh_gestures() {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/qml/pull_check.qml");
+        let out = match std::process::Command::new("qml")
+            .arg(&file)
+            .env("QT_QPA_PLATFORM", "offscreen")
+            .env("QT_FORCE_STDERR_LOGGING", "1")
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("skipped: no qml tool ({e})");
+                return;
+            }
+        };
+        let log = String::from_utf8_lossy(&out.stderr);
+        let checks: Vec<&str> = log.lines().filter(|l| l.contains("PULL-CHECK")).collect();
+        assert!(out.status.success() && log.contains("PULL-CHECK done passed"), "{}", checks.join("\n"));
+        assert!(checks.len() >= 9, "every scenario ran:\n{}", checks.join("\n"));
+    }
+}
