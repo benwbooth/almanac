@@ -21,6 +21,8 @@ pub mod qobject {
         fn craft_print_pdf_file(path: &QString, title: &QString) -> bool;
         #[cxx_name = "craftPdfPage"]
         fn craft_pdf_page(path: &QString, index: i32, out: &QString, width: i32) -> i32;
+        #[cxx_name = "craftPdfWarm"]
+        fn craft_pdf_warm(path: &QString);
         #[cxx_name = "craftCreateApp"]
         fn craft_create_app(plugins: &QString, session: &QString);
         #[cxx_name = "craftSetAppIcon"]
@@ -606,7 +608,7 @@ use cxx_qt_lib::QString;
 use serde_json::{json, Value};
 
 #[path = "store_more.rs"]
-mod more;
+pub(crate) mod more;
 
 /// One delete or move, to undo: each message's folder before, and where it
 /// went on the server (to find it by Message-ID and move it back).

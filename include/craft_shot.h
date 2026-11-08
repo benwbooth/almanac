@@ -232,8 +232,15 @@ inline bool craftPrintPdfFile(const QString& path, const QString& title)
 // shown in a message. Returns how many pages the PDF has (0: not readable).
 // (Qt's PDF reader works on the main thread only: called a page at a time so
 // the window keeps going.)
+//
+// Qt's PDF reader (PDFium) starts up afresh whenever its last open document
+// closes, and starting up looks through every font on the system: seconds
+// each time (8 s seen, for a one-page receipt). A document kept open for good
+// keeps it started, so each page after the first takes milliseconds.
 inline int craftPdfPage(const QString& path, int index, const QString& out, int width)
 {
+    static QPdfDocument* keeper = new QPdfDocument;
+    Q_UNUSED(keeper);
     QPdfDocument doc;
     if (doc.load(path) != QPdfDocument::Error::None || doc.pageCount() < 1)
         return 0;
@@ -252,6 +259,14 @@ inline int craftPdfPage(const QString& path, int index, const QString& out, int 
         }
     }
     return doc.pageCount();
+}
+
+// The PDF reader started ahead, off the window's thread (a one-page PDF read
+// into a document kept open), so the first PDF opened in a message shows at once.
+inline void craftPdfWarm(const QString& path)
+{
+    static QPdfDocument* warm = new QPdfDocument;
+    warm->load(path);
 }
 
 inline bool craftSaveWindow(const QString& path)

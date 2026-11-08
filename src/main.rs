@@ -282,6 +282,8 @@ fn main() {
         startup_mark("window built");
     }
     store::qobject::craft_show_windows();
+    // The PDF reader started ahead (it takes seconds the first time).
+    store::more::warm_pdf_reader(std::time::Duration::from_secs(3));
 
     let code = store::qobject::craft_exec();
     if wayland {
@@ -319,5 +321,28 @@ mod qml_checks {
         let checks: Vec<&str> = log.lines().filter(|l| l.contains("PULL-CHECK")).collect();
         assert!(out.status.success() && log.contains("PULL-CHECK done passed"), "{}", checks.join("\n"));
         assert!(checks.len() >= 11, "every scenario ran:\n{}", checks.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod pdf_timing {
+    /// How long a PDF page takes to become a picture (cold, then again):
+    /// ALMANAC_PDF=<file> cargo test pdf_page_time -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn pdf_page_time() {
+        let Ok(path) = std::env::var("ALMANAC_PDF") else { return };
+        let out = std::env::temp_dir().join("almanac-pdf-time.png");
+        if std::env::var_os("ALMANAC_PDF_WARM").is_some() {
+            let t = std::time::Instant::now();
+            crate::store::more::warm_pdf_reader(std::time::Duration::ZERO);
+            std::thread::sleep(std::time::Duration::from_secs(12));
+            eprintln!("(warmed in the background; {} ms later)", t.elapsed().as_millis());
+        }
+        for (label, width) in [("cold 1400", 1400), ("again 1400", 1400), ("again 1000", 1000)] {
+            let t = std::time::Instant::now();
+            let n = crate::store::qobject::craft_pdf_page(&cxx_qt_lib::QString::from(path.as_str()), 0, &cxx_qt_lib::QString::from(out.display().to_string().as_str()), width);
+            eprintln!("{label}: {} ms ({n} pages)", t.elapsed().as_millis());
+        }
     }
 }

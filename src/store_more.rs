@@ -83,15 +83,46 @@ fn pdf_page_count(id: i64, name: &str, bytes: &[u8]) -> i64 {
 }
 
 /// A PDF attachment's pages as pictures (base64 PNGs) and how many it has,
-/// once they've been made.
+/// once they've all been made.
 fn pdf_pages(id: i64, name: &str) -> Option<(Vec<String>, i64)> {
-    use base64::Engine;
     let dir = pdf_pages_dir(id, name);
     let total: i64 = std::fs::read_to_string(dir.join("done")).ok()?.trim().parse().ok()?;
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "png")).collect();
+    Some((pdf_pages_so_far(id, name), total))
+}
+
+/// The pages made so far (the first shows while the rest are made).
+fn pdf_pages_so_far(id: i64, name: &str) -> Vec<String> {
+    use base64::Engine;
+    let dir = pdf_pages_dir(id, name);
+    let Ok(listed) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut files: Vec<std::path::PathBuf> = listed.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "png")).collect();
     files.sort();
-    let pages = files.iter().filter_map(|f| std::fs::read(f).ok()).map(|b| base64::engine::general_purpose::STANDARD.encode(b)).collect();
-    Some((pages, total))
+    files.iter().filter_map(|f| std::fs::read(f).ok()).map(|b| base64::engine::general_purpose::STANDARD.encode(b)).collect()
+}
+
+/// Starts the PDF reader ahead, in the background (see craftPdfWarm): a
+/// one-page PDF with a line of text, read once.
+/// The PDF reader has started (pages made ahead only then: before, the first
+/// would hold the window up while it starts).
+static PDF_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn warm_pdf_reader(after: std::time::Duration) {
+    std::thread::spawn(move || {
+        // (After the window's up: not competing with starting.)
+        std::thread::sleep(after);
+        let t = std::time::Instant::now();
+        let file = std::env::temp_dir().join(format!("almanac-warm-{}.pdf", std::process::id()));
+        let pdf = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 50]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n\
+4 0 obj<</Length 37>>stream\nBT /F1 12 Tf 10 20 Td (Almanac) Tj ET\nendstream endobj\n\
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
+        if std::fs::write(&file, pdf).is_ok() {
+            qobject::craft_pdf_warm(&QString::from(file.display().to_string().as_str()));
+            let _ = std::fs::remove_file(&file);
+            PDF_READY.store(true, std::sync::atomic::Ordering::SeqCst);
+            eprintln!("ALMANAC-PDF reader started in {} ms", t.elapsed().as_millis());
+        }
+    });
 }
 
 /// Makes a PDF's page pictures (once), a page per turn of the window's event
@@ -115,17 +146,26 @@ fn pdf_page_step(thread: cxx_qt::CxxQtThread<qobject::Store>, id: i64, name: Str
     let _ = thread.queue(move |store| {
         let dir = pdf_pages_dir(id, &name);
         let out = dir.join(format!("page-{:03}.png", index + 1));
+        let t = std::time::Instant::now();
         let total = qobject::craft_pdf_page(
             &QString::from(file.display().to_string().as_str()),
             index,
             &QString::from(out.display().to_string().as_str()),
             1400,
         );
-        if index + 1 < total.min(PDF_PAGES) {
-            pdf_page_step(next, id, name, file, index + 1);
-        } else {
+        if index == 0 {
+            eprintln!("ALMANAC-PDF {name}: first page in {} ms", t.elapsed().as_millis());
+        }
+        let last = index + 1 >= total.min(PDF_PAGES);
+        if last {
             let _ = std::fs::write(dir.join("done"), total.to_string());
+        }
+        // Shown (when open): the first page as soon as it's made, then all of them.
+        if (index == 0 || last) && pdf_open(id, &name) {
             store.changed();
+        }
+        if !last {
+            pdf_page_step(next, id, name, file, index + 1);
         }
     });
 }
@@ -1737,15 +1777,33 @@ impl qobject::Store {
                             // that scrolls (its scroll bars show while it's scrolled,
                             // which the browser's PDF viewer's don't).
                             // Closed (the default): just its name, size and pages, nothing made.
-                            Some("application/pdf") if !pdf_open(id, name) => out.push(json!({
-                                "name": name, "mime": "application/pdf", "data": "", "collapsed": true, "size": bytes.len(),
-                                "total": pdf_page_count(id, name, &bytes),
-                            })),
+                            Some("application/pdf") if !pdf_open(id, name) => {
+                                let total = pdf_page_count(id, name, &bytes);
+                                // A short one's pages made ahead, so opening it is instant.
+                                if (1..=10).contains(&total) && pdf_pages(id, name).is_none() {
+                                    let (thread, name, file) = (self.qt_thread(), name.clone(), p.clone());
+                                    if PDF_READY.load(std::sync::atomic::Ordering::SeqCst) {
+                                        make_pdf_pages(thread, id, name, file);
+                                    } else {
+                                        // (Once the reader has started, in the background.)
+                                        std::thread::spawn(move || {
+                                            for _ in 0..300 {
+                                                if PDF_READY.load(std::sync::atomic::Ordering::SeqCst) {
+                                                    make_pdf_pages(thread, id, name, file);
+                                                    return;
+                                                }
+                                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                            }
+                                        });
+                                    }
+                                }
+                                out.push(json!({"name": name, "mime": "application/pdf", "data": "", "collapsed": true, "size": bytes.len(), "total": total}))
+                            }
                             Some("application/pdf") => match pdf_pages(id, name) {
                                 Some((pages, total)) => out.push(json!({"name": name, "mime": "application/pdf", "data": "", "pages": pages, "total": total, "size": bytes.len()})),
                                 None => {
-                                    // (Its line shows meanwhile; the pages follow.)
-                                    out.push(json!({"name": name, "mime": "application/pdf", "data": "", "pages": [], "making": true,
+                                    // (Its line shows meanwhile, then the pages as they're made.)
+                                    out.push(json!({"name": name, "mime": "application/pdf", "data": "", "pages": pdf_pages_so_far(id, name), "making": true,
                                                     "size": bytes.len(), "total": pdf_page_count(id, name, &bytes)}));
                                     make_pdf_pages(self.qt_thread(), id, name.clone(), p.clone());
                                 }
