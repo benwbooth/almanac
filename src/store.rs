@@ -125,6 +125,10 @@ pub mod qobject {
         /// ([{name, mime, data (base64)}]); missing ones are fetched in the background.
         #[qinvokable]
         fn attachment_previews(self: &Store, id: i64) -> QString;
+        /// Opens or closes a PDF shown in a message (closed by default: its
+        /// pages are made only once it's opened). Remembered until Almanac quits.
+        #[qinvokable]
+        fn set_pdf_open(self: &Store, id: i64, name: &QString, open: bool);
         /// A command-line option's value ("" if not given), e.g. --width for pictures.
         #[qinvokable]
         fn arg(self: &Store, name: &QString) -> QString;

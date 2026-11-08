@@ -53,6 +53,35 @@ fn pdf_pages_dir(id: i64, name: &str) -> std::path::PathBuf {
     crate::mailstore::attachment_dir(id).join(".pages").join(crate::mailstore::safe_name(name))
 }
 
+/// PDFs opened in messages this session (message id, name): the rest show
+/// closed, as a line with their name.
+static PDFS_OPEN: std::sync::Mutex<Vec<(i64, String)>> = std::sync::Mutex::new(Vec::new());
+
+fn pdf_open(id: i64, name: &str) -> bool {
+    PDFS_OPEN.lock().map(|o| o.iter().any(|(i, n)| *i == id && n == name)).unwrap_or(false)
+}
+
+/// How many pages a PDF has: known once its pages were made, otherwise counted
+/// from its page objects (0 when they're packed away where they can't be seen).
+fn pdf_page_count(id: i64, name: &str, bytes: &[u8]) -> i64 {
+    if let Some(n) = std::fs::read_to_string(pdf_pages_dir(id, name).join("done")).ok().and_then(|t| t.trim().parse().ok()) {
+        return n;
+    }
+    let mut n = 0;
+    let mut i = 0;
+    while let Some(at) = bytes[i..].windows(5).position(|w| w == b"/Type") {
+        let mut j = i + at + 5;
+        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\r' || bytes[j] == b'\n') {
+            j += 1;
+        }
+        if bytes[j..].starts_with(b"/Page") && !bytes[j..].starts_with(b"/Pages") {
+            n += 1;
+        }
+        i = j;
+    }
+    n
+}
+
 /// A PDF attachment's pages as pictures (base64 PNGs) and how many it has,
 /// once they've been made.
 fn pdf_pages(id: i64, name: &str) -> Option<(Vec<String>, i64)> {
@@ -1262,6 +1291,16 @@ impl qobject::Store {
         QString::from(crate::arg_value(&name.to_string()).unwrap_or_default().as_str())
     }
 
+    pub(super) fn set_pdf_open(&self, id: i64, name: &QString, open: bool) {
+        let name = name.to_string();
+        if let Ok(mut o) = PDFS_OPEN.lock() {
+            o.retain(|(i, n)| !(*i == id && *n == name));
+            if open {
+                o.push((id, name));
+            }
+        }
+    }
+
     pub(super) fn attachment_previews(&self, id: i64) -> QString {
         let _timed = crate::Timed::new("attachment_previews");
         use base64::Engine;
@@ -1289,10 +1328,17 @@ impl qobject::Store {
                             // PDFs: their pages as pictures, in a box of the message's own
                             // that scrolls (its scroll bars show while it's scrolled,
                             // which the browser's PDF viewer's don't).
+                            // Closed (the default): just its name, size and pages, nothing made.
+                            Some("application/pdf") if !pdf_open(id, name) => out.push(json!({
+                                "name": name, "mime": "application/pdf", "data": "", "collapsed": true, "size": bytes.len(),
+                                "total": pdf_page_count(id, name, &bytes),
+                            })),
                             Some("application/pdf") => match pdf_pages(id, name) {
-                                Some((pages, total)) => out.push(json!({"name": name, "mime": "application/pdf", "data": "", "pages": pages, "total": total})),
+                                Some((pages, total)) => out.push(json!({"name": name, "mime": "application/pdf", "data": "", "pages": pages, "total": total, "size": bytes.len()})),
                                 None => {
-                                    out.push(json!({"name": name, "pending": true}));
+                                    // (Its line shows meanwhile; the pages follow.)
+                                    out.push(json!({"name": name, "mime": "application/pdf", "data": "", "pages": [], "making": true,
+                                                    "size": bytes.len(), "total": pdf_page_count(id, name, &bytes)}));
                                     make_pdf_pages(self.qt_thread(), id, name.clone(), p.clone());
                                 }
                             },

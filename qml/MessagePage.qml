@@ -71,6 +71,7 @@ WebEngineView {
         else if (p[2] === "details") web.detailsState[m.id] = on
         else if (p[2] === "fmt") web.formatState[m.id] = on
         else if (p[2] === "decrypt") { delete web.decs[m.id]; if (web.store) web.store.decryptMessage(m.id, "") }
+        else if (/^pdf\d+$/.test(p[2])) web.pdfToggled(m, parseInt(p[2].slice(3)), on)
         else if (p[2] === "unlock") web.askPassphrase(m.id, web.decs[m.id] && web.decs[m.id].detail === "That passphrase isn't right" ? web.decs[m.id].detail : "")
         else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
     }
@@ -136,6 +137,24 @@ WebEngineView {
     property var sigs: ({})
     // Encrypted messages, decrypted (by id; in memory only, never saved).
     property var decs: ({})
+    // A PDF in a message opened or closed (remembered until Almanac quits). Its
+    // pages are made only once it's first opened; then the page is drawn again.
+    function pdfToggled(m, k, on) {
+        var it = (web.previews[m.id] || [])[k]
+        if (!it || !web.store) return
+        web.store.setPdfOpen(m.id, it.name, on)
+        it.collapsed = !on
+        if (on && !(it.pages && it.pages.length)) {
+            delete web.previewCache[m.id]
+            web.shownKey = ""
+            Qt.callLater(web.render)
+        }
+    }
+    function sizeText(n) {
+        if (!n) return ""
+        if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + " KB"
+        return (n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0) + " MB"
+    }
     // An encrypted message's key passphrase, asked for here (not by GnuPG).
     PassphraseDialog { id: passDlg }
     function askPassphrase(id, err) {
@@ -210,9 +229,10 @@ WebEngineView {
         var c = previewCache[m.id]
         if (c && c.key === key) return c.list
         var list = web.previewsFor(m.id)
-        var ready = list.filter(function(p) { return !!p.data || !!p.pages })
-        // All here: kept. Some still downloading: asked again on the next redraw.
-        if (ready.length === list.length) previewCache[m.id] = { key: key, list: ready }
+        var ready = list.filter(function(p) { return !!p.data || !!p.pages || !!p.collapsed })
+        // All here: kept. Some still downloading (or a PDF's pages being made):
+        // asked again on the next redraw.
+        if (ready.length === list.length && !list.some(function(p) { return p.making })) previewCache[m.id] = { key: key, list: ready }
         return ready
     }
     // The PDFs on the page (to tell which one the PDF viewer means).
@@ -565,6 +585,15 @@ WebEngineView {
               + '.pvbar{display:flex;align-items:center;gap:6px;margin-top:14px;font-size:12px}.pvbar span{color:' + css(Theme.secondary) + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
               + '.pvbar a{color:' + css(Theme.accent) + ';text-decoration:none;white-space:nowrap;padding:3px 8px;border-radius:6px;background:' + css(Theme.segment) + '}.pvbar a:hover{background:' + css(Theme.hover) + '}'
               + '.pvbar+.inl,.pvbar+.pdf{margin-top:6px}'
+              // A PDF's line (like an attachment's chip): ▸ to show its pages, ▾ to hide them.
+              + '.pdfhead{display:flex;align-items:center;gap:6px;margin-top:12px;padding:6px 8px 6px 6px;border-radius:8px;background:' + css(Theme.segment) + ';font-size:12px;cursor:pointer;user-select:none}'
+              + '.pdfhead:hover{background:' + css(Theme.hover) + '}'
+              + '.pdfhead .disc{color:' + css(Theme.accent) + ';font-size:11px;width:14px;text-align:center}'
+              + '.pdfhead .pdfname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' + css(Theme.text) + '}'
+              + '.pdfhead b{font-weight:normal}.pdfhead em{font-style:normal;color:' + css(Theme.secondary) + ';margin-left:6px}'
+              + '.pdfhead a{color:' + css(Theme.accent) + ';text-decoration:none;white-space:nowrap;padding:3px 8px;border-radius:6px;background:' + css(Theme.window) + '}.pdfhead a:hover{background:' + css(Theme.hover) + '}'
+              + '.pdfhead .split{display:inline-flex}.pdfhead .split a{border-radius:6px 0 0 6px}.pdfhead .split a.more{border-radius:0 6px 6px 0;margin-left:1px;padding:3px 6px}'
+              + '.pdfwait{height:auto;padding:24px;text-align:center;color:' + css(Theme.secondary) + ';font-size:12px}'
               // A split button: the left part opens (in a tab), the arrow shows the other ways.
               + '.pvbar .split{display:inline-flex}.pvbar .split a{border-radius:6px 0 0 6px}.pvbar .split a.more{border-radius:0 6px 6px 0;margin-left:1px;padding:3px 6px}'
               // The thumb's colour lives in a style sheet of its own (filled in by the fade below).
@@ -641,14 +670,17 @@ WebEngineView {
             for (var p = 0; p < shown.length; p++) {
                 var it = shown[p], src = 'data:' + it.mime + ';base64,' + it.data
                 var q = i + '/' + encodeURIComponent(it.name)
-                h += '<div class="pvbar"><span>' + (it.mime === "application/pdf" ? '📄 ' : '🖼 ') + esc(it.name) + '</span>'
-                   + '<span class="split"><a href="almanac:viewtab/' + q + '" title="Open in a new tab">Open</a><a class="more" href="almanac:openmenu/' + q + '" title="Open in a window, print or save it">▾</a></span></div>'
-                // (The PDF viewer's own toolbar, with its download and print buttons,
-                // left out: Open ▾ has those.)
-                // (The PDF viewer's own toolbar, with its download and print buttons,
-                // left out: Open ▾ has those.)
-                // A PDF: its pages in a box of the page's own that scrolls (the wheel
-                // and trackpad scroll it directly, so its scroll bars show then).
+                var split = '<span class="split"><a href="almanac:viewtab/' + q + '" title="Open in a new tab">Open</a><a class="more" href="almanac:openmenu/' + q + '" title="Open in a window, print or save it">▾</a></span>'
+                // A PDF: a line with its name (closed unless opened, so nothing's
+                // made for it until then); open, its pages below.
+                if (it.mime === "application/pdf") {
+                    var meta = [sizeText(it.size), it.total ? it.total + (it.total === 1 ? " page" : " pages") : ""].filter(function(x) { return x }).join(" · ")
+                    h += '<div class="pdfhead' + (it.collapsed ? '' : ' open') + '" data-pdf="' + p + '" title="' + (it.collapsed ? 'Show' : 'Hide') + ' the pages">'
+                       + '<span class="disc">' + (it.collapsed ? '▸' : '▾') + '</span><span class="pdfname">📄 <b>' + esc(it.name) + '</b>' + (meta ? ' <em>' + esc(meta) + '</em>' : '') + '</span>' + split + '</div>'
+                    if (it.collapsed) continue
+                    if (it.making && !(it.pages || []).length) { h += '<div class="pdfwrap"><div class="pdfbox pdfwait">Preparing the pages…</div></div>'; continue }
+                } else
+                    h += '<div class="pvbar"><span>🖼 ' + esc(it.name) + '</span>' + split + '</div>'
                 if (it.mime === "application/pdf") {
                     h += '<div class="pdfwrap"><div class="pdfbar"><div class="pdfthumb"></div></div><div class="pdfbox" title="' + esc(it.name) + '">'
                     for (var pg = 0; pg < (it.pages || []).length; pg++) h += '<img class="pdfpage" src="data:image/png;base64,' + it.pages[pg] + '" alt="Page ' + (pg + 1) + '">'
@@ -723,6 +755,9 @@ WebEngineView {
            + 'f.setAttribute("data-alt",cur);f.setAttribute("data-alt-paper",w.classList.contains("paper")?"1":"0");w.classList.toggle("paper",ap);'
            + 'var toRich=fm.textContent==="Show Formatted";fm.textContent=toRich?"Show Plain Text":"Show Formatted";me.classList.toggle("plain",!toRich);'
            + 'f.__ready=null;f.srcdoc=alt;tell("fmt",me.getAttribute("data-i"),toRich);return}'
+           + 'var ph=e.target.closest(".pdfhead");if(ph&&!e.target.closest("a")){e.preventDefault();var pm=ph.closest(".msg"),on=!ph.classList.contains("open"),pw=ph.nextElementSibling;'
+           + 'if(pw&&!pw.classList.contains("pdfwrap"))pw=null;ph.classList.toggle("open",on);ph.querySelector(".disc").textContent=on?"\\u25BE":"\\u25B8";ph.title=(on?"Hide":"Show")+" the pages";'
+           + 'if(pw)pw.style.display=on?"":"none";tell("pdf"+ph.getAttribute("data-pdf"),pm.getAttribute("data-i"),on);return}'
            + 'var ul=e.target.closest("[data-unlock]");if(ul){e.preventDefault();tell("unlock",ul.getAttribute("data-unlock"),1);return}'
            + 'var rd=e.target.closest("[data-redecrypt]");if(rd){e.preventDefault();tell("decrypt",rd.getAttribute("data-redecrypt"),1);return}'
            + 'var d=e.target.closest("[data-det]");if(d){e.preventDefault();var m=d.closest(".msg");var on=m.classList.toggle("det-on");d.textContent=on?"Hide Details":"Details";tell("details",m.getAttribute("data-i"),on);return}'
@@ -839,7 +874,7 @@ WebEngineView {
             var m = web.messages[i]
             if (!m.attachments || !m.attachments.length || !web.previewsFor) continue
             pv[m.id] = web.previewsOf(m)
-            pvKey.push(m.id + ":" + pv[m.id].map(function(p) { return p.name + p.data.length + "/" + (p.pages || []).length }).join(","))
+            pvKey.push(m.id + ":" + pv[m.id].map(function(p) { return p.name + p.data.length + "/" + (p.pages || []).length + (p.making ? "m" : "") }).join(","))
         }
         var key = JSON.stringify([web.messages, web.subject, web.formatted, web.darkMessages, web.darkify, web.loadRemoteAlways,
                                   web.remoteLoaded, web.remoteSenders, Theme.dark, pvKey])
