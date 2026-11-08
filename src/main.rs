@@ -15,6 +15,7 @@ mod discover;
 mod ews;
 mod extras;
 mod gist;
+mod pgp;
 mod ics;
 mod imap_pipe;
 mod instance;

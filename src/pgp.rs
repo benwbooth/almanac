@@ -1,0 +1,350 @@
+//! OpenPGP: checking signed mail (PGP/MIME, RFC 3156, and inline), with the
+//! person's own GnuPG (their keyring, agent and pinentry, through the `gpg`
+//! program, as Enigmail did: nothing to build in, and on Windows / macOS it
+//! works wherever GnuPG is installed, Gpg4win or GPG Suite; without it the
+//! message just shows no badge).
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+/// What a message is, as far as OpenPGP goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Kind {
+    /// multipart/signed with an application/pgp-signature part.
+    Signed,
+    /// multipart/encrypted (application/pgp-encrypted).
+    Encrypted,
+    /// "-----BEGIN PGP SIGNED MESSAGE-----" in the text.
+    InlineSigned,
+    /// "-----BEGIN PGP MESSAGE-----" in the text.
+    InlineEncrypted,
+}
+
+/// The outcome of checking a signature.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct Check {
+    /// "good", "bad", "expired", "revoked", "unknown-key", "error"
+    pub state: String,
+    /// Who signed it, as the key says ("Name <address>"); "" if not known.
+    pub signer: String,
+    /// The key's fingerprint (or its id, when the key isn't here).
+    pub key: String,
+    /// How far the key is trusted: "ultimate", "full", "marginal", "never", "unknown".
+    pub trust: String,
+    /// A line of explanation for errors.
+    pub detail: String,
+}
+
+/// The top-level headers of a raw message (unfolded), and where its body starts.
+fn headers(raw: &[u8]) -> (Vec<(String, String)>, usize) {
+    let text = String::from_utf8_lossy(raw);
+    let end = text.find("\r\n\r\n").map(|i| i + 4).or_else(|| text.find("\n\n").map(|i| i + 2)).unwrap_or(text.len());
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in text[..end].lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(last) = out.last_mut() {
+                last.1.push(' ');
+                last.1.push_str(line.trim());
+            }
+        } else if let Some((k, v)) = line.split_once(':') {
+            out.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+        }
+    }
+    (out, end)
+}
+
+/// A parameter of a header value ("boundary", "protocol"), unquoted.
+fn param(value: &str, name: &str) -> Option<String> {
+    for part in value.split(';').skip(1) {
+        let (k, v) = part.split_once('=')?;
+        if k.trim().eq_ignore_ascii_case(name) {
+            return Some(v.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
+/// Whether (and how) a raw message is signed or encrypted.
+pub fn kind(raw: &[u8]) -> Option<Kind> {
+    let (h, body_at) = headers(raw);
+    let ct = h.iter().find(|(k, _)| k == "content-type").map(|(_, v)| v.clone()).unwrap_or_default();
+    let low = ct.to_ascii_lowercase();
+    if low.starts_with("multipart/signed") && param(&ct, "protocol").is_some_and(|p| p.eq_ignore_ascii_case("application/pgp-signature")) {
+        return Some(Kind::Signed);
+    }
+    if low.starts_with("multipart/encrypted") {
+        return Some(Kind::Encrypted);
+    }
+    let body = String::from_utf8_lossy(&raw[body_at.min(raw.len())..]);
+    if body.contains("-----BEGIN PGP SIGNED MESSAGE-----") {
+        return Some(Kind::InlineSigned);
+    }
+    if body.contains("-----BEGIN PGP MESSAGE-----") {
+        return Some(Kind::InlineEncrypted);
+    }
+    None
+}
+
+/// Whether a message (as the app keeps it) may well be signed or encrypted:
+/// worth fetching its original to check.
+pub fn looks_signed(attachments: &[String], body: &str, html: &str) -> bool {
+    attachments.iter().any(|a| {
+        let a = a.to_ascii_lowercase();
+        a == "signature.asc" || a.ends_with(".sig") || a == "encrypted.asc" || a == "openpgp.asc"
+    }) || body.contains("-----BEGIN PGP") || html.contains("-----BEGIN PGP")
+}
+
+/// A multipart/signed message's signed part, exactly as signed (its own
+/// headers and body, lines ending CRLF), and its signature.
+fn signed_parts(raw: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let (h, body_at) = headers(raw);
+    let ct = h.iter().find(|(k, _)| k == "content-type")?.1.clone();
+    let boundary = param(&ct, "boundary")?;
+    let body = &raw[body_at..];
+    let delim = format!("--{boundary}");
+    // Lines, keeping where each starts (the signed part is the bytes between
+    // the first and second delimiter lines, without the line break before the second).
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while i <= body.len() {
+        starts.push(i);
+        match body[i..].iter().position(|&b| b == b'\n') {
+            Some(p) => i += p + 1,
+            None => break,
+        }
+    }
+    let line_at = |s: usize| -> &[u8] {
+        let e = body[s..].iter().position(|&b| b == b'\n').map(|p| s + p).unwrap_or(body.len());
+        let l = &body[s..e];
+        l.strip_suffix(b"\r").unwrap_or(l)
+    };
+    let delims: Vec<usize> = starts.iter().copied().filter(|&s| s < body.len() && line_at(s).starts_with(delim.as_bytes())).collect();
+    if delims.len() < 2 {
+        return None;
+    }
+    let first_after = |s: usize| body[s..].iter().position(|&b| b == b'\n').map(|p| s + p + 1).unwrap_or(body.len());
+    let part1_start = first_after(delims[0]);
+    let mut part1_end = delims[1];
+    // (The line break before the delimiter belongs to the delimiter.)
+    if part1_end > part1_start && body[part1_end - 1] == b'\n' {
+        part1_end -= 1;
+        if part1_end > part1_start && body[part1_end - 1] == b'\r' {
+            part1_end -= 1;
+        }
+    }
+    let signed = crlf(&body[part1_start..part1_end]);
+    let part2_start = first_after(delims[1]);
+    let part2_end = delims.get(2).copied().unwrap_or(body.len());
+    let part2 = &body[part2_start..part2_end];
+    // The signature part's body: after its headers.
+    let text = String::from_utf8_lossy(part2);
+    let sig_at = text.find("-----BEGIN PGP SIGNATURE-----")?;
+    let sig_end = text[sig_at..].find("-----END PGP SIGNATURE-----").map(|e| sig_at + e + "-----END PGP SIGNATURE-----".len())?;
+    Some((signed, text[sig_at..sig_end].as_bytes().to_vec()))
+}
+
+/// Line endings made CRLF (how signed MIME parts are signed).
+fn crlf(b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len() + b.len() / 40);
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'\n' && (i == 0 || b[i - 1] != b'\r') {
+            out.push(b'\r');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The `gpg` program, if there is one.
+fn gpg() -> Option<String> {
+    for name in ["gpg", "gpg2"] {
+        if Command::new(name).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Reads gpg's status lines (--status-fd) into a Check.
+fn from_status(status: &str) -> Check {
+    let mut c = Check { trust: "unknown".into(), ..Default::default() };
+    for line in status.lines() {
+        let Some(rest) = line.strip_prefix("[GNUPG:] ") else { continue };
+        let mut w = rest.splitn(3, ' ');
+        let tag = w.next().unwrap_or("");
+        let a = w.next().unwrap_or("");
+        let b = w.next().unwrap_or("");
+        match tag {
+            "GOODSIG" => {
+                c.state = "good".into();
+                c.key = a.into();
+                c.signer = b.into();
+            }
+            "BADSIG" => {
+                c.state = "bad".into();
+                c.key = a.into();
+                c.signer = b.into();
+            }
+            "EXPSIG" | "EXPKEYSIG" => {
+                c.state = "expired".into();
+                c.key = a.into();
+                c.signer = b.into();
+            }
+            "REVKEYSIG" => {
+                c.state = "revoked".into();
+                c.key = a.into();
+                c.signer = b.into();
+            }
+            "ERRSIG" => {
+                if c.state.is_empty() {
+                    c.state = "unknown-key".into();
+                    c.key = a.into();
+                }
+            }
+            "NO_PUBKEY" => {
+                c.state = "unknown-key".into();
+                c.key = a.into();
+            }
+            "VALIDSIG" => c.key = a.into(),
+            "TRUST_ULTIMATE" => c.trust = "ultimate".into(),
+            "TRUST_FULLY" => c.trust = "full".into(),
+            "TRUST_MARGINAL" => c.trust = "marginal".into(),
+            "TRUST_NEVER" => c.trust = "never".into(),
+            "TRUST_UNDEFINED" => c.trust = "unknown".into(),
+            _ => {}
+        }
+    }
+    if c.state.is_empty() {
+        c.state = "error".into();
+        c.detail = "No signature could be checked".into();
+    }
+    c
+}
+
+/// Checks a signed message's signature with the person's keyring
+/// (GNUPGHOME / the default). None: not a signed message.
+pub fn verify(raw: &[u8]) -> Option<Check> {
+    let k = kind(raw)?;
+    let Some(gpg) = gpg() else {
+        return Some(Check { state: "error".into(), detail: "GnuPG isn't installed".into(), trust: "unknown".into(), ..Default::default() });
+    };
+    let dir = tempdir()?;
+    let out = match k {
+        Kind::Signed => {
+            let (data, sig) = signed_parts(raw)?;
+            let (dp, sp) = (dir.join("data"), dir.join("sig.asc"));
+            std::fs::write(&dp, data).ok()?;
+            std::fs::write(&sp, sig).ok()?;
+            Command::new(&gpg).args(["--batch", "--no-tty", "--status-fd", "1", "--verify"]).arg(&sp).arg(&dp).output().ok()?
+        }
+        Kind::InlineSigned => {
+            let (_, body_at) = headers(raw);
+            let text = String::from_utf8_lossy(&raw[body_at..]).to_string();
+            let start = text.find("-----BEGIN PGP SIGNED MESSAGE-----")?;
+            let end = text[start..].find("-----END PGP SIGNATURE-----").map(|e| start + e + "-----END PGP SIGNATURE-----".len())?;
+            let mut child = Command::new(&gpg)
+                .args(["--batch", "--no-tty", "--status-fd", "1", "--verify"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .ok()?;
+            child.stdin.take()?.write_all(text[start..end].as_bytes()).ok()?;
+            child.wait_with_output().ok()?
+        }
+        Kind::Encrypted | Kind::InlineEncrypted => return None,
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    Some(from_status(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// A private scratch folder for one check (removed after).
+fn tempdir() -> Option<std::path::PathBuf> {
+    let d = std::env::temp_dir().join(format!("almanac-pgp-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()));
+    std::fs::create_dir_all(&d).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
+    }
+    Some(d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A throwaway keyring with one new key (no passphrase), for the tests.
+    fn test_home() -> Option<std::path::PathBuf> {
+        gpg()?;
+        let home = tempdir()?;
+        let ok = Command::new("gpg")
+            .env("GNUPGHOME", &home)
+            .args(["--batch", "--passphrase", "", "--quick-gen-key", "Test Signer <signer@example.org>", "ed25519", "sign", "never"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()?
+            .success();
+        ok.then_some(home)
+    }
+
+    fn sign(home: &std::path::Path, data: &[u8]) -> String {
+        let mut child = Command::new("gpg")
+            .env("GNUPGHOME", home)
+            .args(["--batch", "--armor", "--detach-sign", "--digest-algo", "SHA256"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(data).unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap()
+    }
+
+    fn signed_message(home: &std::path::Path, text: &str) -> Vec<u8> {
+        let part = format!("Content-Type: text/plain; charset=utf-8\r\n\r\n{text}\r\n");
+        let sig = sign(home, part.as_bytes());
+        format!(
+            "From: Test Signer <signer@example.org>\r\nTo: me@example.com\r\nSubject: Signed\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/signed; micalg=pgp-sha256; protocol=\"application/pgp-signature\"; boundary=\"XYZ\"\r\n\r\n\
+             --XYZ\r\n{part}\r\n--XYZ\r\nContent-Type: application/pgp-signature; name=\"signature.asc\"\r\n\r\n{sig}\r\n--XYZ--\r\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn kinds_are_told_apart() {
+        let signed = b"Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; boundary=x\r\n\r\n--x\r\n";
+        assert_eq!(kind(signed), Some(Kind::Signed));
+        assert_eq!(kind(b"Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=y\r\n\r\n"), Some(Kind::Encrypted));
+        assert_eq!(kind(b"Subject: x\r\n\r\n-----BEGIN PGP SIGNED MESSAGE-----\r\n"), Some(Kind::InlineSigned));
+        assert_eq!(kind(b"Subject: x\r\n\r\nHello\r\n"), None);
+        assert!(looks_signed(&["signature.asc".into()], "", ""));
+        assert!(!looks_signed(&["photo.jpg".into()], "Hello", ""));
+    }
+
+    #[test]
+    fn a_pgp_mime_signature_is_checked() {
+        let Some(home) = test_home() else { return }; // (no GnuPG here: nothing to test)
+        std::env::set_var("GNUPGHOME", &home);
+        let raw = signed_message(&home, "Meet at noon.");
+        let c = verify(&raw).expect("a signed message");
+        assert_eq!(c.state, "good", "{c:?}");
+        assert!(c.signer.contains("signer@example.org"), "{c:?}");
+        assert_eq!(c.trust, "ultimate", "own key: {c:?}");
+        // Changed after signing: bad.
+        let tampered = String::from_utf8(raw.clone()).unwrap().replace("Meet at noon.", "Meet at one.").into_bytes();
+        assert_eq!(verify(&tampered).unwrap().state, "bad");
+        // Lines ending LF only (as some stores keep mail): still good.
+        let lf = String::from_utf8(raw).unwrap().replace("\r\n", "\n").into_bytes();
+        assert_eq!(verify(&lf).unwrap().state, "good");
+        // Someone else's key: unknown.
+        let other = test_home().unwrap();
+        std::env::set_var("GNUPGHOME", &other);
+        assert_eq!(verify(&signed_message(&home, "Hi")).unwrap().state, "unknown-key");
+        std::env::remove_var("GNUPGHOME");
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(other);
+    }
+}
