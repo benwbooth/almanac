@@ -218,8 +218,6 @@ WheelHandler {
             // at the top a moment (150 ms; 400 ms for a mouse wheel's notches).
             var settled = atTopSince > 0 && Date.now() - atTopSince > (pixels ? 150 : 400)
             var deliberate = gestureFromTop || settled
-            // (Logged for now, to see what a trackpad sends here: ALMANAC-PULL.)
-            console.warn("ALMANAC-PULL phase=" + phase + " px=" + ev.pixelDelta.y + " a=" + ev.angleDelta.y + " pixels=" + pixels + " fromTop=" + gestureFromTop + " settled=" + settled + " pull=" + Math.round(pull))
             if (deliberate) { springBack.stop(); pullBy(pixels ? d : d / 120 * 22); ev.accepted = true; return }
         }
         if (pixels) swipeBy(d, phase !== Qt.NoScrollPhase)
