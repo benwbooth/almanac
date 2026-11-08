@@ -588,10 +588,16 @@ WebEngineView {
                     h += '<a class="inl" href="almanac:att/' + i + '/' + encodeURIComponent(it.name) + '" title="Open ' + esc(it.name) + '"><img src="' + src + '" alt="' + esc(it.name) + '"></a>'
 
             }
-            if (m.attachments && m.attachments.length) {
+            // Chips for attachments not already shown in the message (as Apple Mail
+            // does): a picture or PDF shown inline has its own bar (Open ▾ with
+            // Open, in a tab or window, Print, Save As; the same on right-click).
+            var inline = {}
+            for (var ip = 0; ip < shown.length; ip++) inline[shown[ip].name] = true
+            var chipped = (m.attachments || []).filter(function(n) { return !inline[n] })
+            if (chipped.length) {
                 h += '<div class="atts">'
-                for (var a = 0; a < m.attachments.length; a++) {
-                    var n = m.attachments[a]
+                for (var a = 0; a < chipped.length; a++) {
+                    var n = chipped[a]
                     h += '<span class="att"><a class="att" style="padding:0;background:none" href="almanac:att/' + i + '/' + encodeURIComponent(n) + '">📎 <b>' + esc(n) + '</b></a>'
                        + '<a class="save" title="Open, in a new tab or in a new window" href="almanac:openmenu/' + i + '/' + encodeURIComponent(n) + '">▾</a>'
                        + '<a class="save" title="Save As…" href="almanac:save/' + i + '/' + encodeURIComponent(n) + '">⤓</a></span>'
