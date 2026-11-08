@@ -870,6 +870,8 @@ ApplicationWindow {
         else if (p === "tabs-many") Qt.callLater(function() { var l = mailView.list; for (var i = 0; i < Math.min(9, l.length); i++) mailView.openInTab(l[i].id); mailView.tabIndex = 3 })
         else if (p === "choose-provider") { sourcesDialog.open(); sourcesDialog.chooseProvider() }
         else if (p === "add-proton") { sourcesDialog.open(); sourcesDialog.pickProvider("proton") }
+        // One message by its id (--id N), for pictures and checks against a copy of real mail.
+        else if (p === "message") Qt.callLater(function() { mailView.openMessageById(parseInt(store.arg("--id"))) })
         else if (p === "compose") mailView.composeNew()
         else if (p === "event") calendarView.editFirst()
         else if (p === "invite") mailView.selectInvite()

@@ -87,6 +87,8 @@ pub mod qobject {
         #[qproperty(i32, progress_total, cxx_name = "progressTotal")]
         /// Calendar alerts showing until dismissed or snoozed ([{title, when}]).
         #[qproperty(QString, alerts_json, cxx_name = "alertsJson")]
+        /// The latest signature check: {"id", "state", "signer", "key", "trust", "detail"}.
+        #[qproperty(QString, signature_json, cxx_name = "signatureJson")]
         type Store = super::StoreRust;
 
         // mail
@@ -379,6 +381,10 @@ pub mod qobject {
         #[qinvokable]
         fn finish_setup(self: Pin<&mut Store>);
         /// Settings › Calendar: a made-up event's alert, shown the way real ones are.
+        /// Checks a signed message's OpenPGP signature (in the background; the
+        /// result comes in signatureJson). Only for messages that look signed.
+        #[qinvokable]
+        fn check_signature(self: &Store, id: i64);
         #[qinvokable]
         fn test_alert(self: Pin<&mut Store>);
         /// Settings › General: a made-up new-mail notification, as real ones are.
@@ -473,6 +479,7 @@ pub struct StoreRust {
     loading: bool,
     status_text: QString,
     alerts_json: QString,
+    signature_json: QString,
     new_mail: i32,
     show_requests: i32,
     open_request: QString,
@@ -576,6 +583,7 @@ impl Default for StoreRust {
             open_alerts: Vec::new(),
             snoozed_alerts: Vec::new(),
             alerts_json: QString::from("[]"),
+            signature_json: QString::from("{}"),
             new_mail: 0,
             show_requests: 0,
             open_request: QString::default(),

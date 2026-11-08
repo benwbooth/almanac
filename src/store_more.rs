@@ -799,6 +799,40 @@ impl qobject::Store {
         self.as_mut().set_alerts_json(QString::from(j.as_str()));
     }
 
+    /// Checks a signed message's signature off the window's thread: its
+    /// original (kept next to its attachments once fetched, so it's fetched
+    /// once), then gpg. The result is published in signatureJson.
+    pub(super) fn check_signature(&self, id: i64) {
+        let Some(m) = self.db.get(id) else { return };
+        let (body, html, _) = self.db.text_of(id);
+        if !crate::pgp::looks_signed(&m.attachments, &body, &html) {
+            return;
+        }
+        let live = self.db.live_message(id);
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let kept = crate::mailstore::attachment_dir(id).join("original.eml");
+            let raw = match std::fs::read(&kept) {
+                Ok(r) => Ok(r),
+                Err(_) => original_message(&m, live).inspect(|r| {
+                    let _ = std::fs::create_dir_all(crate::mailstore::attachment_dir(id));
+                    let _ = std::fs::write(&kept, r);
+                }),
+            };
+            let result = match raw {
+                Ok(raw) => match crate::pgp::verify(&raw) {
+                    Some(c) => serde_json::to_value(c).unwrap_or_default(),
+                    None => return,
+                },
+                Err(e) => json!({"state": "error", "detail": format!("Couldn't get the original message: {e}"), "trust": "unknown", "signer": "", "key": ""}),
+            };
+            let mut result = result;
+            result["id"] = json!(id);
+            let text = result.to_string();
+            let _ = thread.queue(move |store| store.set_signature_json(QString::from(text.as_str())));
+        });
+    }
+
     /// A made-up event's alert ("Test Event", in 5 minutes), shown as real ones
     /// are (always notified, so it can be tried with notifications off too).
     pub(super) fn test_alert(self: Pin<&mut Self>) {

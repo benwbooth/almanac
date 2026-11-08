@@ -90,7 +90,8 @@ pub fn kind(raw: &[u8]) -> Option<Kind> {
 pub fn looks_signed(attachments: &[String], body: &str, html: &str) -> bool {
     attachments.iter().any(|a| {
         let a = a.to_ascii_lowercase();
-        a == "signature.asc" || a.ends_with(".sig") || a == "encrypted.asc" || a == "openpgp.asc"
+        // ("OpenPGP_signature" is how Thunderbird names it.)
+        a == "signature.asc" || a.ends_with(".sig") || a == "encrypted.asc" || a == "openpgp.asc" || a.starts_with("openpgp_signature") || a == "msg.asc"
     }) || body.contains("-----BEGIN PGP") || html.contains("-----BEGIN PGP")
 }
 
@@ -321,6 +322,7 @@ mod tests {
         assert_eq!(kind(b"Subject: x\r\n\r\n-----BEGIN PGP SIGNED MESSAGE-----\r\n"), Some(Kind::InlineSigned));
         assert_eq!(kind(b"Subject: x\r\n\r\nHello\r\n"), None);
         assert!(looks_signed(&["signature.asc".into()], "", ""));
+        assert!(looks_signed(&["OpenPGP_signature".into()], "", ""), "Thunderbird's name");
         assert!(!looks_signed(&["photo.jpg".into()], "Hello", ""));
     }
 

@@ -72,7 +72,9 @@ WebEngineView {
         else if (p[2] === "fmt") web.formatState[m.id] = on
         else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
     }
-    onLoadingChanged: function(info) { paneLog("loading " + ["started", "stopped", "succeeded", "failed"][info.status] + (info.errorString ? " " + info.errorString : "")) }
+    onLoadingChanged: function(info) {
+        if (info.status === WebEngineView.LoadSucceededStatus) web.applySigs()
+        paneLog("loading " + ["started", "stopped", "succeeded", "failed"][info.status] + (info.errorString ? " " + info.errorString : "")) }
     onRenderProcessTerminated: function(status, code) { paneLog("render process ended, status " + status + " code " + code) }
     property int redrawPasses: 0
     function redraw() {
@@ -128,6 +130,40 @@ WebEngineView {
     // Plain text or formatted, chosen for one message (its link switches it in
     // place, without redrawing the page); the global choice clears these.
     property var formatState: ({})
+    // OpenPGP signature checks by message id (from the store, in the background).
+    property var sigs: ({})
+    function sigBadge(c) {
+        if (!c || !c.state) return ""
+        var who = c.signer ? c.signer : (c.key ? "key " + c.key : "")
+        var tip = (who ? "Signed by " + who : "") + (c.key ? "\nKey " + c.key : "") + (c.trust ? "\nTrust: " + c.trust : "") + (c.detail ? "\n" + c.detail : "")
+        var trusted = c.trust === "ultimate" || c.trust === "full"
+        var cls, text
+        if (c.state === "good" && trusted) { cls = "good"; text = "✓ Signed" }
+        else if (c.state === "good") { cls = "warn"; text = "✓ Signed (key not verified)" }
+        else if (c.state === "bad") { cls = "bad"; text = "✗ Signature doesn't match" }
+        else if (c.state === "expired") { cls = "warn"; text = "Signed (expired key)" }
+        else if (c.state === "revoked") { cls = "bad"; text = "Signed (revoked key)" }
+        else if (c.state === "unknown-key") { cls = "dim"; text = "Signed (unknown key)" }
+        else { cls = "dim"; text = "Couldn't check signature" }
+        return '<span class="pgp ' + cls + '" title="' + esc(tip) + '">' + esc(text) + '</span>'
+    }
+    Connections {
+        target: web.store
+        function onSignatureJsonChanged() {
+            var c = JSON.parse(web.store.signatureJson || "{}")
+            if (c.id === undefined) return
+            web.sigs[c.id] = c
+            web.applySigs()
+        }
+    }
+    // The badges known so far, put in the page (again once a page has loaded:
+    // a result can come in while it's still loading).
+    function applySigs() {
+        for (var i = 0; i < web.messages.length; i++) {
+            var c = web.sigs[web.messages[i].id]
+            if (c) web.runJavaScript("(function(){var e=document.getElementById('pgp-" + i + "');if(e)e.innerHTML=" + JSON.stringify(web.sigBadge(c)) + "})()")
+        }
+    }
     // Where to scroll once drawn: a conversation newly opened goes to its first
     // unread message (or its newest); drawn again (mail arriving, a message
     // marked read) it stays where it was (keepScroll, read from the page first).
@@ -460,6 +496,11 @@ WebEngineView {
               + '.sum{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px;display:flex;gap:6px;min-width:0}'
               + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}'
               + '.msg:not(.det-on) .details{display:none}.msg.plain .remote{display:none}'
+              + '.pgp{font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;margin-left:8px;white-space:nowrap;cursor:default}'
+              + '.pgp.good{color:' + (Theme.dark ? '#7ee2a0' : '#0d7a33') + ';background:' + (Theme.dark ? 'rgba(126,226,160,.14)' : '#e3f6e9') + '}'
+              + '.pgp.warn{color:' + (Theme.dark ? '#ffcc66' : '#8a5a00') + ';background:' + (Theme.dark ? 'rgba(255,204,102,.14)' : '#fdf1d8') + '}'
+              + '.pgp.bad{color:' + (Theme.dark ? '#ff8a80' : '#b3261e') + ';background:' + (Theme.dark ? 'rgba(255,138,128,.14)' : '#fde3e1') + '}'
+              + '.pgp.dim{color:' + css(Theme.secondary) + ';background:' + css(Theme.segment) + '}'
               + '.chev{font-size:11px;padding:0 2px}'
               + '.top .acts{margin-left:6px;align-self:center}'
               // People on To and Cc as bubbles, as in compose (click or right-click: copy, write to).
@@ -538,7 +579,7 @@ WebEngineView {
                + '<span class="grow"></span>' + (m.flagged ? '<span style="color:' + Theme.flagColors[m.flagColor || 0] + '" title="' + Theme.flagNames[m.flagColor || 0] + ' flag">⚑</span>' : '')
                + '<span class="acts">' + actions(i) + '</span>'
                + '</div>'
-               + '<div class="when">' + esc(Theme.fmtLongDate(m.date)) + '</div>'
+               + '<div class="when">' + esc(Theme.fmtLongDate(m.date)) + '<span id="pgp-' + i + '">' + sigBadge(web.sigs[m.id]) + '</span></div>'
                + '<div class="sum"><span class="who2">' + esc(toLine) + '</span><a class="det" href="#" data-det="' + i + '">Details</a></div>'
                + '<div class="details">'
                // To and Cc each on a line of their own, wrapped so every address can be read.
@@ -593,7 +634,8 @@ WebEngineView {
             // Open, in a tab or window, Print, Save As; the same on right-click).
             var inline = {}
             for (var ip = 0; ip < shown.length; ip++) inline[shown[ip].name] = true
-            var chipped = (m.attachments || []).filter(function(n) { return !inline[n] })
+            // (An OpenPGP signature is shown as the badge in the header, not as a file.)
+            var chipped = (m.attachments || []).filter(function(n) { return !inline[n] && !/^(signature\.asc|openpgp_signature(\.asc)?)$/i.test(n) })
             if (chipped.length) {
                 h += '<div class="atts">'
                 for (var a = 0; a < chipped.length; a++) {
@@ -779,6 +821,11 @@ WebEngineView {
     }
     function loadPage(pv) {
         if (typeof web.page !== "function") return
+        // Signed ones checked (in the background; once per message).
+        if (web.store) for (var si = 0; si < web.messages.length; si++) {
+            var sm = web.messages[si]
+            if (web.sigs[sm.id] === undefined) { web.sigs[sm.id] = null; web.store.checkSignature(sm.id) }
+        }
         web.previews = pv
         var doc = page()
         var file = doc.length > 1800000 && web.store ? web.store.pageFile(web.slot, doc) : ""
