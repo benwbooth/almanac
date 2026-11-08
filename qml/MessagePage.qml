@@ -583,6 +583,15 @@ WebEngineView {
     function ownLook(html) { return /bgcolor|background|color\s*[:=]/i.test(html || "") }
     function linkify(t) { return t.replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1">$1</a>') }
     function css(c) { return c.toString() }
+    // An icon of the app's own line set (Icon.qml) as inline SVG, in the text's colour.
+    function lineIcon(name) {
+        var paths = {
+            // Chevrons pointing apart / together.
+            expandAll: "M7 9.5 12 4.5 17 9.5M7 14.5 12 19.5 17 14.5",
+            collapseAll: "M7 4.5 12 9.5 17 4.5M7 19.5 12 14.5 17 19.5"
+        }
+        return '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + paths[name] + '"/></svg>'
+    }
 
     function emailDoc(m, paper, remote, asRich) {
         // Adapted by the engine's dark mode: written as a light page, which it darkens.
@@ -635,6 +644,10 @@ WebEngineView {
               // its people and address under Details.
               + '.convbar{display:flex;gap:14px;align-items:center;margin:-8px 0 12px;font-size:12px;color:' + css(Theme.secondary) + '}'
               + '.convbar a,.det,.chev{color:' + css(Theme.accent) + ';text-decoration:none}'
+              // Expand All / Collapse All: icon and words; the icon alone (with its
+              // tooltip) when the pane is narrow.
+              + '.convbar a{display:inline-flex;align-items:center;gap:4px}.convbar svg{width:14px;height:14px;flex:none}'
+              + '@media (max-width:420px){.convbar .lbl{display:none}}'
               + '.msg.col{padding:8px 12px;margin-bottom:6px;cursor:pointer}.msg.col:hover{background:' + css(Theme.hover) + '}'
               + '.msg.col .full,.msg:not(.col) .row{display:none}'
               // Closed: who and when, then the heart of what they said (up to three lines).
@@ -710,7 +723,8 @@ WebEngineView {
               + '</style><style id="sbshow"></style></head><body>'
               + '<h1>' + esc(web.subject || "(No Subject)") + '</h1>'
               + (boxed ? '<div class="convbar"><span>' + web.messages.length + ' messages</span>'
-                         + '<a href="#" data-all="1">Expand All</a><a href="#" data-all="0">Collapse All</a></div>' : '')
+                         + '<a href="#" data-all="1" title="Expand All">' + lineIcon("expandAll") + '<span class="lbl">Expand All</span></a>'
+                         + '<a href="#" data-all="0" title="Collapse All">' + lineIcon("collapseAll") + '<span class="lbl">Collapse All</span></a></div>' : '')
         for (var i = 0; i < web.messages.length; i++) {
             var m = web.messages[i]
             // Decrypted (in memory): its text in place of the encrypted part.

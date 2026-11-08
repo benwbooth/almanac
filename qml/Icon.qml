@@ -79,6 +79,10 @@ Canvas {
             line([9.5, 5, 16, 12, 9.5, 19]); break
         case "chevronDown":
             line([6, 9.5, 12, 15.5, 18, 9.5]); break
+        case "expandAll":
+            line([7, 9.5, 12, 4.5, 17, 9.5]); line([7, 14.5, 12, 19.5, 17, 14.5]); break
+        case "collapseAll":
+            line([7, 4.5, 12, 9.5, 17, 4.5]); line([7, 19.5, 12, 14.5, 17, 19.5]); break
         case "mail":
             rr(3, 5, 18, 14, 2.5); c.stroke(); line([3.5, 6.5, 12, 13, 20.5, 6.5]); break
         case "calendar":
