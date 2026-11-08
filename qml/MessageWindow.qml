@@ -71,7 +71,10 @@ Window {
     height: Math.max(320, Math.min(popSize.h, Screen.desktopAvailableHeight || 100000))
     onWidthChanged: popSave.restart()
     onHeightChanged: popSave.restart()
-    Timer { id: popSave; interval: 800; onTriggered: if (w.visible && w.visibility === Window.Windowed) { popSize.w = w.width; popSize.h = w.height } }
+    Timer { id: popSave; interval: 800; onTriggered: if (w.visible && w.visibility === Window.Windowed && sizeKeeper.settled) { popSize.w = w.width; popSize.h = w.height } }
+    // (Opening: the desktop may give the window another size a moment later,
+    // which isn't one chosen; once settled, resizes are kept.)
+    PaneKeeper { id: sizeKeeper; item: w.contentItem; Component.onCompleted: restore({}) }
     minimumWidth: 420; minimumHeight: 320
     transientParent: null
     // The top bar is the title bar, as in the main window.

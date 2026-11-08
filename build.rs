@@ -84,6 +84,7 @@ fn main() {
             cxx_qt_build::QmlFile::from("qml/SettingsDialog.qml"),
             cxx_qt_build::QmlFile::from("qml/SignInSetup.qml"),
             cxx_qt_build::QmlFile::from("qml/PaneGrip.qml"),
+            cxx_qt_build::QmlFile::from("qml/PaneKeeper.qml"),
             cxx_qt_build::QmlFile::from("qml/ComboX.qml"),
             cxx_qt_build::QmlFile::from("qml/CheckX.qml"),
             cxx_qt_build::QmlFile::from("qml/DateField.qml"),

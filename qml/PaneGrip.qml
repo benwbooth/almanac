@@ -7,6 +7,8 @@ import QtQuick.Controls.Basic
 MouseArea {
     id: grip
     required property Item pane
+    // (A drag is the person's choice: the keeper saves it at once.)
+    property PaneKeeper keeper: null
     // A divider below the pane (it changes the pane's height) instead of beside it.
     property bool vertical: false
     property real minimum: pane.SplitView.minimumWidth > 0 ? pane.SplitView.minimumWidth : 80
@@ -23,7 +25,7 @@ MouseArea {
     cursorShape: vertical ? Qt.SplitVCursor : Qt.SplitHCursor
     property real startX: 0
     property real startWidth: 0
-    onPressed: function(ev) { var p = mapToItem(null, ev.x, ev.y); startX = vertical ? p.y : p.x; startWidth = vertical ? pane.height : pane.width }
+    onPressed: function(ev) { if (keeper) keeper.settle(); var p = mapToItem(null, ev.x, ev.y); startX = vertical ? p.y : p.x; startWidth = vertical ? pane.height : pane.width }
     onPositionChanged: function(ev) {
         if (!pressed) return
         var p = mapToItem(null, ev.x, ev.y)

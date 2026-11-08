@@ -19,7 +19,7 @@ Item {
     property var paneSizes: ({})
     signal panesChanged()
     function notePanes() {
-        if (!visible || width <= 0) return
+        if (!visible || width <= 0 || !paneKeeper.settled) return
         var p = Object.assign({}, paneSizes)
         if (sidebarShown && sidebarPane.width > 60) p.sideW = sidebarPane.width
         if (listPane.width > 120) p.listW = listPane.width
@@ -38,9 +38,17 @@ Item {
         sidebarShown = s.sidebar !== false
         if (s.group !== undefined) group = s.group
         if (s.selectedId !== undefined) selectedId = s.selectedId
-        var W = (page.Window.window ? page.Window.window.width : 0) || 1280
-        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, W * 0.4)
-        if (s.listW > 120) listPane.SplitView.preferredWidth = Math.min(s.listW, Math.max(220, W - Math.min(s.sideW || 0, W * 0.4) - 320))
+        paneKeeper.restore(paneSizes)
+    }
+    // The saved pane sizes put back (again as the window gets its real size).
+    PaneKeeper {
+        id: paneKeeper
+        item: page
+        resizing: paneSplit.resizing
+        apply: function(s, W, H) {
+            if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, W * 0.4)
+            if (s.listW > 120) listPane.SplitView.preferredWidth = Math.min(s.listW, Math.max(220, W - Math.min(s.sideW || 0, W * 0.4) - 320))
+        }
     }
     property bool editing: false
     property var draft: null
@@ -236,11 +244,12 @@ Item {
     }
 
     // Grips over the pane dividers (the lines are too thin to catch).
-    PaneGrip { pane: sidebarPane }
-    PaneGrip { pane: listPane }
+    PaneGrip { pane: sidebarPane; keeper: paneKeeper }
+    PaneGrip { pane: listPane; keeper: paneKeeper }
 
     // Panes with handles to drag their widths.
     SplitView {
+        id: paneSplit
         anchors.fill: parent
         orientation: Qt.Horizontal
         handle: Rectangle {

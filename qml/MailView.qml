@@ -332,7 +332,7 @@ Item {
         if (!visible || width <= 0) return
         // (Just started: the window may not have its real size yet, and panes
         // squeezed meanwhile mustn't be kept as the sizes chosen.)
-        if (Date.now() < panesSettleUntil) return
+        if (!paneKeeper.settled) return
         var p = Object.assign({}, paneSizes)
         if (sidebarShown && sidebarPane.width > 60) p.sideW = sidebarPane.width
         if (!classic && listPane.width > 120) p.listW = listPane.width
@@ -355,10 +355,8 @@ Item {
         paneSizes = { sideW: s.sideW, listW: s.listW, listH: s.listH }
         foldedAccounts = s.folded || {}
         sidebarShown = s.sidebar !== false
-        // The sizes put back, and again as the window gets its real size (on
-        // Wayland the desktop sizes it a moment after it opens).
-        panesSettleUntil = Date.now() + 3000
-        applyPanes()
+        // The sizes put back, and again as the window gets its real size.
+        paneKeeper.restore(paneSizes)
         if (s.selection) { selection = s.selection; selectionName = s.selectionName || selectionName }
         if (s.threaded !== undefined) threaded = s.threaded
         if (s.unreadOnly !== undefined) unreadOnly = s.unreadOnly
@@ -374,20 +372,17 @@ Item {
             })
         }
     }
-    property double panesSettleUntil: 0
-    // The saved pane sizes, kept within the window (a pane never comes back too
-    // big to leave room for the message).
-    function applyPanes() {
-        var s = paneSizes
-        var W = (mail.Window.window ? mail.Window.window.width : 0) || 1280, H = (mail.Window.window ? mail.Window.window.height : 0) || 800
+    // The saved pane sizes put back, kept within the window (a pane never comes
+    // back too big to leave room for the message).
+    PaneKeeper {
+        id: paneKeeper
+        item: mail
+        resizing: mainSplit.resizing || contentSplit.resizing
+        apply: function(s, W, H) {
         if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, W * 0.4)
         if (s.listW > 120) listPane.SplitView.preferredWidth = Math.min(s.listW, Math.max(220, W - Math.min(s.sideW || 0, W * 0.4) - 320))
         if (s.listH > 80) listPane.SplitView.preferredHeight = Math.min(s.listH, Math.max(120, H - 220))
-    }
-    Connections {
-        target: mail.Window.window
-        function onWidthChanged() { if (Date.now() < mail.panesSettleUntil) mail.applyPanes() }
-        function onHeightChanged() { if (Date.now() < mail.panesSettleUntil) mail.applyPanes() }
+        }
     }
     // "standard" (list beside the message) or "classic" (list above the message, compact rows)
     readonly property bool classic: prefs.mail_layout === "classic"
@@ -1026,8 +1021,8 @@ Item {
     }
 
     // Grips over the pane dividers (the lines are too thin to catch).
-    PaneGrip { pane: sidebarPane }
-    PaneGrip { pane: listPane; vertical: mail.classic }
+    PaneGrip { pane: sidebarPane; keeper: paneKeeper }
+    PaneGrip { pane: listPane; vertical: mail.classic; keeper: paneKeeper }
 
     // Tabs: the mailbox, then each message opened in a tab (shown once there's
     // one); they can be dragged along, out into windows, and between windows.
@@ -1099,6 +1094,7 @@ Item {
 
     // Panes with handles to drag their widths.
     SplitView {
+        id: mainSplit
         anchors.left: parent.left; anchors.right: parent.right
         anchors.top: tabStrip.bottom; anchors.bottom: parent.bottom
         visible: mail.tabIndex === 0
