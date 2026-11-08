@@ -674,7 +674,7 @@ Item {
         store.printHtml(current.subject, h)
     }
 
-    ComposeSheet { id: compose; store: mail.store }
+    ComposeSheet { id: compose; store: mail.store; onSetupStorageRequested: mail.accountsRequested() }
 
     // Double-click: the message (its conversation) in a window of its own.
     // Opening one that's already open brings its window forward.

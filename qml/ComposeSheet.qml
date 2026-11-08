@@ -17,6 +17,8 @@ Popup {
     property var draftId: null
     property var senders: []
     property var attachments: []
+    // "Set Up…" on the big-attachments question: Accounts › Cloud Storage.
+    signal setupStorageRequested()
     // Attachments too big for the mail account go to cloud storage and are sent
     // as links (as Apple Mail's Mail Drop does): their paths here; how each
     // upload is going is in store.cloudUploadsJson.
@@ -52,7 +54,8 @@ Popup {
         for (var i = 0; i < order.length && JSON.parse(store.cloudOffer(accountId(), left)).over; i++) { pick.push(order[i].p); left -= order[i].n }
         var mb = (total / 1048576).toFixed(1)
         if (!offer.store) {
-            confirm.ask("These attachments are too big to send", "Together they're " + mb + " MB; this account takes up to " + offer.limitMb + " MB. Sending big files through cloud storage works with Google and Microsoft accounts for now.", "OK", null)
+            confirm.ask("These attachments are too big to send", "Together they're " + mb + " MB; this account takes up to " + offer.limitMb + " MB. Set up cloud storage (Dropbox, Box, Nextcloud, or the mail account's own) to send them as links.", "OK", null,
+                        "Set Up…", function() { sheet.setupStorageRequested() })
             return
         }
         if (offer.mode === "never") return

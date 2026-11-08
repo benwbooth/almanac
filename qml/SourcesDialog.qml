@@ -435,6 +435,16 @@ Popup {
                 }
             }
 
+            // ------------------------------------ cloud storage (big attachments)
+            Rectangle { visible: !dlg.editing && !dlg.choosing; Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.borderSoft; Layout.topMargin: 6 }
+            CloudStorageSetup {
+                id: cloudSetup
+                visible: !dlg.editing && !dlg.choosing
+                Layout.fillWidth: true
+                store: dlg.store
+                accounts: dlg.accounts
+            }
+
             // ------------------------------------ other apps on this computer
             Rectangle { visible: !dlg.editing; Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.borderSoft; Layout.topMargin: 6 }
             Text { visible: !dlg.editing; text: "From other apps on this computer"; font.pixelSize: 15; font.weight: Font.DemiBold; color: Theme.text }
