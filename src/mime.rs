@@ -508,7 +508,10 @@ pub fn clean_html(html: &str) -> String {
 /// Turns remote picture addresses into inert ones (`data-remote-src`,
 /// `data-remote-background`, `remote-url(...)`) that nothing loads.
 pub fn block_remote(html: &str) -> String {
-    let mut s = html.to_string();
+    // (Attributes run together, `height="128"src="…"`, or with spaces or
+    // line breaks around "=": written the usual way first.)
+    let tidy = regex::Regex::new(r#"(?i)([\s"'/])(src|background)\s*=\s*"#).unwrap();
+    let mut s = tidy.replace_all(html, |c: &regex::Captures| format!("{} {}=", if c[1].trim().is_empty() { "" } else { &c[1] }, &c[2])).into_owned();
     // Addresses written out in full, from the page's own folder ("//host/…"),
     // and inside quotes written as entities (&#39; &quot;), which mail often uses.
     let quotes = ["", "'", "\"", "&#39;", "&quot;", "&#34;"];
@@ -586,6 +589,11 @@ mod remote_tests {
         assert!(h.contains("data-remote-background=\"http://x/bg.png\""), "{h}");
         assert!(h.contains("remote-url(https://x/a.png)"), "{h}");
         assert!(h.contains(r#"src="cid:logo""#), "local pictures stay: {h}");
+        // Attributes run together, or "=" with spaces or a line break round it.
+        let h = super::clean_html("<img height=\"128\"width=\"\"src=\"https://x/m.png\"><img\nsrc = 'http://x/n.png'><td background\n=\"https://x/bg.png\">");
+        assert!(!h.contains(" src=") && !h.contains("\"src=") && !h.contains("\nsrc"), "{h}");
+        assert!(h.contains("data-remote-src=\"https://x/m.png\"") && h.contains("data-remote-src='http://x/n.png'"), "{h}");
+        assert!(h.contains("data-remote-background=\"https://x/bg.png\""), "{h}");
         assert!(!h.contains("evil"), "{h}");
     }
 }

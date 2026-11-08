@@ -546,7 +546,7 @@ WebEngineView {
         return '<!doctype html><html><head><meta charset="utf-8"><base target="_blank">'
              + '<style>html{overflow:hidden;overscroll-behavior:none;color-scheme:' + (dark ? 'dark' : 'light') + ';background:' + (paper ? '#ffffff' : 'transparent') + '}'
              + 'body{margin:0;padding:' + (paper ? '12px' : '0') + ';color:' + text + ';font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;overflow-wrap:break-word}'
-             + 'img{max-width:100%;height:auto}a{color:' + link + '}pre{white-space:pre-wrap}blockquote{margin-left:6px;padding-left:10px;border-left:2px solid ' + (dark ? css(Theme.accent) : '#2f7cf6') + '}</style>'
+             + 'img{max-width:100%}img[width]:not([width=""]){height:auto}a{color:' + link + '}pre{white-space:pre-wrap}blockquote{margin-left:6px;padding-left:10px;border-left:2px solid ' + (dark ? css(Theme.accent) : '#2f7cf6') + '}</style>'
              + '</head><body>' + content + '</body></html>'
     }
 

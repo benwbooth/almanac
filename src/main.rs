@@ -207,6 +207,13 @@ fn main() {
                 add.push(f.to_string());
             }
         }
+        // Dark mode for mail: colours of text and backgrounds only. The engine's
+        // own pick of "icon-like" pictures to recolour changed logos and icons
+        // (a purple logo made light, an envelope's light flap lost): pictures
+        // are always shown as they are.
+        if !flags.contains("dark-mode-settings") {
+            add.push("--dark-mode-settings=ImagePolicy=1".into());
+        }
         if !flags.contains("CalculateNativeWinOcclusion") {
             add.push("--disable-features=CalculateNativeWinOcclusion".into());
         }
