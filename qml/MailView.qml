@@ -220,6 +220,16 @@ Item {
         }
         if (idx >= 0) lastIndex = idx
         if (messageList.currentIndex !== idx) messageList.currentIndex = idx
+        // Out of sight after the list changed (a filter turned off, a search
+        // cleared): straight to it, in the middle.
+        if (idx >= 0) Qt.callLater(mail.revealSelected)
+    }
+    function revealSelected() {
+        var lv = messageList, i = lv.currentIndex
+        if (i < 0 || i >= lv.count) return
+        var it = lv.itemAtIndex(i)
+        var shown = it && it.y >= lv.contentY && it.y + it.height <= lv.contentY + lv.height
+        if (!shown) lv.positionViewAtIndex(i, ListView.Center)
     }
 
     // Every message the next action applies to: all picked rows (whole
@@ -1080,6 +1090,11 @@ Item {
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
                 keyNavigationEnabled: true
+                // The list goes to the selected message at once, never gliding
+                // to it (ListView's own following moves at 400 px/s).
+                highlightMoveDuration: 0
+                highlightMoveVelocity: -1
+                highlightResizeDuration: 0
                 // At the end of the list: older mail, or this search on the server.
                 footer: Item {
                     width: ListView.view ? ListView.view.width : 0
