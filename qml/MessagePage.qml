@@ -680,7 +680,11 @@ WebEngineView {
            + 'function fit(f,fresh){try{var d=f.contentDocument;if(!d||!d.documentElement)return;var de=d.documentElement,b=d.body||de;'
            + 'if(fresh){f.style.width="100%";f.__w=0;f.style.height="1px";f.__h=0;f.__gc=0}'
            + 'var cw=f.parentNode?f.parentNode.clientWidth:f.clientWidth,w=Math.max(de.scrollWidth,b.scrollWidth),ww=w>cw+1?w:0;'
-           + 'if(ww>(f.__w||0)){f.style.width=ww+"px";f.__w=ww}'
+           // Its width only when measured afresh (on loading, the window's width
+           // changing): content as wide as its frame plus a little (100% and
+           // padding, as a USPS mail has) grew it 5 px on every look, the
+           // email slowly zooming in.
+           + 'if(fresh&&ww>(f.__w||0)){f.style.width=ww+"px";f.__w=ww}'
            + 'var hh=Math.max(de.scrollHeight,b.scrollHeight,b.offsetHeight),cur=f.__h||0;'
            + 'if(cur&&Math.abs(hh-cur)<=2)return;'
            + 'var now=Date.now();if(!f.__gt||now-f.__gt>2000){f.__gt=now;f.__gc=0}if(cur&&hh>cur&&++f.__gc>30)return;'
@@ -857,3 +861,4 @@ WebEngineView {
         else loadHtml(doc, "https://almanac.invalid/")
     }
 }
+
