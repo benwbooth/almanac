@@ -101,6 +101,28 @@ Item {
     property int winWant: -1
     readonly property string winKey: [selection, query, threaded, sortBy, sortAscending, unreadOnly].join("\u0001")
     onWinKeyChanged: Qt.callLater(winReset)
+    // ---- Pull to refresh: the mail checked (Get Mail), the spinner held until
+    // it's done (or 20 s at most), then the list springs back.
+    property bool pullChecking: false
+    property bool pullSawBusy: false
+    property double pullStarted: 0
+    function pullRefresh() {
+        pullChecking = true
+        pullSawBusy = store.busy
+        pullStarted = Date.now()
+        store.refreshAll()
+        pullDone.restart()
+    }
+    Timer {
+        id: pullDone
+        interval: 250; repeat: true
+        onTriggered: {
+            if (store.busy) mail.pullSawBusy = true
+            var spun = Date.now() - mail.pullStarted
+            // (At least a moment, so the spinner is seen; done when the check is.)
+            if ((spun > 700 && !store.busy) || spun > 20000) { stop(); mail.pullChecking = false }
+        }
+    }
     function placeholderRow(i) { return { id: -1 - i, placeholder: true, fromName: "", fromEmail: "", subject: "", preview: "", date: 0, read: true, flagged: false, attachments: false } }
     function winReset() {
         var on = store.canWindow(selection, query, sortBy, sortAscending)
@@ -1238,10 +1260,35 @@ Item {
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
             }
+            // Pull to refresh's spinner: in the room the pulled-down list leaves
+            // above its first row (the list is drawn over it otherwise).
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 0
+                z: 0
+                BusyIndicator {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 26; height: 26
+                    y: Math.max(4, (listMomentum.pull - height) / 2)
+                    visible: listMomentum.pull > 2
+                    opacity: Math.min(1, listMomentum.pull / listMomentum.pullTrigger)
+                    // (Spinning once it's let go, or held while checking.)
+                    running: mail.pullChecking || listMomentum.pull >= listMomentum.pullTrigger
+                }
+            }
             ListView {
                 // Trackpad scrolling glides on (momentum).
-                Momentum { flick: messageList }
+                Momentum {
+                    id: listMomentum
+                    flick: messageList
+                    // Pull down past the top: Get Mail (see pullRefresh).
+                    pullable: true
+                    refreshing: mail.pullChecking
+                    onRefreshRequested: mail.pullRefresh()
+                }
                 id: messageList
+                // Pulled down past the top: the list moves down with it, over the spinner.
+                transform: Translate { y: listMomentum.pull }
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true

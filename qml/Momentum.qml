@@ -37,6 +37,45 @@ WheelHandler {
     // Wheel notches close together accelerate.
     property double lastNotchAt: 0
     property real burst: 0
+    // ---- Pull to refresh (set `pullable`): scrolling up past the top pulls the
+    // list down (harder the further it goes); let go past `pullTrigger`
+    // pixels, refreshRequested. Only from a list already at the top when the
+    // scrolling began (never a glide or a fast scroll running into the top),
+    // and from a mouse wheel only a few notches together.
+    property bool pullable: false
+    property real pull: 0
+    property real pullTrigger: 60
+    // Held open (at the spinner's height) while the mail is being checked.
+    property bool refreshing: false
+    signal refreshRequested()
+    property double atTopSince: 0
+    property bool gestureFromTop: false
+    property double lastRefreshAt: 0
+    function atTop() { return flick.contentY <= lowest() + 0.5 }
+    function pullBy(d) {
+        // (Up: d < 0. Rubber band: each pixel counts for less the further it's pulled.)
+        var resist = Math.max(0.15, 1 - pull / 140)
+        pull = Math.max(0, Math.min(140, pull - d * 0.6 * resist))
+        pullRelease.restart()
+    }
+    function releasePull() {
+        pullRelease.stop()
+        if (pull >= pullTrigger && !refreshing && Date.now() - lastRefreshAt > 1500) {
+            lastRefreshAt = Date.now()
+            refreshRequested()
+        }
+        springTo()
+    }
+    // Back to closed, or to the spinner's height while checking. (The target
+    // set here: a binding on it updated too late when checking ended.)
+    function springTo() { springBack.stop(); springBack.to = refreshing ? 44 : 0; springBack.start() }
+    property Timer pullRelease: Timer { interval: 160; onTriggered: m.releasePull() }
+    property NumberAnimation springBack: NumberAnimation {
+        target: m; property: "pull"; duration: 260; easing.type: Easing.OutCubic
+        to: 0
+    }
+    onRefreshingChanged: if (!pullRelease.running) springTo()
+
     // Our own moves (so other moves, e.g. a scroll bar drag, stop the glide).
     property bool moving: false
     property real lastSetY: NaN
@@ -148,10 +187,15 @@ WheelHandler {
         var phase = ev.phase
         note("w " + ["none", "begin", "update", "end", "momentum"][phase] + " px" + ev.pixelDelta.y + " a" + ev.angleDelta.y
                         + (ev.device && ev.device.type === PointerDevice.TouchPad ? " pad" : " mouse") + (glide.running ? " g" + Math.round(velocity) : ""))
-        if (phase === Qt.ScrollEnd) { var was = swiping; endSwipe(); ev.accepted = was; return }
+        if (phase === Qt.ScrollEnd) {
+            if (pull > 0) { releasePull(); gestureFromTop = false; ev.accepted = true; return }
+            var was = swiping; endSwipe(); ev.accepted = was; return
+        }
+        if (phase === Qt.ScrollBegin) gestureFromTop = pullable && atTop() && !glide.running
         // The system's own momentum (macOS): it has its own glide.
-        if (phase === Qt.ScrollMomentum) { stop(); moveBy(-ev.pixelDelta.y); ev.accepted = ev.pixelDelta.y !== 0; return }
-        var canScroll = flick.flickableDirection !== Flickable.HorizontalFlick && flick.contentHeight > flick.height
+        if (phase === Qt.ScrollMomentum) { stop(); if (pull === 0) moveBy(-ev.pixelDelta.y); ev.accepted = ev.pixelDelta.y !== 0; return }
+        // (A list too short to scroll still pulls to refresh.)
+        var canScroll = flick.flickableDirection !== Flickable.HorizontalFlick && (flick.contentHeight > flick.height || pullable)
         if (!canScroll) { ev.accepted = false; return }
         if (phase === Qt.ScrollBegin) beginSwipe()
         var touchpad = ev.device && ev.device.type === PointerDevice.TouchPad
@@ -159,6 +203,14 @@ WheelHandler {
         var d = pixels ? -ev.pixelDelta.y : -ev.angleDelta.y
         // Fingers down without moving yet: the glide goes on until they move.
         if (d === 0) { ev.accepted = phase === Qt.ScrollBegin; return }
+        // Pulled down already: scrolling back down eases it first.
+        if (pull > 0 && d > 0) { springBack.stop(); pull = Math.max(refreshing ? 44 : 0, pull - d); pullRelease.restart(); ev.accepted = true; return }
+        // Past the top, from a list that was already there (a trackpad gesture
+        // begun there, or the wheel after a moment at the top): a pull.
+        if (pullable && d < 0 && atTop() && !glide.running) {
+            var deliberate = phase !== Qt.NoScrollPhase ? gestureFromTop : (Date.now() - atTopSince > 400)
+            if (deliberate) { springBack.stop(); pullBy(pixels ? d : d / 120 * 22); ev.accepted = true; return }
+        }
         if (pixels) swipeBy(d, phase !== Qt.NoScrollPhase)
         else notches(d / 120)
         ev.accepted = true
@@ -181,6 +233,7 @@ WheelHandler {
         // to a message): the glide stops.
         function onDraggingChanged() { if (m.flick.dragging) m.stop("dragged") }
         function onContentYChanged() {
+            if (m.atTop()) { if (m.atTopSince === 0) m.atTopSince = Date.now() } else m.atTopSince = 0
             if (!m.moving && m.glide.running && Math.abs(m.flick.contentY - m.lastSetY) > 1) m.stop("moved by something else")
         }
     }
