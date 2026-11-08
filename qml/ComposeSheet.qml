@@ -18,6 +18,22 @@ Popup {
     property var senders: []
     property var attachments: []
     property string inReplyTo: ""
+    // OpenPGP: sign with your key, encrypt to every recipient (and you).
+    property bool sign: false
+    property bool encrypt: false
+    property var pgp: ({ gpg: false, canSign: false, missing: [] })
+    readonly property bool canEncrypt: pgp.gpg && pgp.missing.length === 0 && (toRow.field.text + ccRow.field.text + bccRow.field.text).indexOf("@") >= 0
+    function checkPgp() {
+        var from = senders.length ? senders[fromBox.currentIndex].label : ""
+        pgp = JSON.parse(store.pgpReady(from, [toRow.field.text, ccRow.field.text, bccRow.field.text].join(",")))
+        if (!pgp.canSign) sign = false
+        if (encrypt && !canEncrypt) encrypt = false
+    }
+    Timer { id: pgpCheck; interval: 500; onTriggered: sheet.checkPgp() }
+    Connections { target: toRow.field; function onTextChanged() { pgpCheck.restart() } }
+    Connections { target: ccRow.field; function onTextChanged() { pgpCheck.restart() } }
+    Connections { target: bccRow.field; function onTextChanged() { pgpCheck.restart() } }
+    Connections { target: fromBox; function onCurrentIndexChanged() { pgpCheck.restart() } }
     property string lastSignature: ""
     // Id of the message being forwarded (its attachments arrive a moment later)
     property var forwardOf: -1
@@ -154,6 +170,10 @@ Popup {
         attachments = m.attachments || []
         forwardOf = -1
         inReplyTo = m.inReplyTo || ""
+        // (A reply to an encrypted message is encrypted too, when it can be.)
+        sign = false
+        encrypt = !!m.encrypt
+        Qt.callLater(checkPgp)
         draftId = m.draftId === undefined ? null : m.draftId
         // New messages and replies get the account's signature (not re-opened drafts).
         var sig = (m.draftId === undefined && m.html === undefined) ? store.signature(senders.length ? senders[idx].id : "") : ""
@@ -173,7 +193,7 @@ Popup {
     function payload() {
         var p = { to: toRow.field.text, cc: ccRow.field.text, bcc: bccRow.field.text, subject: subjectRow.field.text,
                   body: plainText(), html: store.restoreColours(body.text.replace(/\u200b|&#8203;/g, ""), JSON.stringify(colourBack)), attachments: attachments, inReplyTo: inReplyTo,
-                  account: senders.length ? senders[fromBox.currentIndex].id : "" }
+                  account: senders.length ? senders[fromBox.currentIndex].id : "", sign: sign, encrypt: encrypt }
         if (draftId !== null) p.draftId = draftId
         return p
     }
@@ -402,6 +422,25 @@ Popup {
                     elide: Text.ElideRight
                 }
                 ToolButtonX { visible: !sheet.headTight; icon: "paperclip"; tip: "Attach Files"; onClicked: sheet.attachFiles() }
+                // OpenPGP (when GnuPG is installed): sign, encrypt.
+                ToolButtonX {
+                    visible: sheet.pgp.gpg
+                    icon: "seal"
+                    checked: sheet.sign
+                    tip: sheet.pgp.canSign ? (sheet.sign ? "Signed with your key (click to not sign)" : "Sign with your key (OpenPGP)")
+                                           : "No key of yours to sign with: Settings › Accounts › OpenPGP Key"
+                    opacity: sheet.pgp.canSign ? 1 : 0.45
+                    onClicked: if (sheet.pgp.canSign) sheet.sign = !sheet.sign
+                }
+                ToolButtonX {
+                    visible: sheet.pgp.gpg
+                    icon: sheet.encrypt ? "lock" : "lockOpen"
+                    checked: sheet.encrypt
+                    tip: sheet.canEncrypt ? (sheet.encrypt ? "Encrypted to every recipient and you (click to not encrypt)" : "Encrypt (OpenPGP)")
+                                          : (sheet.pgp.missing.length ? "No key to encrypt to " + sheet.pgp.missing.join(", ") : "Add recipients to encrypt to")
+                    opacity: sheet.canEncrypt ? 1 : 0.45
+                    onClicked: if (sheet.canEncrypt) sheet.encrypt = !sheet.encrypt
+                }
                 ToolButtonX {
                     visible: !sheet.detached && !sheet.headTight
                     icon: sheet.large && !sheet.inline ? "winRestore" : "winMaximize"

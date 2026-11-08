@@ -1809,6 +1809,10 @@ pub struct OutMsg {
     pub message_id: String,
     /// A draft: may have no recipients yet
     pub draft: bool,
+    /// OpenPGP: signed with the sender's key (PGP/MIME, RFC 3156)
+    pub sign: bool,
+    /// OpenPGP: encrypted to every recipient and the sender
+    pub encrypt: bool,
 }
 
 impl OutMsg {
@@ -1830,6 +1834,8 @@ impl OutMsg {
             in_reply_to: s("inReplyTo"),
             message_id: String::new(),
             draft: false,
+            sign: v.get("sign").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            encrypt: v.get("encrypt").and_then(serde_json::Value::as_bool).unwrap_or(false),
         }
     }
 }
@@ -1909,10 +1915,14 @@ pub fn build_message(a: &LiveAccount, m: &OutMsg) -> Result<lettre::Message, Str
             None => MultiPart::alternative().singlepart(text.clone()).singlepart(part),
         });
     }
-    let msg = if m.attachments.is_empty() {
+    enum Content {
+        One(SinglePart),
+        Many(MultiPart),
+    }
+    let content = if m.attachments.is_empty() {
         match alt {
-            Some(a) => b.multipart(a),
-            None => b.singlepart(text),
+            Some(a) => Content::Many(a),
+            None => Content::One(text),
         }
     } else {
         let mut mixed = match alt {
@@ -1925,7 +1935,55 @@ pub fn build_message(a: &LiveAccount, m: &OutMsg) -> Result<lettre::Message, Str
             let ct = ContentType::parse(content_type_for(path)).map_err(|e| e.to_string())?;
             mixed = mixed.singlepart(Attachment::new(name).body(bytes, ct));
         }
-        b.multipart(mixed)
+        Content::Many(mixed)
+    };
+    // OpenPGP (PGP/MIME, RFC 3156): what's signed or encrypted is the content
+    // part exactly as it's written out (drafts are left as they are).
+    let content = if (m.sign || m.encrypt) && !m.draft {
+        let mut part = match &content {
+            Content::One(p) => p.formatted(),
+            Content::Many(p) => p.formatted(),
+        };
+        // (The line break before the next boundary belongs to the boundary.)
+        if part.ends_with(b"\r\n") {
+            part.truncate(part.len() - 2);
+        }
+        if m.encrypt {
+            let mut to: Vec<String> = Vec::new();
+            for list in [&m.to, &m.cc, &m.bcc] {
+                to.extend(crate::pgp::addresses(list));
+            }
+            let missing = crate::pgp::missing_keys(&to);
+            if !missing.is_empty() {
+                return Err(format!("No key to encrypt to {}", missing.join(", ")));
+            }
+            let armored = crate::pgp::encrypt_to(&part, &to, &a.email, m.sign.then_some(a.email.as_str()))?;
+            Content::Many(
+                MultiPart::encrypted("application/pgp-encrypted".into())
+                    .singlepart(SinglePart::builder().header(ContentType::parse("application/pgp-encrypted").map_err(|e| e.to_string())?).body("Version: 1\r\n".to_string()))
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::parse("application/octet-stream; name=\"encrypted.asc\"").map_err(|e| e.to_string())?)
+                            .body(armored),
+                    ),
+            )
+        } else {
+            let sig = crate::pgp::sign_detached(&part, &a.email)?;
+            let signed = MultiPart::signed("application/pgp-signature".into(), "pgp-sha256".into());
+            let signed = match content {
+                Content::One(p) => signed.singlepart(p),
+                Content::Many(p) => signed.multipart(p),
+            };
+            Content::Many(signed.singlepart(
+                SinglePart::builder().header(ContentType::parse("application/pgp-signature; name=\"signature.asc\"").map_err(|e| e.to_string())?).body(sig),
+            ))
+        }
+    } else {
+        content
+    };
+    let msg = match content {
+        Content::One(p) => b.singlepart(p),
+        Content::Many(p) => b.multipart(p),
     };
     msg.map_err(|e| e.to_string())
 }

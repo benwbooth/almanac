@@ -155,6 +155,14 @@ Canvas {
         case "moon":
             c.beginPath(); c.arc(12, 12, 8, Math.PI * 0.25, Math.PI * 1.75, false)
             c.quadraticCurveTo(10, 12, 17.66, 17.66); c.closePath(); c.stroke(); break
+        // OpenPGP in compose: a lock (encrypt) open or shut, a seal with a tick (sign).
+        case "lock":
+        case "lockOpen":
+            c.beginPath(); c.rect(5.5, 11, 13, 9); c.stroke()
+            c.beginPath(); c.moveTo(8.5, 11); c.lineTo(8.5, 7.5); c.arc(12, 7.5, 3.5, Math.PI, 0, false)
+            c.lineTo(15.5, name === "lock" ? 11 : 8.5); c.stroke(); break
+        case "seal":
+            circle(12, 10, 6.5); line([9, 10.2, 11.2, 12.3, 15.2, 8]); line([8.5, 15.5, 7.5, 21.5, 12, 19.5, 16.5, 21.5, 15.5, 15.5]); break
         case "paperclip":
             c.beginPath(); c.moveTo(16, 7.5); c.lineTo(9, 14.5); c.arc(10.75, 16.25, 2.47, Math.PI * 1.25, Math.PI * 0.25, true)
             c.lineTo(18.5, 8.5); c.arc(15, 5, 4.95, Math.PI * 0.25, Math.PI * 1.25, true); c.lineTo(5, 15)

@@ -343,6 +343,106 @@ pub fn decrypt(raw: &[u8]) -> Option<Decrypted> {
     Some(d)
 }
 
+/// The plain addresses in a To / Cc / Bcc line ("Name <a@b>, c@d").
+pub fn addresses(list: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in list.split(',') {
+        let p = part.trim();
+        let addr = match (p.rfind('<'), p.rfind('>')) {
+            (Some(a), Some(b)) if b > a => &p[a + 1..b],
+            _ => p,
+        };
+        let addr = addr.trim().to_ascii_lowercase();
+        if addr.contains('@') && !out.contains(&addr) {
+            out.push(addr);
+        }
+    }
+    out
+}
+
+/// Whether the keyring has a key that can encrypt to this address (not
+/// expired, revoked or disabled).
+fn has_encryption_key(gpg: &str, addr: &str) -> bool {
+    let Ok(out) = Command::new(gpg).args(["--batch", "--with-colons", "--list-keys", &format!("<{addr}>")]).output() else { return false };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut key_ok = false;
+    for line in text.lines() {
+        let f: Vec<&str> = line.split(':').collect();
+        match f.first() {
+            // The key as a whole: usable, and able to encrypt (a capital E).
+            Some(&"pub") => key_ok = !matches!(f.get(1), Some(&"r") | Some(&"e") | Some(&"d")) && f.get(11).is_some_and(|c| c.contains('E')),
+            Some(&"sub") if key_ok && !matches!(f.get(1), Some(&"r") | Some(&"e")) && f.get(11).is_some_and(|c| c.contains('e')) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether there's a secret key that can sign as this address.
+pub fn can_sign(addr: &str) -> bool {
+    let Some(gpg) = gpg() else { return false };
+    let Ok(out) = Command::new(&gpg).args(["--batch", "--with-colons", "--list-secret-keys", &format!("<{addr}>")]).output() else { return false };
+    String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        f.first() == Some(&"sec") && !matches!(f.get(1), Some(&"r") | Some(&"e") | Some(&"d")) && f.get(11).is_some_and(|c| c.contains('S'))
+    })
+}
+
+/// Whether GnuPG is installed.
+pub fn available() -> bool {
+    gpg().is_some()
+}
+
+/// Of these addresses, the ones without a key to encrypt to (all of them
+/// when GnuPG isn't installed).
+pub fn missing_keys(addrs: &[String]) -> Vec<String> {
+    let Some(gpg) = gpg() else { return addrs.to_vec() };
+    addrs.iter().filter(|a| !has_encryption_key(&gpg, a)).cloned().collect()
+}
+
+fn run_gpg(args: &[&str], input: &[u8]) -> Result<Vec<u8>, String> {
+    let gpg = gpg().ok_or("GnuPG isn't installed")?;
+    let mut child = Command::new(&gpg)
+        .args(["--batch", "--no-tty"])
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    child.stdin.take().ok_or("gpg")?.write_all(input).map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let line = err.lines().rfind(|l| l.starts_with("gpg:")).unwrap_or("gpg failed").trim_start_matches("gpg: ").to_string();
+        return Err(line);
+    }
+    Ok(out.stdout)
+}
+
+/// A detached, armored signature over `data` with the key for `signer`
+/// (gpg-agent asks for its passphrase).
+pub fn sign_detached(data: &[u8], signer: &str) -> Result<String, String> {
+    let out = run_gpg(&["--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", &format!("<{signer}>")], data)?;
+    Ok(String::from_utf8_lossy(&out).to_string())
+}
+
+/// `data` encrypted (armored) to each recipient and to the sender too (so
+/// it can be read in Sent), signed as well with `sign_as`.
+pub fn encrypt_to(data: &[u8], recipients: &[String], me: &str, sign_as: Option<&str>) -> Result<String, String> {
+    let mut args: Vec<String> = vec!["--armor".into(), "--trust-model".into(), "always".into(), "--encrypt".into()];
+    if let Some(s) = sign_as {
+        args.extend(["--sign".into(), "--digest-algo".into(), "SHA256".into(), "--local-user".into(), format!("<{s}>")]);
+    }
+    for r in recipients.iter().chain(std::iter::once(&me.to_ascii_lowercase())) {
+        args.push("--recipient".into());
+        args.push(format!("<{r}>"));
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = run_gpg(&refs, data)?;
+    Ok(String::from_utf8_lossy(&out).to_string())
+}
+
 /// A private scratch folder for one check (removed after).
 fn tempdir() -> Option<std::path::PathBuf> {
     let d = std::env::temp_dir().join(format!("almanac-pgp-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()));
@@ -444,6 +544,49 @@ mod tests {
         std::env::remove_var("GNUPGHOME");
         let _ = std::fs::remove_dir_all(home);
         let _ = std::fs::remove_dir_all(other);
+    }
+
+    /// An encryption subkey for the test key.
+    fn add_encryption(home: &std::path::Path) {
+        let fpr = String::from_utf8(
+            Command::new("gpg").env("GNUPGHOME", home).args(["--batch", "--with-colons", "--list-keys", "signer@example.org"]).output().unwrap().stdout,
+        )
+        .unwrap()
+        .lines()
+        .find(|l| l.starts_with("fpr:"))
+        .map(|l| l.split(':').nth(9).unwrap().to_string())
+        .unwrap();
+        assert!(Command::new("gpg").env("GNUPGHOME", home).args(["--batch", "--passphrase", "", "--quick-add-key", &fpr, "cv25519", "encrypt", "never"]).status().unwrap().success());
+    }
+
+    #[test]
+    fn mail_sent_signed_or_encrypted_reads_back() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(home) = test_home() else { return };
+        add_encryption(&home);
+        std::env::set_var("GNUPGHOME", &home);
+        let a = crate::live::LiveAccount { email: "signer@example.org".into(), name: "Test Signer".into(), ..Default::default() };
+        let base = crate::live::OutMsg { to: "signer@example.org".into(), subject: "Plan".into(), body: "Meet at noon.".into(), html: "<p>Meet at <b>noon</b>.</p>".into(), ..Default::default() };
+        // Signed: checks out.
+        let signed = crate::live::build_message(&a, &crate::live::OutMsg { sign: true, ..base.clone() }).expect("signed");
+        let c = verify(&signed.formatted()).expect("a signed message");
+        assert_eq!(c.state, "good", "{c:?}");
+        // Encrypted: reads back.
+        let enc = crate::live::build_message(&a, &crate::live::OutMsg { encrypt: true, ..base.clone() }).expect("encrypted");
+        let raw = enc.formatted();
+        assert!(!String::from_utf8_lossy(&raw).contains("Meet at noon"), "nothing readable");
+        let d = decrypt(&raw).expect("an encrypted message");
+        assert_eq!(d.state, "ok", "{d:?}");
+        assert!(d.body.contains("Meet at noon."), "{d:?}");
+        // Both: decrypted, and the signature inside checks out.
+        let both = crate::live::build_message(&a, &crate::live::OutMsg { sign: true, encrypt: true, ..base.clone() }).expect("both");
+        let d = decrypt(&both.formatted()).unwrap();
+        assert_eq!(d.signature.map(|s| s.state).as_deref(), Some("good"));
+        // Someone without a key: not sent.
+        let err = crate::live::build_message(&a, &crate::live::OutMsg { encrypt: true, to: "nokey@example.net".into(), ..base }).err().unwrap();
+        assert!(err.contains("nokey@example.net"), "{err}");
+        std::env::remove_var("GNUPGHOME");
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

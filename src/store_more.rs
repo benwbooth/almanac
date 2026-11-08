@@ -866,6 +866,16 @@ impl qobject::Store {
         });
     }
 
+    pub(super) fn pgp_ready(&self, from: &QString, recipients: &QString) -> QString {
+        let _timed = crate::Timed::new("pgp_ready");
+        if !crate::pgp::available() {
+            return q(&json!({"gpg": false, "canSign": false, "missing": []}));
+        }
+        let me = crate::pgp::addresses(&from.to_string()).into_iter().next().unwrap_or_default();
+        let to = crate::pgp::addresses(&recipients.to_string());
+        q(&json!({"gpg": true, "canSign": !me.is_empty() && crate::pgp::can_sign(&me), "missing": crate::pgp::missing_keys(&to)}))
+    }
+
     /// A made-up event's alert ("Test Event", in 5 minutes), shown as real ones
     /// are (always notified, so it can be tried with notifications off too).
     pub(super) fn test_alert(self: Pin<&mut Self>) {

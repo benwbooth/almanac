@@ -333,7 +333,9 @@ Item {
         // Replying to your own message goes to the people you wrote to.
         var to = fromMe ? notMine(m.to).join(", ") || m.to : (m.replyTo || m.fromEmail)
         var cc = all ? notMine([m.to, m.cc].filter(function(s) { return s && s.length }).join(", ")).filter(function(a) { return to.indexOf(a) < 0 }).join(", ") : ""
-        compose.openWith({ to: to, cc: cc, subject: subj, body: quote(m), account: store.messageAccount(m.id), inReplyTo: m.messageId,
+        // (Replying to an encrypted message: encrypted too, when every recipient has a key.)
+        var wasEncrypted = (m.attachments || []).some(function(n) { return /^(encrypted\.asc|msg\.asc|openpgp-encrypted-message\.asc)$/i.test(n) })
+        compose.openWith({ to: to, cc: cc, subject: subj, body: quote(m), account: store.messageAccount(m.id), inReplyTo: m.messageId, encrypt: wasEncrypted,
                            quoteHtml: quoteHtml(m, "On " + Theme.fmtLongDate(m.date) + ", " + (m.fromName || m.fromEmail) + " wrote:") },
                          here ? replyHost : null)
     }

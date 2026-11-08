@@ -392,6 +392,9 @@ pub mod qobject {
         /// in decryptedJson, never saved). Only for messages that look encrypted.
         #[qinvokable]
         fn decrypt_message(self: &Store, id: i64);
+        /// For compose's Sign / Encrypt: {"gpg", "canSign", "missing": [addresses without a key]}.
+        #[qinvokable]
+        fn pgp_ready(self: &Store, from: &QString, recipients: &QString) -> QString;
         #[qinvokable]
         fn test_alert(self: Pin<&mut Store>);
         /// Settings › General: a made-up new-mail notification, as real ones are.
