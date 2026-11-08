@@ -52,7 +52,7 @@ Popup {
         for (var i = 0; i < order.length && JSON.parse(store.cloudOffer(accountId(), left)).over; i++) { pick.push(order[i].p); left -= order[i].n }
         var mb = (total / 1048576).toFixed(1)
         if (!offer.store) {
-            confirm.ask("These attachments are too big to send", "Together they're " + mb + " MB; this account takes up to " + offer.limitMb + " MB. Sending big files through cloud storage works with Google accounts for now.", "OK", null)
+            confirm.ask("These attachments are too big to send", "Together they're " + mb + " MB; this account takes up to " + offer.limitMb + " MB. Sending big files through cloud storage works with Google and Microsoft accounts for now.", "OK", null)
             return
         }
         if (offer.mode === "never") return

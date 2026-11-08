@@ -559,7 +559,8 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
         scopes(provider, &Resource::Data).to_string()
     } else {
         // Ask for mail and calendar/contacts consent together.
-        format!("{} {}", scopes(MICROSOFT, &Resource::Data), "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send")
+        // (OneDrive too, for big attachments.)
+        format!("{} {} {}", scopes(MICROSOFT, &Resource::Data), "https://graph.microsoft.com/Files.ReadWrite", "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send")
     };
     let mut params = vec![
         ("client_id", client_id.to_string()),

@@ -614,6 +614,27 @@ pub fn by_id(id: i64) -> Option<Message> {
     .ok()
 }
 
+/// Rows moved into `folder` by Almanac whose server number isn't known yet
+/// (uid 0), for a message just found there on the server: removed.
+pub fn drop_stand_ins(source: &str, folder: &str, message_id: &str) {
+    let path = db_path();
+    if !path.exists() {
+        return;
+    }
+    let _ = with_conn(&path, |c| {
+        let ids: Vec<i64> = {
+            let mut st = c.prepare("SELECT id FROM messages WHERE source = ?1 AND folder = ?2 AND message_id = ?3 AND uid = 0").map_err(|e| e.to_string())?;
+            let rows = st.query_map(params![source, folder, message_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok).collect()
+        };
+        for id in ids {
+            let _ = c.execute("DELETE FROM search WHERE rowid = ?1", params![id]);
+            c.execute("DELETE FROM messages WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    });
+}
+
 /// The message on the server at (source, folder, uid), if it's here.
 pub fn id_at(source: &str, folder: &str, uid: u32) -> Option<i64> {
     let path = db_path();

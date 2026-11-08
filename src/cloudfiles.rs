@@ -34,6 +34,7 @@ pub trait CloudStore {
 pub fn store_name(provider: &str) -> &'static str {
     match provider {
         "google" => "Google Drive",
+        "microsoft" => "OneDrive",
         _ => "",
     }
 }
@@ -42,6 +43,7 @@ pub fn store_name(provider: &str) -> &'static str {
 pub fn store_for(provider: &str, token: String) -> Option<Box<dyn CloudStore + Send>> {
     match provider {
         "google" => Some(Box::new(GoogleDrive::new(token))),
+        "microsoft" => Some(Box::new(OneDrive::new(token))),
         _ => None,
     }
 }
@@ -71,8 +73,133 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
-/// Pieces of 8 MB (Google wants multiples of 256 KB).
-const CHUNK: usize = 8 * 1024 * 1024;
+/// Pieces of 10 MB (Google wants multiples of 256 KB, OneDrive of 320 KB).
+const CHUNK: usize = 10 * 1024 * 1024;
+
+/// A file's next piece (up to CHUNK bytes) read into `buf`: how many bytes.
+fn read_piece(file: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, String> {
+    let mut n = 0;
+    while n < buf.len() {
+        let r = file.read(&mut buf[n..]).map_err(|e| e.to_string())?;
+        if r == 0 {
+            break;
+        }
+        n += r;
+    }
+    Ok(n)
+}
+
+fn json_of(resp: &mut ureq::http::Response<ureq::Body>) -> Value {
+    serde_json::from_str(&resp.body_mut().read_to_string().unwrap_or_default()).unwrap_or(Value::Null)
+}
+
+/// OneDrive (Microsoft accounts, through Microsoft Graph): files go in an
+/// "Almanac" folder, shared with "anyone with the link can view".
+pub struct OneDrive {
+    pub token: String,
+    pub base: String,
+}
+
+impl OneDrive {
+    pub fn new(token: String) -> OneDrive {
+        let base = std::env::var("ALMANAC_ONEDRIVE_TEST_BASE").unwrap_or_else(|_| "https://graph.microsoft.com/v1.0".into());
+        OneDrive { token, base }
+    }
+
+    fn call(&self, method: &str, url: &str, body: Option<Value>) -> Result<Value, String> {
+        let mut b = ureq::http::Request::builder().method(method).uri(url).header("Authorization", format!("Bearer {}", self.token));
+        if body.is_some() {
+            b = b.header("Content-Type", "application/json");
+        }
+        let req = b.body(body.map(|v| v.to_string()).unwrap_or_default()).map_err(|e| e.to_string())?;
+        let mut resp = agent().run(req).map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
+        let v = json_of(&mut resp);
+        if status >= 400 {
+            return Err(graph_error(status, &v));
+        }
+        Ok(v)
+    }
+}
+
+/// What a OneDrive (Graph) error means for the person.
+fn graph_error(status: u16, v: &Value) -> String {
+    let code = v.pointer("/error/code").and_then(Value::as_str).unwrap_or("");
+    let msg = v.pointer("/error/message").and_then(Value::as_str).unwrap_or("");
+    if status == 401 || code == "accessDenied" && msg.to_lowercase().contains("scope") {
+        return "Almanac isn't allowed to use your OneDrive yet: press Sign In Again in Accounts to allow it".into();
+    }
+    if code == "quotaLimitReached" || code == "insufficientStorage" {
+        return "Your OneDrive is full".into();
+    }
+    if code == "accessDenied" || code == "notAllowed" {
+        return "Your organization doesn't allow sharing files with anyone who has the link".into();
+    }
+    if msg.is_empty() { format!("OneDrive: HTTP {status}") } else { format!("OneDrive: {msg}") }
+}
+
+/// A name safe in a OneDrive path.
+fn path_part(name: &str) -> String {
+    let mut out = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~ ()".contains(&b) {
+            if b == b' ' { out.push_str("%20") } else { out.push(b as char) }
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+impl CloudStore for OneDrive {
+    fn name(&self) -> &'static str {
+        "OneDrive"
+    }
+
+    fn upload(&self, path: &std::path::Path, progress: &dyn Fn(u64, u64)) -> Result<Shared, String> {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+        let mut file = std::fs::File::open(path).map_err(|e| format!("Could not read {name}: {e}"))?;
+        let size = file.metadata().map_err(|e| e.to_string())?.len();
+        // An upload session (a file of the same name gets a new name, not replaced).
+        let session = self.call(
+            "POST",
+            &format!("{}/me/drive/root:/Almanac/{}:/createUploadSession", self.base, path_part(&name)),
+            Some(json!({"item": {"@microsoft.graph.conflictBehavior": "rename", "name": name}})),
+        )?;
+        let upload_url = session.get("uploadUrl").and_then(Value::as_str).ok_or("OneDrive didn't start the upload")?.to_string();
+        let mut buf = vec![0u8; CHUNK];
+        let mut sent: u64 = 0;
+        progress(0, size);
+        let item = loop {
+            let n = read_piece(&mut file, &mut buf)?;
+            // (The upload address carries its own permission: no sign-in header.)
+            let put = ureq::http::Request::builder()
+                .method("PUT")
+                .uri(&upload_url)
+                .header("Content-Range", format!("bytes {}-{}/{}", sent, sent + n.max(1) as u64 - 1, size))
+                .body(buf[..n].to_vec())
+                .map_err(|e| e.to_string())?;
+            let mut resp = agent().run(put).map_err(|e| e.to_string())?;
+            let status = resp.status().as_u16();
+            let v = json_of(&mut resp);
+            sent += n as u64;
+            progress(sent.min(size), size);
+            match status {
+                202 => continue,
+                200 | 201 => break v,
+                _ => return Err(graph_error(status, &v)),
+            }
+        };
+        let id = item.get("id").and_then(Value::as_str).ok_or("OneDrive didn't say where the file went")?.to_string();
+        let link = self.call("POST", &format!("{}/me/drive/items/{id}/createLink", self.base), Some(json!({"type": "view", "scope": "anonymous"})))?;
+        let url = link.pointer("/link/webUrl").and_then(Value::as_str).ok_or("OneDrive gave no link")?.to_string();
+        Ok(Shared { name, size, url, provider: self.name().into(), id })
+    }
+
+    fn delete(&self, id: &str) -> Result<(), String> {
+        self.call("DELETE", &format!("{}/me/drive/items/{id}", self.base), None).map(|_| ())
+    }
+}
 
 /// Google Drive (the drive.file permission: only files Almanac makes).
 pub struct GoogleDrive {
@@ -216,8 +343,10 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = seen.clone();
         let session = format!("{base}/session/1");
+        let base2 = base.clone();
         std::thread::spawn(move || {
             let mut received: u64 = 0;
+            let mut received_od: u64 = 0;
             for stream in listener.incoming().flatten() {
                 let mut r = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
@@ -226,6 +355,7 @@ mod tests {
                 }
                 let mut len = 0usize;
                 let mut range = String::new();
+                let mut signed = false;
                 loop {
                     let mut h = String::new();
                     r.read_line(&mut h).unwrap();
@@ -239,12 +369,14 @@ mod tests {
                     if let Some(v) = lower.strip_prefix("content-range:") {
                         range = v.trim().to_string();
                     }
+                    signed |= lower.starts_with("authorization:");
                 }
                 let mut body = vec![0u8; len];
                 r.read_exact(&mut body).unwrap();
                 let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
                 let method = line.split_whitespace().next().unwrap_or("").to_string();
-                log.lock().unwrap().push(format!("{method} {path} {range}"));
+                log.lock().unwrap().push(format!("{method} {path} {range}{}", if signed { " [signed]" } else { "" }));
+                let json = |code: &str, b: &str| format!("HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}", b.len());
                 let mut out = stream;
                 let reply = if path.starts_with("/upload/drive/v3/files") {
                     format!("HTTP/1.1 200 OK\r\nLocation: {session}\r\nContent-Length: 0\r\n\r\n")
@@ -263,6 +395,15 @@ mod tests {
                 } else if path.starts_with("/drive/v3/files/F1") {
                     let b = r#"{"webViewLink":"https://drive.google.com/file/d/F1/view"}"#;
                     format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}", b.len())
+                // OneDrive (Microsoft Graph)
+                } else if path.starts_with("/me/drive/root:/Almanac/") && path.ends_with(":/createUploadSession") {
+                    json("200 OK", &format!(r#"{{"uploadUrl":"{base2}/up/1"}}"#))
+                } else if path == "/up/1" {
+                    received_od += body.len() as u64;
+                    let total: u64 = range.rsplit('/').next().and_then(|t| t.parse().ok()).unwrap_or(0);
+                    if received_od < total { json("202 Accepted", "{}") } else { json("201 Created", r#"{"id":"O1"}"#) }
+                } else if path == "/me/drive/items/O1/createLink" {
+                    json("200 OK", r#"{"link":{"webUrl":"https://1drv.ms/u/s!O1"}}"#)
                 } else {
                     "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_string()
                 };
@@ -326,6 +467,25 @@ mod tests {
         drive.delete(&shared.id).expect("deleted");
         eprintln!("deleted {}", shared.id);
         assert_eq!(status, Ok::<u16, String>(200), "the link should open for anyone");
+    }
+
+    #[test]
+    fn onedrive_takes_a_big_file_too() {
+        let (base, seen) = fake_drive();
+        let dir = std::env::temp_dir().join(format!("almanac-onedrive-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big video.mp4");
+        std::fs::write(&path, vec![7u8; CHUNK + 5000]).unwrap();
+        let od = OneDrive { token: "t".into(), base };
+        let shared = od.upload(&path, &|_, _| {}).expect("uploaded");
+        assert_eq!((shared.url.as_str(), shared.id.as_str(), shared.provider.as_str()), ("https://1drv.ms/u/s!O1", "O1", "OneDrive"));
+        let log = seen.lock().unwrap().clone();
+        assert!(log.iter().any(|l| l.starts_with("POST /me/drive/root:/Almanac/big%20video.mp4:/createUploadSession") && l.ends_with("[signed]")), "{log:?}");
+        let puts: Vec<&String> = log.iter().filter(|l| l.starts_with("PUT /up/1")).collect();
+        assert_eq!(puts.len(), 2, "two pieces: {log:?}");
+        assert!(puts.iter().all(|l| !l.ends_with("[signed]")), "the upload address needs no sign-in header: {log:?}");
+        assert!(puts[1].contains(&format!("bytes {}-{}/{}", CHUNK, CHUNK + 4999, CHUNK + 5000)), "{log:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

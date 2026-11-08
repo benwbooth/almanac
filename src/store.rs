@@ -54,6 +54,8 @@ pub mod qobject {
         #[qproperty(QString, open_url, cxx_name = "openUrl")]
         /// Id of the message that can still be un-sent (0 = none)
         #[qproperty(i64, undo_id, cxx_name = "undoId")]
+        /// What Edit › Undo would put back ("" when nothing): "Undo Move to Trash".
+        #[qproperty(QString, mail_undo_text, cxx_name = "mailUndoText")]
         /// False until the setup guide is finished or skipped
         #[qproperty(bool, onboarded)]
         /// Provider whose sign-in page is open ("" when none)
@@ -322,6 +324,10 @@ pub mod qobject {
         fn tick(self: Pin<&mut Store>);
         #[qinvokable]
         fn undo_send(self: Pin<&mut Store>) -> QString;
+        /// Puts the messages last deleted or moved back where they were (here
+        /// and on the server).
+        #[qinvokable]
+        fn undo_mail(self: Pin<&mut Store>);
         #[qinvokable]
         fn outbox(self: &Store) -> QString;
         #[qinvokable]
@@ -507,7 +513,16 @@ use serde_json::{json, Value};
 #[path = "store_more.rs"]
 mod more;
 
+/// One delete or move, to undo: each message's folder before, and where it
+/// went on the server (to find it by Message-ID and move it back).
+pub struct MailUndo {
+    what: String,
+    items: Vec<(i64, String, Option<(crate::live::LiveAccount, String, String, String)>)>,
+}
+
 pub struct StoreRust {
+    mail_undo: Vec<MailUndo>,
+    mail_undo_text: QString,
     revision: i32,
     screenshot_path: QString,
     start_section: i32,
@@ -627,6 +642,8 @@ impl Default for StoreRust {
             start_panel: QString::from(crate::arg_value("--show").unwrap_or_default().as_str()),
             open_url: QString::default(),
             undo_id: 0,
+            mail_undo: Vec::new(),
+            mail_undo_text: QString::default(),
             onboarded: db.onboarded,
             signing_in: QString::default(),
             registering: QString::default(),
@@ -654,6 +671,17 @@ impl Default for StoreRust {
             db,
             persist,
         }
+    }
+}
+
+/// A kind of mailbox as Edit › Undo names it.
+fn kind_name(kind: &str) -> &str {
+    match kind {
+        "trash" => "Trash",
+        "archive" => "Archive",
+        "junk" => "Junk",
+        "inbox" => "Inbox",
+        k => k,
     }
 }
 
@@ -815,6 +843,70 @@ impl qobject::Store {
         });
     }
 
+    /// What's needed to undo moving message `id` to the server folder `to_path`.
+    fn undo_item(&self, id: i64, to_path: Option<String>) -> (i64, String, Option<(crate::live::LiveAccount, String, String, String)>) {
+        let m = self.db.get(id);
+        let folder = m.as_ref().map(|m| m.folder.clone()).unwrap_or_default();
+        let server = match (self.db.live_message(id), to_path, m) {
+            (Some((acct, from, _)), Some(to), Some(m)) if from != to && !m.message_id.is_empty() => Some((acct, from, to, m.message_id.clone())),
+            _ => None,
+        };
+        (id, folder, server)
+    }
+
+    /// Kept for Edit › Undo (the last 20 deletes and moves).
+    fn remember_undo(mut self: Pin<&mut Self>, what: &str, items: Vec<(i64, String, Option<(crate::live::LiveAccount, String, String, String)>)>) {
+        if items.is_empty() {
+            return;
+        }
+        let n = items.len();
+        let mut rust = self.as_mut().rust_mut();
+        rust.mail_undo.push(MailUndo { what: what.to_string(), items });
+        if rust.mail_undo.len() > 20 {
+            rust.mail_undo.remove(0);
+        }
+        let text = format!("Undo {what}");
+        self.as_mut().set_mail_undo_text(QString::from(text.as_str()));
+        let note = if n == 1 { format!("{what}: 1 message. Ctrl+Z puts it back.") } else { format!("{what}: {n} messages. Ctrl+Z puts them back.") };
+        self.as_mut().set_status_text(QString::from(note.as_str()));
+    }
+
+    fn undo_mail(mut self: Pin<&mut Self>) {
+        let _timed = crate::Timed::new("undo_mail");
+        let Some(entry) = self.as_mut().rust_mut().mail_undo.pop() else { return };
+        // Back here at once.
+        for (id, folder, _) in &entry.items {
+            self.as_mut().db_mut().move_to_folder(*id, folder);
+        }
+        // On the server: found by Message-ID where they went, moved back (the
+        // inbox first: on Gmail that's the label that matters).
+        let mut groups: std::collections::BTreeMap<(bool, String, String, String), (crate::live::LiveAccount, Vec<String>)> = Default::default();
+        for (_, _, server) in entry.items {
+            if let Some((acct, from, to, mid)) = server {
+                let key = (from.to_uppercase() != "INBOX", acct.id.clone(), to.clone(), from.clone());
+                groups.entry(key).or_insert_with(|| (acct, Vec::new())).1.push(mid);
+            }
+        }
+        let jobs: Vec<(crate::live::LiveAccount, String, String, Vec<String>)> =
+            groups.into_iter().map(|((_, _, to, from), (acct, mids))| (acct, to, from, mids)).collect();
+        if !jobs.is_empty() {
+            self.as_mut().background(
+                move || {
+                    let mut n = 0;
+                    for (acct, now_in, back_to, mids) in jobs {
+                        n += crate::live::move_back(&acct, &now_in, &mids, &back_to)?;
+                    }
+                    Ok(n)
+                },
+                |_, _| {},
+            );
+        }
+        let next = self.mail_undo.last().map(|u| format!("Undo {}", u.what)).unwrap_or_default();
+        self.as_mut().set_mail_undo_text(QString::from(next.as_str()));
+        self.as_mut().set_status_text(QString::from(format!("{} undone.", entry.what).as_str()));
+        self.changed();
+    }
+
     /// Sends a mail change for a live-account message to its server.
     fn push_mail(self: Pin<&mut Self>, target: Option<(crate::live::LiveAccount, String, u32)>, op: crate::live::MailOp) {
         let _timed = crate::Timed::new("push_mail");
@@ -858,6 +950,8 @@ impl qobject::Store {
         let _timed = crate::Timed::new("move_to_folder");
         let target = self.db.live_message(id);
         let to_path = self.db.folder_path(&folder.to_string());
+        let undo = self.undo_item(id, to_path.clone());
+        self.as_mut().remember_undo("Move", vec![undo]);
         self.as_mut().db_mut().move_to_folder(id, &folder.to_string());
         if let Some(path) = to_path {
             self.as_mut().push_mail(target, crate::live::MailOp::Move(path));
@@ -957,6 +1051,8 @@ impl qobject::Store {
         let kind = kind.to_string();
         let target = self.db.live_message(id);
         let to_path = self.db.live_folder_of_kind(id, &kind);
+        let undo = self.undo_item(id, to_path.clone());
+        self.as_mut().remember_undo(&format!("Move to {}", kind_name(&kind)), vec![undo]);
         self.as_mut().db_mut().move_to(id, &kind);
         if let Some(path) = to_path {
             self.as_mut().push_mail(target, crate::live::MailOp::Move(path));
@@ -969,6 +1065,10 @@ impl qobject::Store {
         let target = self.db.live_message(id);
         let in_trash = target.as_ref().map(|(_, p, _)| Some(p.clone()) == self.db.live_folder_of_kind(id, "trash")).unwrap_or(false);
         let trash = self.db.live_folder_of_kind(id, "trash");
+        if !in_trash {
+            let undo = self.undo_item(id, trash.clone());
+            self.as_mut().remember_undo("Move to Trash", vec![undo]);
+        }
         self.as_mut().db_mut().delete_message(id);
         match (in_trash, trash) {
             (false, Some(path)) => self.as_mut().push_mail(target, crate::live::MailOp::Move(path)),
@@ -982,12 +1082,25 @@ impl qobject::Store {
         let ids: Vec<i64> = serde_json::from_str(&ids_json.to_string()).unwrap_or_default();
         // Server work grouped per account, folder and what to do with it.
         let mut groups: std::collections::HashMap<(String, String, Option<String>), (crate::live::LiveAccount, Vec<u32>)> = Default::default();
+        let mut undo = Vec::new();
         for id in &ids {
+            let in_trash = self.db.get(*id).map(|m| self.db.folder_kind(&m.folder) == "trash").unwrap_or(false);
+            if !in_trash {
+                undo.push(self.undo_item(*id, self.db.live_folder_of_kind(*id, "trash")));
+            }
             if let Some((acct, path, uid)) = self.db.live_message(*id) {
+                // (A number not known yet: nothing done on the server, rather
+                // than something done to another message.)
+                if uid == 0 {
+                    continue;
+                }
                 let trash = self.db.live_folder_of_kind(*id, "trash");
                 let to_trash = trash.filter(|t| *t != path);
                 groups.entry((acct.id.clone(), path, to_trash)).or_insert_with(|| (acct, Vec::new())).1.push(uid);
             }
+        }
+        if !undo.is_empty() {
+            self.as_mut().remember_undo("Move to Trash", undo);
         }
         for id in &ids {
             self.as_mut().db_mut().delete_message(*id);

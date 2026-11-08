@@ -1596,7 +1596,7 @@ impl Db {
         self.folders.iter().find(|f| f.id == id)
     }
 
-    fn folder_kind(&self, id: &str) -> &str {
+    pub fn folder_kind(&self, id: &str) -> &str {
         self.folder(id).map(|f| f.kind.as_str()).unwrap_or("other")
     }
 
@@ -1827,6 +1827,9 @@ impl Db {
             return;
         }
         if let Some(m) = self.msg_mut(id) {
+            if m.folder != folder {
+                m.uid = 0;
+            }
             m.folder = folder.to_string();
         }
     }
@@ -2227,6 +2230,15 @@ impl Db {
             if self.backed && m.uid > 0 && crate::mailstore::id_at(&m.source, &m.folder, m.uid).is_some() {
                 continue;
             }
+            // Moved here by Almanac (number not known yet): this is it, so the
+            // stand-in goes.
+            if m.uid > 0 && !m.message_id.is_empty() {
+                let (src, folder, mid) = (m.source.clone(), m.folder.clone(), m.message_id.clone());
+                self.messages.retain(|x| !(x.uid == 0 && x.source == src && x.folder == folder && x.message_id == mid));
+                if self.backed {
+                    crate::mailstore::drop_stand_ins(&src, &folder, &mid);
+                }
+            }
             m.id = self.new_id();
             new_ids.push(m.id);
             self.messages.push(m);
@@ -2370,6 +2382,13 @@ impl Db {
         };
         let target = self.sibling_folder(&folder, kind);
         if let Some(m) = self.msg_mut(id) {
+            if m.folder != target {
+                // Its number on the server was the old folder's: unknown in the
+                // new one until the next check finds it there (meanwhile nothing
+                // is done to it on the server, rather than to another message
+                // with that number).
+                m.uid = 0;
+            }
             m.folder = target;
         }
     }
@@ -4400,6 +4419,42 @@ mod backed_tests {
         crate::mailstore::remove(src, crate::mailstore::Gone::All);
     }
 
+    /// A message moved by Almanac (deleted to Trash) loses its old folder's
+    /// server number, so nothing done to it later lands on another message
+    /// with that number; when the server shows it in Trash, that row takes its place.
+    #[test]
+    fn a_moved_message_never_keeps_its_old_number() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::create_dir_all(data_dir());
+        let src = "live:mv";
+        crate::mailstore::remove(src, crate::mailstore::Gone::All);
+        let mut db = Db { backed: true, ..Default::default() };
+        db.accounts.push(Account { id: "live:mv:mail".into(), name: "Mv".into(), email: "me@mv.example".into(), source: src.into() });
+        for (id, kind, path) in [("live:mv:mail/INBOX", "inbox", "INBOX"), ("live:mv:mail/[Gmail]/Trash", "trash", "[Gmail]/Trash")] {
+            db.folders.push(Folder { id: id.into(), account: "live:mv:mail".into(), name: path.into(), kind: kind.into(), path: path.into() });
+        }
+        db.next_id = 810_000;
+        let a = db.new_id();
+        db.messages.push(Message { id: a, folder: "live:mv:mail/INBOX".into(), source: src.into(), uid: 79375, date: 1_760_000_000,
+            subject: "Halloween Updates".into(), message_id: "<h@school.example>".into(), ..Default::default() });
+        assert!(db.save());
+        db.delete_message(a);
+        let m = db.get(a).unwrap();
+        assert_eq!((m.folder.as_str(), m.uid), ("live:mv:mail/[Gmail]/Trash", 0), "INBOX's number isn't Trash's");
+        assert!(db.save());
+        db.release_saved();
+        // The next check finds it in Trash under its own number.
+        let found = Message { folder: "live:mv:mail/[Gmail]/Trash".into(), source: src.into(), uid: 32291, date: 1_760_000_000,
+            subject: "Halloween Updates".into(), message_id: "<h@school.example>".into(), ..Default::default() };
+        let new = db.add_messages(vec![found]);
+        assert_eq!(new.len(), 1);
+        assert!(db.save());
+        db.release_saved();
+        let rows = db.messages_of("folder:live:mv:mail/[Gmail]/Trash");
+        assert_eq!(rows.iter().map(|m| m.uid).collect::<Vec<_>>(), vec![32291], "one row, with Trash's number: {rows:?}");
+        crate::mailstore::remove(src, crate::mailstore::Gone::All);
+    }
+
     /// A conversation whose first message isn't here (GitHub notifications all
     /// point at a pull request's opening message): opening the newest shows all.
     #[test]
@@ -4554,10 +4609,13 @@ mod backed_tests {
         assert!(found["rows"].as_array().unwrap().iter().any(|r| r["subject"] == "Subject 18"), "found by its text");
 
         // Moving to the Trash, and marking a whole mailbox read.
-        db.delete_message(id_of(&db, 2));
+        let two = id_of(&db, 2);
+        db.delete_message(two);
         assert!(db.save());
         db.release_saved();
-        assert_eq!(db.get(crate::mailstore::id_at(src, trash, 2).unwrap()).unwrap().folder, trash);
+        // (In Trash, its INBOX number is gone: unknown until the server says.)
+        assert_eq!(db.get(two).map(|m| (m.folder.clone(), m.uid)), Some((trash.to_string(), 0)));
+        assert!(crate::mailstore::id_at(src, trash, 2).is_none());
         db.mark_all_read(&sel);
         assert!(db.save());
         db.release_saved();

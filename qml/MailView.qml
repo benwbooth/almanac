@@ -259,9 +259,20 @@ Item {
         if (list.length <= 1) return -1
         return i + 1 < list.length ? list[i + 1].id : list[i - 1].id
     }
-    function removeCurrent(action) {
+    function removeCurrent(action, sure) {
         if (selectedId < 0) return
         var ids = rowIds()
+        // More than the one message in view (a whole conversation, or several
+        // picked): said how many first, so a whole thread never goes unseen.
+        if (!sure && ids.length > 1) {
+            var rows = multi ? selectedIds.length : 1
+            var where = action === "delete" ? "Trash" : action === "archive" ? "Archive" : action === "junk" ? "Junk" : action
+            confirm.ask("Move " + ids.length + " messages to " + where + "?",
+                        rows > 1 ? "The " + rows + " conversations picked have " + ids.length + " messages in all. Edit › Undo (Ctrl+Z) puts them back."
+                                 : "This conversation has " + ids.length + " messages, and all of them go. Edit › Undo (Ctrl+Z) puts them back.",
+                        "Move to " + where, function() { mail.removeCurrent(action, true) })
+            return
+        }
         var next = multi ? -1 : neighbour()
         selectedId = -1
         selectedIds = []
@@ -615,8 +626,9 @@ Item {
     Shortcut { sequence: "Ctrl+0"; enabled: mail.visible; onActivated: mail.textZoom = 1 }
     Shortcut { sequence: "Ctrl+Shift+U"; enabled: mail.visible && mail.currentRow !== null; onActivated: mail.setCurrentRead(!mail.currentRow.read) }
     Shortcut { sequence: "Ctrl+Shift+L"; enabled: mail.visible && mail.current !== null; onActivated: mail.toggleCurrentFlag() }
-    Shortcut { sequence: "Ctrl+Shift+A"; enabled: mail.visible; onActivated: mail.removeCurrent("archive") }
-    Shortcut { sequence: "Ctrl+Shift+J"; enabled: mail.visible; onActivated: mail.removeCurrent("junk") }
+    // (Held down, these act once: never a run down the list.)
+    Shortcut { sequence: "Ctrl+Shift+A"; autoRepeat: false; enabled: mail.visible && !confirm.opened; onActivated: mail.removeCurrent("archive") }
+    Shortcut { sequence: "Ctrl+Shift+J"; autoRepeat: false; enabled: mail.visible && !confirm.opened; onActivated: mail.removeCurrent("junk") }
 
     // ------------------------------------------------- buttons for the top bar
     property Component tools: Component {
@@ -1119,9 +1131,12 @@ Item {
                     if (currentIndex >= 0) mail.lastIndex = currentIndex
                     if (currentIndex >= 0 && currentIndex < mail.list.length && mail.list[currentIndex].id !== mail.selectedId) mail.select(mail.list[currentIndex].id)
                 }
-                Keys.onDeletePressed: mail.removeCurrent("delete")
+                // Delete / Backspace: once per press. Held down, the key repeats,
+                // and each repeat used to take the next row too: a whole run of
+                // mail went to the Trash.
+                // (Delete itself: the window's Delete shortcut, see Main.qml.)
                 Keys.onPressed: function(ev) {
-                    if (ev.key === Qt.Key_Backspace) { mail.removeCurrent("delete"); ev.accepted = true }
+                    if (ev.key === Qt.Key_Backspace) { ev.accepted = true; if (!ev.isAutoRepeat) mail.removeCurrent("delete") }
                     // Page Up / Down: a screenful up or down the list; Home / End: the
                     // first / last message. (In the message itself they scroll it.)
                     else if ((ev.key === Qt.Key_PageDown || ev.key === Qt.Key_PageUp) && mail.list.length) {
@@ -1410,9 +1425,9 @@ Item {
                                     }
                                 }
                             }
-                            P.MenuItem { icon.name: "archive-insert"; shortcut: "Ctrl+Shift+A"; text: "Archive"; onTriggered: mail.removeCurrent("archive") }
-                            P.MenuItem { icon.name: "mail-mark-junk"; shortcut: "Ctrl+Shift+J"; text: "Move to Junk"; onTriggered: mail.removeCurrent("junk") }
-                            P.MenuItem { icon.name: "edit-delete"; shortcut: "Del"; text: "Delete"; onTriggered: mail.removeCurrent("delete") }
+                            P.MenuItem { icon.name: "archive-insert"; text: "Archive\tCtrl+Shift+A"; onTriggered: mail.removeCurrent("archive") }
+                            P.MenuItem { icon.name: "mail-mark-junk"; text: "Move to Junk\tCtrl+Shift+J"; onTriggered: mail.removeCurrent("junk") }
+                            P.MenuItem { icon.name: "edit-delete"; text: "Delete\tDel"; onTriggered: mail.removeCurrent("delete") }
                             P.MenuSeparator {}
                             P.Menu {
                                 title: "Remind Me"
@@ -1422,9 +1437,9 @@ Item {
                                 P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+W"; text: "Next Week"; onTriggered: mail.remindAt(8, 7) }
                                 P.MenuItem { icon.name: "edit-clear-history"; shortcut: "Ctrl+Alt+Shift+X"; text: "Remove Reminder"; onTriggered: store.remindMe(row.modelData.id, 0) }
                             }
-                            P.MenuItem { icon.name: "mail-thread-ignored"; shortcut: "Ctrl+Shift+M"; text: row.modelData.muted ? "Unmute Conversation" : "Mute Conversation"; onTriggered: store.toggleMute(row.modelData.id) }
+                            P.MenuItem { icon.name: "mail-thread-ignored"; text: (row.modelData.muted ? "Unmute Conversation" : "Mute Conversation") + "\tCtrl+Shift+M"; onTriggered: store.toggleMute(row.modelData.id) }
                             P.MenuItem { icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: row.modelData.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs"; onTriggered: store.toggleVip(row.modelData.fromEmail) }
-                            P.MenuItem { icon.name: "im-ban-user"; shortcut: "Ctrl+Alt+B"; text: "Block Sender"; onTriggered: store.toggleBlocked(row.modelData.fromEmail) }
+                            P.MenuItem { icon.name: "im-ban-user"; text: ("Block Sender") + "\tCtrl+Alt+B"; onTriggered: store.toggleBlocked(row.modelData.fromEmail) }
                             P.MenuItem { icon.name: "document-print"; shortcut: "Ctrl+P"; text: "Print…"; onTriggered: mail.printCurrent() }
                         }
                         }
@@ -1570,7 +1585,7 @@ Item {
                     property var m: null
                     P.MenuItem { icon.name: "mail-message-new"; text: senderMenu.m ? "New Message to " + (senderMenu.m.fromName || senderMenu.m.fromEmail) : ""; onTriggered: compose.openWith({ to: senderMenu.m.fromEmail }) }
                     P.MenuItem { icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: senderMenu.m && senderMenu.m.vip ? "Remove from VIPs" : "Add to VIPs"; onTriggered: store.toggleVip(senderMenu.m.fromEmail) }
-                    P.MenuItem { icon.name: "im-ban-user"; shortcut: "Ctrl+Alt+B"; text: senderMenu.m && senderMenu.m.blocked ? "Unblock Contact" : "Block Contact"; onTriggered: store.toggleBlocked(senderMenu.m.fromEmail) }
+                    P.MenuItem { icon.name: "im-ban-user"; text: (senderMenu.m && senderMenu.m.blocked ? "Unblock Contact" : "Block Contact") + "\tCtrl+Alt+B"; onTriggered: store.toggleBlocked(senderMenu.m.fromEmail) }
                     P.MenuItem { icon.name: "edit-copy"; text: "Copy Address"; onTriggered: { copyHelper.text = senderMenu.m.fromEmail; copyHelper.selectAll(); copyHelper.copy() } }
                 }
                 // Ctrl + scroll / pinch on the trackpad zoom the messages.

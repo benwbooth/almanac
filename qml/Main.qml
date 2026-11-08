@@ -376,13 +376,13 @@ ApplicationWindow {
         P.Menu {
             title: "Edit"
             icon.name: "document-edit"
-            P.MenuItem { icon.name: "edit-undo"; text: "Undo"; shortcut: "Ctrl+Z"; onTriggered: win.editAction("undo") }
+            P.MenuItem { icon.name: "edit-undo"; text: (!win.typing && store.mailUndoText !== "" ? store.mailUndoText : "Undo") + "\tCtrl+Z"; onTriggered: if (!win.typing && store.mailUndoText !== "") store.undoMail(); else win.editAction("undo") }
             P.MenuItem { icon.name: "edit-redo"; text: "Redo"; shortcut: "Ctrl+Shift+Z"; onTriggered: win.editAction("redo") }
             P.MenuSeparator {}
             P.MenuItem { icon.name: "edit-cut"; text: "Cut"; shortcut: "Ctrl+X"; onTriggered: win.editAction("cut") }
             P.MenuItem { icon.name: "edit-copy"; text: "Copy"; shortcut: "Ctrl+C"; onTriggered: win.editAction("copy") }
             P.MenuItem { icon.name: "edit-paste"; text: "Paste"; shortcut: "Ctrl+V"; onTriggered: win.editAction("paste") }
-            P.MenuItem { id: menuCmd12; icon.name: "edit-delete"; shortcut: "Del"; text: "Delete"; enabled: win.section === 0 && mailView.current !== null; onTriggered: mailView.removeCurrent("delete") }
+            P.MenuItem { id: menuCmd12; icon.name: "edit-delete"; text: "Delete\tDel"; enabled: win.section === 0 && mailView.current !== null; onTriggered: mailView.removeCurrent("delete") }
             P.MenuItem { icon.name: "edit-select-all"; text: "Select All"; shortcut: "Ctrl+A"; onTriggered: win.editAction("selectAll") }
             P.MenuSeparator {}
             P.MenuItem { icon.name: "edit-find"; text: "Find…"; shortcut: "Ctrl+F"; onTriggered: win.views[win.section].focusSearch() }
@@ -457,11 +457,11 @@ ApplicationWindow {
             icon.name: "mail-folder-inbox"
             P.MenuItem { icon.name: "mail-receive"; text: "Get All New Mail"; shortcut: "Ctrl+Shift+N"; onTriggered: store.refreshAll() }
             P.MenuSeparator {}
-            P.MenuItem { id: menuCmd26; icon.name: "edit-delete"; shortcut: "Ctrl+Shift+Del"; text: "Erase Deleted Items"; onTriggered: mailView.eraseMailbox("trash") }
-            P.MenuItem { id: menuCmd27; icon.name: "mail-mark-junk"; shortcut: "Ctrl+Alt+J"; text: "Erase Junk Mail"; onTriggered: mailView.eraseMailbox("junk") }
+            P.MenuItem { id: menuCmd26; icon.name: "edit-delete"; text: ("Erase Deleted Items") + "\tCtrl+Shift+Del"; onTriggered: mailView.eraseMailbox("trash") }
+            P.MenuItem { id: menuCmd27; icon.name: "mail-mark-junk"; text: ("Erase Junk Mail") + "\tCtrl+Alt+J"; onTriggered: mailView.eraseMailbox("junk") }
             P.MenuSeparator {}
             P.MenuItem { id: menuCmd28; icon.name: "folder-new"; shortcut: "Ctrl+Alt+Shift+N"; text: "New Smart Mailbox…"; onTriggered: { win.section = 0; mailView.newSmartMailbox() } }
-            P.MenuItem { id: menuCmd29; icon.name: "mail-mark-read"; shortcut: "Ctrl+Alt+Shift+U"; text: "Mark All Messages as Read"; onTriggered: store.markAllRead(mailView.selection) }
+            P.MenuItem { id: menuCmd29; icon.name: "mail-mark-read"; text: ("Mark All Messages as Read") + "\tCtrl+Alt+Shift+U"; onTriggered: store.markAllRead(mailView.selection) }
             P.MenuSeparator {}
             P.Menu {
                 title: "Go To"
@@ -481,7 +481,7 @@ ApplicationWindow {
             id: appMessageMenu
             title: "Message"
             icon.name: "mail-message"
-            P.MenuItem { id: menuCmd38; icon.name: "mail-send"; shortcut: "Ctrl+Shift+D"; text: "Send Again"; enabled: mailView.current !== null; onTriggered: { win.section = 0; mailView.sendAgain() } }
+            P.MenuItem { id: menuCmd38; icon.name: "mail-send"; text: ("Send Again") + "\tCtrl+Shift+D"; enabled: mailView.current !== null; onTriggered: { win.section = 0; mailView.sendAgain() } }
             P.MenuSeparator {}
             P.MenuItem { icon.name: "mail-reply-sender"; text: "Reply"; shortcut: "Ctrl+R"; enabled: mailView.current !== null; onTriggered: { win.section = 0; mailView.reply(false) } }
             P.MenuItem { icon.name: "mail-reply-all"; text: "Reply All"; shortcut: "Ctrl+Shift+R"; enabled: mailView.current !== null; onTriggered: { win.section = 0; mailView.reply(true) } }
@@ -492,7 +492,7 @@ ApplicationWindow {
                 icon.name: "mail-mark-important"
                 enabled: mailView.currentRow !== null
                 P.MenuItem { icon.name: "mail-mark-unread"; text: mailView.currentRow && mailView.currentRow.read ? "As Unread" : "As Read"; shortcut: "Ctrl+Shift+U"; onTriggered: mailView.setCurrentRead(!mailView.currentRow.read) }
-                P.MenuItem { icon.name: "mail-mark-junk"; text: "As Junk Mail"; shortcut: "Ctrl+Shift+J"; onTriggered: mailView.removeCurrent("junk") }
+                P.MenuItem { icon.name: "mail-mark-junk"; text: "As Junk Mail\tCtrl+Shift+J"; onTriggered: mailView.removeCurrent("junk") }
             }
             P.MenuItem { icon.name: "flag-red"; text: mailView.current && mailView.current.flagged ? "Unflag" : "Flag"; shortcut: "Ctrl+Shift+L"; enabled: mailView.current !== null; onTriggered: mailView.toggleCurrentFlag() }
             P.Menu {
@@ -514,10 +514,10 @@ ApplicationWindow {
                 P.MenuSeparator {}
                 P.MenuItem { text: "Clear Flag"; onTriggered: mailView.setCurrentFlag(-1) }
             }
-            P.MenuItem { id: menuCmd39; icon.name: "mail-thread-ignored"; shortcut: "Ctrl+Shift+M"; text: mailView.current && mailView.current.muted ? "Unmute" : "Mute"; enabled: mailView.current !== null; onTriggered: store.toggleMute(mailView.current.id) }
+            P.MenuItem { id: menuCmd39; icon.name: "mail-thread-ignored"; text: (mailView.current && mailView.current.muted ? "Unmute" : "Mute") + "\tCtrl+Shift+M"; enabled: mailView.current !== null; onTriggered: store.toggleMute(mailView.current.id) }
             P.MenuSeparator {}
-            P.MenuItem { icon.name: "archive-insert"; text: "Archive"; shortcut: "Ctrl+Shift+A"; enabled: mailView.current !== null; onTriggered: mailView.removeCurrent("archive") }
-            P.MenuItem { icon.name: "mail-mark-junk"; shortcut: "Ctrl+Shift+J"; text: "Move to Junk"; enabled: mailView.current !== null; onTriggered: mailView.removeCurrent("junk") }
+            P.MenuItem { icon.name: "archive-insert"; text: "Archive\tCtrl+Shift+A"; enabled: mailView.current !== null; onTriggered: mailView.removeCurrent("archive") }
+            P.MenuItem { icon.name: "mail-mark-junk"; text: "Move to Junk\tCtrl+Shift+J"; enabled: mailView.current !== null; onTriggered: mailView.removeCurrent("junk") }
             P.Menu {
                 id: appMoveMenu
                 title: "Move to"
@@ -536,9 +536,9 @@ ApplicationWindow {
                 }
             }
             P.MenuSeparator {}
-            P.MenuItem { id: menuCmd40; icon.name: "system-run"; shortcut: "Ctrl+Alt+Shift+A"; text: "Apply Rules"; onTriggered: store.applyRulesNow() }
+            P.MenuItem { id: menuCmd40; icon.name: "system-run"; text: ("Apply Rules") + "\tCtrl+Alt+Shift+A"; onTriggered: store.applyRulesNow() }
             P.MenuItem { id: menuCmd41; icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: mailView.current && mailView.current.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs"; enabled: mailView.current !== null; onTriggered: store.toggleVip(mailView.current.fromEmail) }
-            P.MenuItem { id: menuCmd42; icon.name: "im-ban-user"; shortcut: "Ctrl+Alt+B"; text: mailView.current && mailView.current.blocked ? "Unblock Sender" : "Block Sender"; enabled: mailView.current !== null; onTriggered: store.toggleBlocked(mailView.current.fromEmail) }
+            P.MenuItem { id: menuCmd42; icon.name: "im-ban-user"; text: (mailView.current && mailView.current.blocked ? "Unblock Sender" : "Block Sender") + "\tCtrl+Alt+B"; enabled: mailView.current !== null; onTriggered: store.toggleBlocked(mailView.current.fromEmail) }
             P.MenuSeparator {}
             P.Menu {
                 title: "Remind Me"
@@ -606,7 +606,13 @@ ApplicationWindow {
     Shortcut { sequence: menuCmd9.shortcut; enabled: menuCmd9.enabled && !win.typing; onActivated: menuCmd9.triggered() }
     Shortcut { sequence: menuCmd10.shortcut; enabled: menuCmd10.enabled && !win.typing; onActivated: menuCmd10.triggered() }
     Shortcut { sequence: menuCmd11.shortcut; enabled: menuCmd11.enabled; onActivated: menuCmd11.triggered() }
-    Shortcut { sequence: menuCmd12.shortcut; enabled: menuCmd12.enabled && !win.typing; onActivated: menuCmd12.triggered() }
+    // Delete, Archive, Junk and Undo have no live shortcut on their menu items:
+    // with KDE's menus those fired however focus was, and repeated while the
+    // key was held, so holding Delete sent row after row to the Trash. These
+    // act once per press, and not while typing.
+    Shortcut { sequence: "Del"; autoRepeat: false; enabled: menuCmd12.enabled && !win.typing; onActivated: menuCmd12.triggered() }
+    // Undo, outside text: the last delete or move put back.
+    Shortcut { sequence: "Ctrl+Z"; autoRepeat: false; enabled: !win.typing && store.mailUndoText !== ""; onActivated: store.undoMail() }
     Shortcut { sequence: menuCmd13.shortcut; enabled: menuCmd13.enabled; onActivated: menuCmd13.triggered() }
     Shortcut { sequence: menuCmd14.shortcut; enabled: menuCmd14.enabled && !win.typing; onActivated: menuCmd14.triggered() }
     Shortcut { sequence: menuCmd15.shortcut; enabled: menuCmd15.enabled && !win.typing; onActivated: menuCmd15.triggered() }
@@ -620,10 +626,10 @@ ApplicationWindow {
     Shortcut { sequence: menuCmd23.shortcut; enabled: menuCmd23.enabled && !win.typing; onActivated: menuCmd23.triggered() }
     Shortcut { sequence: menuCmd24.shortcut; enabled: menuCmd24.enabled && !win.typing; onActivated: menuCmd24.triggered() }
     Shortcut { sequence: menuCmd25.shortcut; enabled: menuCmd25.enabled && !win.typing; onActivated: menuCmd25.triggered() }
-    Shortcut { sequence: menuCmd26.shortcut; enabled: menuCmd26.enabled; onActivated: menuCmd26.triggered() }
-    Shortcut { sequence: menuCmd27.shortcut; enabled: menuCmd27.enabled && !win.typing; onActivated: menuCmd27.triggered() }
+    Shortcut { sequence: "Ctrl+Shift+Del"; autoRepeat: false; enabled: menuCmd26.enabled; onActivated: menuCmd26.triggered() }
+    Shortcut { sequence: "Ctrl+Alt+J"; autoRepeat: false; enabled: menuCmd27.enabled && !win.typing; onActivated: menuCmd27.triggered() }
     Shortcut { sequence: menuCmd28.shortcut; enabled: menuCmd28.enabled && !win.typing; onActivated: menuCmd28.triggered() }
-    Shortcut { sequence: menuCmd29.shortcut; enabled: menuCmd29.enabled && !win.typing; onActivated: menuCmd29.triggered() }
+    Shortcut { sequence: "Ctrl+Alt+Shift+U"; autoRepeat: false; enabled: menuCmd29.enabled && !win.typing; onActivated: menuCmd29.triggered() }
     Shortcut { sequence: menuCmd30.shortcut; enabled: menuCmd30.enabled && !win.typing; onActivated: menuCmd30.triggered() }
     Shortcut { sequence: menuCmd31.shortcut; enabled: menuCmd31.enabled && !win.typing; onActivated: menuCmd31.triggered() }
     Shortcut { sequence: menuCmd32.shortcut; enabled: menuCmd32.enabled && !win.typing; onActivated: menuCmd32.triggered() }
@@ -632,11 +638,11 @@ ApplicationWindow {
     Shortcut { sequence: menuCmd35.shortcut; enabled: menuCmd35.enabled && !win.typing; onActivated: menuCmd35.triggered() }
     Shortcut { sequence: menuCmd36.shortcut; enabled: menuCmd36.enabled && !win.typing; onActivated: menuCmd36.triggered() }
     Shortcut { sequence: menuCmd37.shortcut; enabled: menuCmd37.enabled && !win.typing; onActivated: menuCmd37.triggered() }
-    Shortcut { sequence: menuCmd38.shortcut; enabled: menuCmd38.enabled; onActivated: menuCmd38.triggered() }
-    Shortcut { sequence: menuCmd39.shortcut; enabled: menuCmd39.enabled; onActivated: menuCmd39.triggered() }
-    Shortcut { sequence: menuCmd40.shortcut; enabled: menuCmd40.enabled && !win.typing; onActivated: menuCmd40.triggered() }
+    Shortcut { sequence: "Ctrl+Shift+D"; autoRepeat: false; enabled: menuCmd38.enabled; onActivated: menuCmd38.triggered() }
+    Shortcut { sequence: "Ctrl+Shift+M"; autoRepeat: false; enabled: menuCmd39.enabled; onActivated: menuCmd39.triggered() }
+    Shortcut { sequence: "Ctrl+Alt+Shift+A"; autoRepeat: false; enabled: menuCmd40.enabled && !win.typing; onActivated: menuCmd40.triggered() }
     Shortcut { sequence: menuCmd41.shortcut; enabled: menuCmd41.enabled && !win.typing; onActivated: menuCmd41.triggered() }
-    Shortcut { sequence: menuCmd42.shortcut; enabled: menuCmd42.enabled && !win.typing; onActivated: menuCmd42.triggered() }
+    Shortcut { sequence: "Ctrl+Alt+B"; autoRepeat: false; enabled: menuCmd42.enabled && !win.typing; onActivated: menuCmd42.triggered() }
     Shortcut { sequence: menuCmd43.shortcut; enabled: menuCmd43.enabled && !win.typing; onActivated: menuCmd43.triggered() }
     Shortcut { sequence: menuCmd44.shortcut; enabled: menuCmd44.enabled && !win.typing; onActivated: menuCmd44.triggered() }
     Shortcut { sequence: menuCmd45.shortcut; enabled: menuCmd45.enabled && !win.typing; onActivated: menuCmd45.triggered() }

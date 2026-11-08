@@ -1488,6 +1488,87 @@ mod budget_tests {
 
 #[cfg(test)]
 mod connection_tests {
+    /// Moves the messages listed (X-GM-MSGID in the first column of
+    /// ALMANAC_RESTORE_LIST) from [Gmail]/Trash back to INBOX, with their UIDs
+    /// looked up fresh. Prints counts before and after.
+    #[test]
+    #[ignore]
+    fn restore_from_trash() {
+        let Some(dir) = std::env::var_os("ALMANAC_REAL_DATA").map(std::path::PathBuf::from) else { return };
+        let Some(list) = std::env::var_os("ALMANAC_RESTORE_LIST") else { return };
+        let ids: Vec<String> = std::fs::read_to_string(list).unwrap().lines().skip(1)
+            .filter_map(|l| l.split('\t').next().map(str::to_string)).filter(|x| !x.is_empty()).collect();
+        println!("{} to restore", ids.len());
+        let db: crate::data::Db = serde_json::from_str(&std::fs::read_to_string(dir.join("data.json")).unwrap()).unwrap();
+        let a = db.live.iter().find(|a| a.provider == "google").unwrap().clone();
+        let mut s = super::imap_connect(&a).unwrap();
+        let count = |s: &mut super::Session, f: &str| -> String {
+            let r = s.run_command_and_read_response(format!("STATUS \"{f}\" (MESSAGES)")).unwrap();
+            String::from_utf8_lossy(&r).lines().next().unwrap_or("").to_string()
+        };
+        println!("before: {} | {}", count(&mut s, "[Gmail]/Trash"), count(&mut s, "INBOX"));
+        s.select("[Gmail]/Trash").unwrap();
+        let mut uids = Vec::new();
+        let mut missing = Vec::new();
+        for id in &ids {
+            let found = s.uid_search(format!("X-GM-MSGID {id}")).unwrap();
+            match found.into_iter().next() {
+                Some(u) => uids.push(u),
+                None => missing.push(id.clone()),
+            }
+        }
+        println!("found in Trash: {}, not there: {:?}", uids.len(), missing);
+        for chunk in uids.chunks(50) {
+            let set = chunk.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+            s.uid_mv(&set, "INBOX").unwrap();
+        }
+        let mut left = 0;
+        for id in &ids {
+            if !s.uid_search(format!("X-GM-MSGID {id}")).unwrap().is_empty() {
+                left += 1;
+            }
+        }
+        println!("still in Trash after: {left}");
+        s.select("INBOX").unwrap();
+        let mut back = 0;
+        for id in &ids {
+            if !s.uid_search(format!("X-GM-MSGID {id}")).unwrap().is_empty() {
+                back += 1;
+            }
+        }
+        println!("now in INBOX: {back}");
+        println!("after: {} | {}", count(&mut s, "[Gmail]/Trash"), count(&mut s, "INBOX"));
+        let _ = s.logout();
+    }
+
+    /// Read-only look at Trash (EXAMINE, BODY.PEEK: nothing is changed):
+    /// what's there since a date, with Gmail's labels and MODSEQ (its history
+    /// id), and INBOX arrivals' MODSEQ and date to tell when changes happened.
+    /// ALMANAC_REAL_DATA=… ALMANAC_SINCE=28-Oct-2026 cargo test trash_report -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn trash_report() {
+        let Some(dir) = std::env::var_os("ALMANAC_REAL_DATA").map(std::path::PathBuf::from) else { return };
+        let since = std::env::var("ALMANAC_SINCE").unwrap_or_else(|_| "28-Oct-2026".into());
+        let db: crate::data::Db = serde_json::from_str(&std::fs::read_to_string(dir.join("data.json")).unwrap()).unwrap();
+        let a = db.live.iter().find(|a| a.provider == "google").unwrap().clone();
+        let mut s = super::imap_connect(&a).unwrap();
+        for folder in ["[Gmail]/Trash", "INBOX", "[Gmail]/All Mail"] {
+            let r = s.run_command_and_read_response(format!("EXAMINE \"{folder}\"")).unwrap();
+            println!("=== {folder}: {}", String::from_utf8_lossy(&r).lines().filter(|l| l.contains("HIGHESTMODSEQ") || l.contains("EXISTS")).collect::<Vec<_>>().join(" | "));
+            let uids = s.uid_search(format!("SINCE {since}")).unwrap();
+            let mut uids: Vec<u32> = uids.into_iter().collect();
+            uids.sort();
+            if uids.is_empty() { continue; }
+            let set = uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+            let r = s.run_command_and_read_response(format!(
+                "UID FETCH {set} (UID FLAGS MODSEQ X-GM-MSGID X-GM-LABELS INTERNALDATE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM)])"
+            )).unwrap();
+            println!("{}", String::from_utf8_lossy(&r));
+        }
+        let _ = s.logout();
+    }
+
     /// Each step of talking to the real account's mail server, timed
     /// (read-only): ALMANAC_REAL_DATA=~/.local/share/almanac cargo test step_times -- --ignored --nocapture
     #[test]
@@ -2068,6 +2149,30 @@ pub fn delete_draft(a: &LiveAccount, drafts_path: &str, message_id: &str) -> Res
     let r = remove_by_message_id(&mut s, drafts_path, message_id);
     let _ = s.logout();
     r
+}
+
+/// Moves messages (found by Message-ID) from one folder back to another:
+/// Undo after a delete or move. Those not found there are left alone.
+pub fn move_back(a: &LiveAccount, from_path: &str, message_ids: &[String], to_path: &str) -> Result<usize, String> {
+    if let Some(r) = local_only::<usize>(a) {
+        return r;
+    }
+    let mut s = imap_connect(a)?;
+    s.select(from_path).map_err(|e| e.to_string())?;
+    let mut uids = Vec::new();
+    for id in message_ids {
+        let id = id.trim().replace('"', "");
+        if id.is_empty() {
+            continue;
+        }
+        uids.extend(s.uid_search(format!("HEADER Message-ID \"{id}\"")).map_err(|e| e.to_string())?);
+    }
+    if !uids.is_empty() {
+        let set = uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+        s.uid_mv(&set, to_path).map_err(|e| e.to_string())?;
+    }
+    let _ = s.logout();
+    Ok(uids.len())
 }
 
 fn remove_by_message_id(s: &mut Session, folder: &str, message_id: &str) -> Result<(), String> {

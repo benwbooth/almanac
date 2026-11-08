@@ -1001,15 +1001,15 @@ impl qobject::Store {
         let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let Some(a) = self.db.live_account(&account.to_string()).cloned() else {
-            report(&thread, &path, json!({"state": "error", "name": name, "size": size, "error": "Big attachments need a Google account to send from"}));
+            report(&thread, &path, json!({"state": "error", "name": name, "size": size, "error": "Big attachments can be sent as links from Google and Microsoft accounts"}));
             return;
         };
         report(&thread, &path, json!({"state": "uploading", "name": name, "size": size, "sent": 0, "total": size}));
         std::thread::spawn(move || {
             let result = (|| {
                 // (A stand-in Drive for tests needs no sign-in.)
-                let token = if std::env::var("ALMANAC_DRIVE_TEST_BASE").is_ok() { "test".to_string() } else { crate::live::token(&a, crate::oauth::Resource::Drive)? };
-                let store = crate::cloudfiles::store_for(&a.provider, token).ok_or("Big attachments need a Google account to send from")?;
+                let token = if std::env::var("ALMANAC_DRIVE_TEST_BASE").is_ok() || std::env::var("ALMANAC_ONEDRIVE_TEST_BASE").is_ok() { "test".to_string() } else { crate::live::token(&a, crate::oauth::Resource::Drive)? };
+                let store = crate::cloudfiles::store_for(&a.provider, token).ok_or("Big attachments can be sent as links from Google and Microsoft accounts")?;
                 let last = std::cell::Cell::new(std::time::Instant::now());
                 store.upload(std::path::Path::new(&path), &|sent, total| {
                     // (The window hears about it a few times a second at most.)
