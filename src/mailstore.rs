@@ -1367,10 +1367,12 @@ pub fn fill_from_copies(source: &str) -> usize {
     let _t = crate::Timed::new("filling in messages from their copies");
     with_conn(&path, |c| {
         let pairs: Vec<(i64, i64)> = {
+            // (Read from the list's slim index: the rows themselves, with all
+            // the mail's text, took ~20 s to scan on every check.)
             let mut st = c
                 .prepare_cached(
                     "SELECT p.id, (SELECT q.id FROM messages q WHERE q.message_id = p.message_id AND q.id <> p.id AND q.preview <> '' LIMIT 1)
-                     FROM messages p WHERE p.source = ?1 AND p.partial = 1 AND p.uid > 0 AND p.preview = '' AND p.message_id <> ''",
+                     FROM messages p INDEXED BY messages_for_list WHERE p.source = ?1 AND p.partial = 1 AND p.uid > 0 AND p.preview = '' AND p.message_id <> ''",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = st.query_map(params![source], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))).map_err(|e| e.to_string())?;
