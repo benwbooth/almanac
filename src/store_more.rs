@@ -167,18 +167,8 @@ impl qobject::Store {
             let again: Vec<(String, String, i64, String)> =
                 self.snoozed_alerts.iter().filter(|s| s.0 <= now).map(|s| (s.1.clone(), s.2.clone(), 0, String::new())).collect();
             self.as_mut().rust_mut().get_mut().snoozed_alerts.retain(|s| s.0 > now);
-            let mut shown = false;
             for (title, when, id, start) in alerts.iter().chain(again.iter()) {
-                if na {
-                    let target = if *id != 0 { json!({"event": id, "start": start}) } else { json!({"calendar": true}) };
-                    notify_with(title, when, true, self.qt_thread(), target);
-                }
-                self.as_mut().rust_mut().get_mut().open_alerts.push((title.clone(), when.clone()));
-                shown = true;
-            }
-            if shown {
-                let j = json!(self.open_alerts.iter().map(|(t, w)| json!({"title": t, "when": w})).collect::<Vec<_>>()).to_string();
-                self.as_mut().set_alerts_json(QString::from(j.as_str()));
+                self.as_mut().show_alert(title, when, *id, start, na);
             }
             if !reminders.is_empty() || !alerts.is_empty() {
                 self.changed();
@@ -794,6 +784,32 @@ impl qobject::Store {
         self.as_mut().db_mut().onboarded = true;
         self.as_mut().set_onboarded(true);
         self.changed();
+    }
+
+    /// An event's alert: the desktop notification (it stays until closed; when
+    /// notifications are on) and the alert card in the window (Snooze, Dismiss).
+    /// The same for real alerts and the test one.
+    fn show_alert(mut self: Pin<&mut Self>, title: &str, when: &str, id: i64, start: &str, notify: bool) {
+        if notify {
+            let target = if id != 0 { json!({"event": id, "start": start}) } else { json!({"calendar": true}) };
+            notify_with(title, when, true, self.qt_thread(), target);
+        }
+        self.as_mut().rust_mut().get_mut().open_alerts.push((title.to_string(), when.to_string()));
+        let j = json!(self.open_alerts.iter().map(|(t, w)| json!({"title": t, "when": w})).collect::<Vec<_>>()).to_string();
+        self.as_mut().set_alerts_json(QString::from(j.as_str()));
+    }
+
+    /// A made-up event's alert ("Test Event", in 5 minutes), shown as real ones
+    /// are (always notified, so it can be tried with notifications off too).
+    pub(super) fn test_alert(self: Pin<&mut Self>) {
+        let at = chrono::Local::now() + chrono::Duration::minutes(5);
+        let when = format!("In 5 minutes, at {}", at.format("%-I:%M %p"));
+        self.show_alert("Test Event", &when, 0, "", true);
+    }
+
+    /// A made-up new-mail notification, as real ones are (clicked: the Inbox).
+    pub(super) fn test_mail_notification(self: Pin<&mut Self>) {
+        notify_with("Test Sender", "This is how new mail is announced", false, self.qt_thread(), json!({"inbox": true}));
     }
 
     /// Fills "On My Computer" with made-up examples to look around.

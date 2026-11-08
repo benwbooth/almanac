@@ -378,6 +378,12 @@ pub mod qobject {
         fn export_pdf(self: Pin<&mut Store>, title: &QString, html: &QString);
         #[qinvokable]
         fn finish_setup(self: Pin<&mut Store>);
+        /// Settings › Calendar: a made-up event's alert, shown the way real ones are.
+        #[qinvokable]
+        fn test_alert(self: Pin<&mut Store>);
+        /// Settings › General: a made-up new-mail notification, as real ones are.
+        #[qinvokable]
+        fn test_mail_notification(self: Pin<&mut Store>);
         #[qinvokable]
         fn use_sample_data(self: Pin<&mut Store>);
         #[qinvokable]

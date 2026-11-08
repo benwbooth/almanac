@@ -119,6 +119,12 @@ Popup {
                             CheckX { Layout.fillWidth: true; text: "Calendar alerts and reminders"; checked: !!dlg.s.notify_alerts; onToggled: dlg.set("notify_alerts", checked) }
                         }
                     }
+                    // Shown the way real ones are (a made-up event; a made-up message).
+                    Row2 {
+                        label: "Try them:"
+                        ToolButtonX { text: "Test Alert"; tip: "Show an alert for a made-up event (\"Test Event\", in 5 minutes), as real ones are shown"; onClicked: dlg.store.testAlert() }
+                        ToolButtonX { text: "Test New Mail"; tip: "Show a made-up new-mail notification, as real ones are shown"; onClicked: dlg.store.testMailNotification() }
+                    }
                     Row2 {
                         label: "Sample data:"
                         ToolButtonX { text: "Try Sample Data"; onClicked: dlg.store.useSampleData() }
@@ -259,6 +265,10 @@ Popup {
                             currentIndex: Math.max(0, mins.indexOf(dlg.s.default_alert === undefined ? null : dlg.s.default_alert))
                             onActivated: dlg.set("default_alert", mins[currentIndex])
                         }
+                    }
+                    Row2 {
+                        label: "Alerts:"
+                        ToolButtonX { text: "Send Test Alert"; tip: "Show an alert for a made-up event (\"Test Event\", in 5 minutes): the desktop notification and the alert in the window, as real ones are shown"; onClicked: dlg.store.testAlert() }
                     }
                     Row2 {
                         label: "New events last:"
