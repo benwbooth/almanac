@@ -126,6 +126,8 @@ WebEngineView {
     property bool darkMessages: true
     // Dark logos made readable in dark mode (see logos() in the page).
     property bool readableLogos: true
+    // (The pass's decisions, in the log: "ALMANAC-LOGO …", to see why a picture was changed.)
+    onJavaScriptConsoleMessage: function(level, message) { if (/^ALMANAC-LOGO /.test(message)) console.warn(message) }
     // A colour as [r, g, b] (0–255).
     function rgbOf(c) { return [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)] }
     // Pictures looked at (store.imageStats), by address: kept while Almanac runs.
@@ -867,13 +869,21 @@ WebEngineView {
            + 'function lgLin(c){c/=255;return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}'
            + 'function lgLum(r,g,b){return 0.2126*lgLin(r)+0.7152*lgLin(g)+0.0722*lgLin(b)}'
            + 'function lgCon(a,b){var x=Math.max(a,b),y=Math.min(a,b);return (x+0.05)/(y+0.05)}'
-           + 'function lgBack(im){var d=im.ownerDocument,win=d.defaultView,el=im.parentElement;while(el){var c=win.getComputedStyle(el).backgroundColor,m=c&&c.match(/rgba?\\(([\\d.]+), ([\\d.]+), ([\\d.]+)(?:, ([\\d.]+))?\\)/);'
-           + 'if(m&&(m[4]===undefined||parseFloat(m[4])>0.5)){var r=+m[1],g=+m[2],b=+m[3];if(0.299*r+0.587*g+0.114*b>205){var Y=lgLum(r,g,b),L=Y>0.008856?116*Math.cbrt(Y)-16:903.3*Y;L=100-L;var f=(L+16)/116;return L>8?f*f*f:L/903.3}return lgLum(r,g,b)}el=el.parentElement}'
+           + 'function lgBack(im){var d=im.ownerDocument,win=d.defaultView,el=im.parentElement;while(el){var cs=win.getComputedStyle(el);if(cs.backgroundImage&&cs.backgroundImage!=="none")return null;'
+           + 'var c=cs.backgroundColor,m=c&&c.match(/rgba?\\(([\\d.]+), ([\\d.]+), ([\\d.]+)(?:, ([\\d.]+))?\\)/);if(m&&(m[4]===undefined||parseFloat(m[4])>0.5)){var r=+m[1],g=+m[2],b=+m[3],br=0.299*r+0.587*g+0.114*b;'
+           + 'if(br>150&&br<=230)return null;if(br>230){var Y=lgLum(r,g,b),L=Y>0.008856?116*Math.cbrt(Y)-16:903.3*Y;L=100-L;var f=(L+16)/116;return L>8?f*f*f:L/903.3}return lgLum(r,g,b)}el=el.parentElement}'
            + 'return lgLum(PANE[0],PANE[1],PANE[2])}'
+           + 'function lgSay(s,why){console.log("ALMANAC-LOGO "+why+" | "+s.slice(0,90))}'
+           + 'function lgLift(d,t){var id="almanac-lift-"+Math.round(t*10);if(!d.getElementById(id)){var ns="http://www.w3.org/2000/svg",sv=d.createElementNS(ns,"svg");sv.setAttribute("width","0");sv.setAttribute("height","0");sv.style.position="absolute";'
+           + 'var fl=d.createElementNS(ns,"filter");fl.setAttribute("id",id);fl.setAttribute("color-interpolation-filters","sRGB");var ct=d.createElementNS(ns,"feComponentTransfer");["R","G","B"].forEach(function(ch){var fn=d.createElementNS(ns,"feFunc"+ch);fn.setAttribute("type","linear");fn.setAttribute("slope",String(1-t));fn.setAttribute("intercept",String(t));ct.appendChild(fn)});'
+           + 'fl.appendChild(ct);sv.appendChild(fl);d.body.appendChild(sv)}return "url(#"+id+")"}'
            + 'function lgApply(src){var st=window.__lgStats[src];if(!st||!st.ok)return;(window.__lgImgs[src]||[]).forEach(function(im){if(im.__lgDone)return;im.__lgDone=1;'
-           + 'if(st.transparent<0.2)return;var bg=lgBack(im);if(lgCon(st.lum,bg)>=3)return;'
-           + 'if(st.mono&&lgCon(st.invLum,bg)>=3){im.style.setProperty("filter","invert(1) hue-rotate(180deg)","important");im.setAttribute("data-almanac-logo","light");return}'
-           + 'im.style.setProperty("background-color","#f2f2f2","important");im.style.setProperty("padding","4px","important");im.style.setProperty("border-radius","6px","important");im.setAttribute("data-almanac-logo","backdrop")})}'
+           + 'if(st.transparent<0.2)return lgSay(src,"left: no see-through area ("+Math.round(st.transparent*100)+"%), it has its own background");if(st.transparent>0.97)return lgSay(src,"left: nothing to see (see-through "+Math.round(st.transparent*100)+"%)");var bg=lgBack(im);if(bg===null)return lgSay(src,"left: unsure of the background behind it");'
+           + 'var reads=(st.pct||[]).filter(function(l){return lgCon(l,bg)>=3}).length/9,base="see-through "+Math.round(st.transparent*100)+"%, median luminance "+st.lum.toFixed(3)+", background "+bg.toFixed(3)+", contrast "+lgCon(st.lum,bg).toFixed(2);'
+           + 'if(reads>=0.5)return lgSay(src,"left: already reads ("+base+", "+Math.round(reads*100)+"% at 3:1)");if(st.light>=0.15&&st.dark>=0.15)return lgSay(src,"left: carries its own contrast (light "+Math.round(st.light*100)+"%, dark "+Math.round(st.dark*100)+"%)");'
+           + 'if(st.mono){for(var k=0;k<(st.lift||[]).length;k++){if(lgCon(st.lift[k],bg)>=3.5){var t=(k+1)/10;im.style.setProperty("filter",lgLift(im.ownerDocument,t),"important");im.setAttribute("data-almanac-logo","lighter "+t);return lgSay(src,"lightened by "+t+": one colour, too dark ("+base+")")}}}'
+           + 'im.style.setProperty("background-color","#f2f2f2","important");im.style.setProperty("padding","4px","important");im.style.setProperty("border-radius","6px","important");im.setAttribute("data-almanac-logo","backdrop");'
+           + 'lgSay(src,"light backdrop: "+(st.mono?"one colour, lightening not enough":"several colours")+", too dark ("+base+")")})}'
            + 'function lgOne(im){if(im.__lg||!im.complete||!im.naturalWidth||im.naturalWidth<16||im.naturalHeight<16)return;var s=im.currentSrc||im.src||"";'
            + 'if(!/^(https?:|data:image\\/(png|gif|webp|svg))/i.test(s)||/\\.jpe?g(\\?|$)/i.test(s))return;im.__lg=1;(window.__lgImgs[s]=window.__lgImgs[s]||[]).push(im);'
            + 'if(window.__lgStats[s])lgApply(s);else if(window.__lgAsk.indexOf(s)<0)window.__lgAsk.push(s)}'

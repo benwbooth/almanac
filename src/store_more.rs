@@ -2054,10 +2054,18 @@ fn picture_bytes(src: &str) -> Option<Vec<u8>> {
     resp.into_body().with_config().limit(3 * 1024 * 1024).read_to_vec().ok()
 }
 
-/// How a picture looks, for making dark logos readable on a dark page: the
-/// share of see-through pixels; the middle (median) relative luminance of the
-/// others, and theirs after `invert(1) hue-rotate(180deg)` (lightness turned
-/// round, the hue kept); and whether it's one colour (black, grey, or one hue).
+/// How a picture looks, for making dark logos readable on a dark page:
+/// - "transparent": the share of see-through pixels;
+/// - "lum": the median relative luminance of the others, and "pct" its 10th
+///   to 90th percentiles (to tell how much already reads on a background);
+/// - "light" / "dark": the shares that are light (luminance ≥ 0.6) or very dark
+///   (≤ 0.05): both at once, the picture carries its own contrast (white on
+///   navy, say) and is left alone;
+/// - "mono": one colour (black or grey, or one hue without black or white
+///   beside it: black text with a coloured mark is two colours);
+/// - "lift": the median luminance once lightened by 0.1, 0.2 … 0.9 (each
+///   channel c → b + (1 − b)·c: lighter, the hue kept), to lighten no more
+///   than needed.
 pub(crate) fn picture_stats(bytes: &[u8]) -> Option<serde_json::Value> {
     let img = cxx_qt_lib::QImage::from_data(bytes, None)?;
     let (w, h) = (img.width(), img.height());
@@ -2069,9 +2077,12 @@ pub(crate) fn picture_stats(bytes: &[u8]) -> Option<serde_json::Value> {
     let lin = |c: f64| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
     let lum = |r: f64, g: f64, b: f64| 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
     let (mut total, mut clear) = (0usize, 0usize);
-    let (mut lums, mut invs) = (Vec::new(), Vec::new());
+    let mut lums = Vec::new();
+    let mut lifts: Vec<Vec<f64>> = vec![Vec::new(); 9];
     let mut hues = [0usize; 24];
-    let mut colourful = 0usize;
+    let (mut colourful, mut light, mut dark) = (0usize, 0usize, 0usize);
+    // Black and white themselves (HSL lightness), beside a colour: two colours.
+    let (mut black, mut white) = (0usize, 0usize);
     let mut y = 0;
     while y < h {
         let mut x = 0;
@@ -2082,18 +2093,26 @@ pub(crate) fn picture_stats(bytes: &[u8]) -> Option<serde_json::Value> {
                 clear += 1;
             } else {
                 let (r, g, b) = (c.red_f() as f64, c.green_f() as f64, c.blue_f() as f64);
-                lums.push(lum(r, g, b));
-                // invert(1), then hue-rotate(180deg) (the CSS matrix: luma kept).
-                let (ir, ig, ib) = (1.0 - r, 1.0 - g, 1.0 - b);
-                let cl = |v: f64| v.clamp(0.0, 1.0);
-                let (hr, hg, hb) = (
-                    cl(-0.574 * ir + 1.430 * ig + 0.144 * ib),
-                    cl(0.426 * ir + 0.430 * ig + 0.144 * ib),
-                    cl(0.426 * ir + 1.430 * ig - 0.856 * ib),
-                );
-                invs.push(lum(hr, hg, hb));
+                let l0 = lum(r, g, b);
+                lums.push(l0);
+                if l0 >= 0.6 {
+                    light += 1;
+                }
+                if l0 <= 0.05 {
+                    dark += 1;
+                }
+                for (k, v) in lifts.iter_mut().enumerate() {
+                    let t = (k + 1) as f64 / 10.0;
+                    v.push(lum(t + (1.0 - t) * r, t + (1.0 - t) * g, t + (1.0 - t) * b));
+                }
                 let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
                 let l = (mx + mn) / 2.0;
+                if l < 0.1 {
+                    black += 1;
+                }
+                if l > 0.9 {
+                    white += 1;
+                }
                 let s = if mx == mn { 0.0 } else { (mx - mn) / (1.0 - (2.0 * l - 1.0).abs()).max(1e-6) };
                 if s > 0.2 && l > 0.08 && l < 0.92 {
                     colourful += 1;
@@ -2108,17 +2127,23 @@ pub(crate) fn picture_stats(bytes: &[u8]) -> Option<serde_json::Value> {
     }
     let opaque = lums.len();
     if opaque == 0 {
-        return Some(json!({"ok": true, "transparent": 1.0, "lum": 0.0, "invLum": 1.0, "mono": true}));
+        return Some(json!({"ok": true, "transparent": 1.0, "lum": 0.0, "pct": [], "light": 0.0, "dark": 0.0, "mono": true, "lift": []}));
     }
-    let median = |v: &mut Vec<f64>| {
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        v[v.len() / 2]
-    };
-    // One colour: hardly any colourful pixels (black or grey), or nearly all
-    // of them within one stretch of hue (three of 24 steps).
-    let mono = colourful * 100 < opaque * 15
-        || (0..24).map(|i| hues[i] + hues[(i + 1) % 24] + hues[(i + 2) % 24]).max().unwrap_or(0) * 100 >= colourful * 85;
-    Some(json!({"ok": true, "transparent": clear as f64 / total as f64, "lum": median(&mut lums), "invLum": median(&mut invs), "mono": mono}))
+    let sort = |v: &mut Vec<f64>| v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sort(&mut lums);
+    let pct: Vec<f64> = (1..=9).map(|k| lums[(opaque * k / 10).min(opaque - 1)]).collect();
+    let lift: Vec<f64> = lifts.iter_mut().map(|v| { sort(v); v[v.len() / 2] }).collect();
+    let share = |n: usize| n as f64 / opaque as f64;
+    // One colour: black or grey only (hardly any colourful pixels); or one hue
+    // (nearly all colourful pixels within three of 24 steps) with little black
+    // or white beside it (black text with a coloured mark is two colours).
+    let greys = colourful * 100 < opaque * 15;
+    let one_hue = (0..24).map(|i| hues[i] + hues[(i + 1) % 24] + hues[(i + 2) % 24]).max().unwrap_or(0) * 100 >= colourful * 85;
+    let mono = greys || (one_hue && share(black) < 0.1 && share(white) < 0.1);
+    Some(json!({
+        "ok": true, "transparent": clear as f64 / total as f64, "lum": lums[opaque / 2], "pct": pct,
+        "light": share(light), "dark": share(dark), "mono": mono, "lift": lift,
+    }))
 }
 
 /// Message `m`'s list and how to leave it: from its kept list headers, else
@@ -2199,10 +2224,19 @@ mod logo_tests {
         let mono = super::picture_stats(&png("iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDwxcbtDyAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEyKzAwOjAwIgfZvQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMiswMDowMFNaYQEAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTIrMDA6MDAET0DeAAAAS0lEQVRYw+3PsREAEBBE0aMcrShJrCStaIdMIDZurP/CjfabAXhZ2IecyvA+dVrrdXVG7zO3EayOYHUEqyNYHcHqCFZHsLrvggExE9geBCK+Qfv/AAAAAElFTkSuQmCC")).expect("read");
         assert!(mono["transparent"].as_f64().unwrap() > 0.2, "{mono}");
         assert!(mono["mono"].as_bool().unwrap(), "{mono}");
-        assert!(mono["lum"].as_f64().unwrap() < 0.1 && mono["invLum"].as_f64().unwrap() > 0.4, "{mono}");
+        assert!(mono["lum"].as_f64().unwrap() < 0.1, "{mono}");
+        // Lightened step by step, its hue kept: lighter each step.
+        let lift: Vec<f64> = mono["lift"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        assert!(lift.len() == 9 && lift.windows(2).all(|w| w[1] > w[0]) && lift[8] > 0.6, "{mono}");
         // Blue and orange: several colours (a backdrop, never recoloured).
         let multi = super::picture_stats(&png("iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDw0raeBkAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEzKzAwOjAwhHDSCQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMyswMDowMPUtarUAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTMrMDA6MDCiOEtqAAAAVklEQVRYw+3PsQ3AIBAEQaAK9MXRBHXQhIt70YWJICDHss874SWnDQHAl8V9sNrv06fecuyXHf+ZcvHVmZ46fQuC1RGsjmB1BKsjWB3B6ghW97tgQMwAypwIIvcLTMwAAAAASUVORK5CYII=")).expect("read");
         assert!(!multi["mono"].as_bool().unwrap(), "{multi}");
+        // Black text beside a coloured mark: two colours (never recoloured).
+        let bb = super::picture_stats(&png("iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUIwv7Oy7/AAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjM1OjExKzAwOjAwS4N64QAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDozNToxMSswMDowMDrewl0AAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MzU6MTErMDA6MDBty+OCAAAATUlEQVRYw+3PsREAEBBEUVRhtKkObRpdkIkuErix/gs32h8CgJdFY5vep6yfpY7jX73l3Zm8S24jWB3B6ghWR7A6gtURrI5gdd8FA2IWkdwFIlz1K/4AAAAASUVORK5CYII=")).expect("read");
+        assert!(!bb["mono"].as_bool().unwrap(), "{bb}");
+        // White on a navy badge: light and very dark parts both, its own contrast.
+        let badge = super::picture_stats(&png("iVBORw0KGgoAAAANSUhEUgAAADwAAAAeCAYAAABwmH1PAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUIwv7Oy7/AAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjM1OjExKzAwOjAwS4N64QAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDozNToxMSswMDowMDrewl0AAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MzU6MTErMDA6MDBty+OCAAAAbklEQVRYw+3XsQ2AMAwFUYPYKJkJZoKZkpmgo0iHhTD6vldGsuSTq5hB2zQ+lLKe0Uu9rffj7pyjl/kaweoIVrd4B1vbo3e3WrfHM+kuTLA6gtURrI5gdQSrI1hdumD399DzNfuDdBcmWB3BEHMBvXoICf3lkvcAAAAASUVORK5CYII=")).expect("read");
+        assert!(badge["light"].as_f64().unwrap() >= 0.15 && badge["dark"].as_f64().unwrap() >= 0.15, "{badge}");
         // No see-through pixels: left as it is.
         let opaque = super::picture_stats(&png("iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAIAAAADnC86AAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDw0raeBkAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEzKzAwOjAwhHDSCQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMyswMDowMPUtarUAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTMrMDA6MDCiOEtqAAAAMklEQVRYw+3NAQ0AMAgAoPtKdrKTbY3h5qAAkdVvw19ZxWKxWCwWi8VisVgsFovFR+MBnyUBgmLuQ60AAAAASUVORK5CYII=")).expect("read");
         assert!(opaque["transparent"].as_f64().unwrap() < 0.01, "{opaque}");
