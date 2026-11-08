@@ -48,9 +48,11 @@ WheelHandler {
     // Held open (at the spinner's height) while the mail is being checked.
     property bool refreshing: false
     signal refreshRequested()
-    property double atTopSince: 0
+    // When the list got to the top (1: at the top from the start; -1: not there).
+    property double atTopSince: 1
     property bool gestureFromTop: false
     property double lastRefreshAt: 0
+    property double lastWheelAt: 0
     function atTop() { return flick.contentY <= lowest() + 0.5 }
     function pullBy(d) {
         // (Up: d < 0. Rubber band: each pixel counts for less the further it's pulled.)
@@ -192,6 +194,10 @@ WheelHandler {
             var was = swiping; endSwipe(); ev.accepted = was; return
         }
         if (phase === Qt.ScrollBegin) gestureFromTop = pullable && atTop() && !glide.running
+        // (Wayland trackpads may start with an update, no begin: a gesture's
+        // first event after a pause counts as its beginning.)
+        if (phase === Qt.ScrollUpdate && Date.now() - lastWheelAt > 250) gestureFromTop = pullable && atTop() && !glide.running
+        lastWheelAt = Date.now()
         // The system's own momentum (macOS): it has its own glide.
         if (phase === Qt.ScrollMomentum) { stop(); if (pull === 0) moveBy(-ev.pixelDelta.y); ev.accepted = ev.pixelDelta.y !== 0; return }
         // (A list too short to scroll still pulls to refresh.)
@@ -208,7 +214,12 @@ WheelHandler {
         // Past the top, from a list that was already there (a trackpad gesture
         // begun there, or the wheel after a moment at the top): a pull.
         if (pullable && d < 0 && atTop() && !glide.running) {
-            var deliberate = phase !== Qt.NoScrollPhase ? gestureFromTop : (Date.now() - atTopSince > 400)
+            // Deliberate: the gesture began at the top, or the list has been
+            // at the top a moment (150 ms; 400 ms for a mouse wheel's notches).
+            var settled = atTopSince > 0 && Date.now() - atTopSince > (pixels ? 150 : 400)
+            var deliberate = gestureFromTop || settled
+            // (Logged for now, to see what a trackpad sends here: ALMANAC-PULL.)
+            console.warn("ALMANAC-PULL phase=" + phase + " px=" + ev.pixelDelta.y + " a=" + ev.angleDelta.y + " pixels=" + pixels + " fromTop=" + gestureFromTop + " settled=" + settled + " pull=" + Math.round(pull))
             if (deliberate) { springBack.stop(); pullBy(pixels ? d : d / 120 * 22); ev.accepted = true; return }
         }
         if (pixels) swipeBy(d, phase !== Qt.NoScrollPhase)
@@ -233,7 +244,7 @@ WheelHandler {
         // to a message): the glide stops.
         function onDraggingChanged() { if (m.flick.dragging) m.stop("dragged") }
         function onContentYChanged() {
-            if (m.atTop()) { if (m.atTopSince === 0) m.atTopSince = Date.now() } else m.atTopSince = 0
+            if (m.atTop()) { if (m.atTopSince < 0) m.atTopSince = Date.now() } else m.atTopSince = -1
             if (!m.moving && m.glide.running && Math.abs(m.flick.contentY - m.lastSetY) > 1) m.stop("moved by something else")
         }
     }
