@@ -277,51 +277,154 @@ const THREAD_KEY: &str = "lower(CASE
     WHEN trim(message_id) <> '' THEN trim(message_id)
     ELSE '#' || date || '|' || from_email || '|' || subject END)";
 
-/// Each folder's conversations (newest message, how many, how many unread)
-/// in a table the database keeps right itself, so the message list can be
-/// read a page at a time anywhere in a mailbox of any size (and know its
-/// length) with conversations on. Made once.
+/// Each message's conversation (folder, thread key, date, read) in a small
+/// table of its own, and each folder's conversations (newest message, how
+/// many, how many unread) in another, both kept right by the database itself,
+/// so the message list can be read a page at a time anywhere with
+/// conversations on. Here only what's instant: the tables and the triggers
+/// that keep them right from now on. Filling them in for the mail already
+/// here is `build_conversations`'s, in the background, a little at a time.
 fn convs_ready(c: &Connection) -> Result<(), String> {
-    let made: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'convs'", [], |r| r.get(0)).ok();
-    if made.as_deref() == Some("1") {
+    let state: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'convs'", [], |r| r.get(0)).ok();
+    if state.as_deref() == Some("2") || state.as_deref() == Some("building") {
         return Ok(());
     }
-    let _t = crate::Timed::new("grouping the mail into conversations once (for the list)");
     let has_tk: bool = c.prepare("SELECT tk FROM messages LIMIT 0").is_ok();
     if !has_tk {
         c.execute_batch(&format!("ALTER TABLE messages ADD COLUMN tk TEXT GENERATED ALWAYS AS ({THREAD_KEY}) VIRTUAL")).map_err(|e| e.to_string())?;
+    }
+    c.execute_batch(
+        "BEGIN;
+         -- (The first version's: an index over the messages, made in one go.)
+         DROP TRIGGER IF EXISTS convs_add;
+         DROP TRIGGER IF EXISTS convs_drop;
+         DROP TRIGGER IF EXISTS convs_change;
+         DROP INDEX IF EXISTS messages_by_thread;
+         DROP TABLE IF EXISTS convs;
+         CREATE TABLE IF NOT EXISTS msg_threads(id INTEGER PRIMARY KEY, folder TEXT NOT NULL, tk TEXT NOT NULL,
+                                                date INTEGER NOT NULL, read INTEGER NOT NULL);
+         CREATE INDEX IF NOT EXISTS msg_threads_by_conv ON msg_threads(folder, tk, date);
+         DROP TRIGGER IF EXISTS threads_add;
+         DROP TRIGGER IF EXISTS threads_drop;
+         DROP TRIGGER IF EXISTS threads_change;
+         CREATE TRIGGER threads_add AFTER INSERT ON messages BEGIN
+             INSERT OR REPLACE INTO msg_threads VALUES (NEW.id, NEW.folder, NEW.tk, NEW.date, NEW.read);
+         END;
+         CREATE TRIGGER threads_drop AFTER DELETE ON messages BEGIN
+             DELETE FROM msg_threads WHERE id = OLD.id;
+         END;
+         CREATE TRIGGER threads_change AFTER UPDATE OF folder, read, date, refs, in_reply_to, message_id ON messages BEGIN
+             INSERT OR REPLACE INTO msg_threads VALUES (NEW.id, NEW.folder, NEW.tk, NEW.date, NEW.read);
+         END;
+         INSERT OR REPLACE INTO meta(key, value) VALUES('convs', 'building');
+         COMMIT;",
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Whether each folder's conversations are all worked out (so the list can be
+/// read a page at a time with conversations on).
+pub fn conversations_ready() -> bool {
+    static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if READY.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    let path = db_path();
+    if !path.exists() {
+        return false;
+    }
+    let ok = with_conn(&path, |c| Ok(c.query_row("SELECT value FROM meta WHERE key = 'convs'", [], |r| r.get::<_, String>(0)).ok().as_deref() == Some("2")))
+        .unwrap_or(false);
+    if ok {
+        READY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    ok
+}
+
+/// Works out the conversations of the mail already here (once), a couple of
+/// thousand messages at a time so nothing else waits on the database for
+/// long; then each folder's conversations, in one short step. Run on a
+/// thread of its own; returns at once when it's done already.
+pub fn build_conversations() {
+    let path = db_path();
+    if !path.exists() || conversations_ready() {
+        return;
+    }
+    let _t = crate::Timed::new("working out the mail's conversations (in the background)");
+    let mut last: i64 = with_conn(&path, |c| c.query_row("SELECT COALESCE(MAX(id), 0) FROM msg_threads", [], |r| r.get(0)).map_err(|e| e.to_string())).unwrap_or(0);
+    // (Messages before the newest in the table but missing from it: a first
+    // run that stopped part way, so it starts over from the beginning.)
+    if last > 0 {
+        let gap: i64 = with_conn(&path, |c| {
+            c.query_row("SELECT COUNT(*) FROM messages WHERE id <= ?1 AND id NOT IN (SELECT id FROM msg_threads)", params![last], |r| r.get(0))
+                .map_err(|e| e.to_string())
+        })
+        .unwrap_or(0);
+        if gap > 0 {
+            last = 0;
+        }
+    }
+    loop {
+        let step = with_conn(&path, |c| {
+            let upto: Option<i64> =
+                c.query_row("SELECT id FROM messages WHERE id > ?1 ORDER BY id LIMIT 1 OFFSET 1999", params![last], |r| r.get(0)).ok();
+            let upto = match upto {
+                Some(u) => u,
+                None => c.query_row("SELECT COALESCE(MAX(id), ?1) FROM messages", params![last], |r| r.get(0)).map_err(|e| e.to_string())?,
+            };
+            // (Rows a trigger put in meanwhile are newer: kept.)
+            c.execute(
+                "INSERT OR IGNORE INTO msg_threads SELECT id, folder, tk, date, read FROM messages WHERE id > ?1 AND id <= ?2",
+                params![last, upto],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(upto)
+        });
+        match step {
+            Ok(upto) if upto > last => last = upto,
+            Ok(_) => break,
+            Err(e) => {
+                eprintln!("almanac: working out conversations: {e}");
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let redo = |x: &str| {
         format!(
             "DELETE FROM convs WHERE folder = {x}.folder AND tkey = {x}.tk;
              INSERT INTO convs(folder, tkey, latest, top_id, n, unread)
-                 SELECT folder, tk, MAX(date), id, COUNT(*), TOTAL(read = 0) FROM messages INDEXED BY messages_by_thread
+                 SELECT folder, tk, MAX(date), id, COUNT(*), TOTAL(read = 0) FROM msg_threads INDEXED BY msg_threads_by_conv
                  WHERE folder = {x}.folder AND tk = {x}.tk GROUP BY folder, tk;"
         )
     };
-    c.execute_batch(&format!(
-        "BEGIN;
-         DROP TRIGGER IF EXISTS convs_add;
-         DROP TRIGGER IF EXISTS convs_drop;
-         DROP TRIGGER IF EXISTS convs_change;
-         DROP TABLE IF EXISTS convs;
-         CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(folder, tk, date);
-         CREATE TABLE convs(folder TEXT NOT NULL, tkey TEXT NOT NULL, latest INTEGER NOT NULL, top_id INTEGER NOT NULL,
-                            n INTEGER NOT NULL, unread INTEGER NOT NULL, PRIMARY KEY(folder, tkey)) WITHOUT ROWID;
-         INSERT INTO convs(folder, tkey, latest, top_id, n, unread)
-             SELECT folder, tk, MAX(date), id, COUNT(*), TOTAL(read = 0) FROM messages INDEXED BY messages_by_thread GROUP BY folder, tk;
-         CREATE INDEX convs_by_latest ON convs(folder, latest, top_id);
-         CREATE TRIGGER convs_add AFTER INSERT ON messages BEGIN {} END;
-         CREATE TRIGGER convs_drop AFTER DELETE ON messages BEGIN {} END;
-         CREATE TRIGGER convs_change AFTER UPDATE OF folder, read, date, refs, in_reply_to, message_id ON messages BEGIN {} {} END;
-         INSERT OR REPLACE INTO meta(key, value) VALUES('convs', '1');
-         COMMIT;",
-        redo("NEW"),
-        redo("OLD"),
-        redo("OLD"),
-        redo("NEW")
-    ))
-    .map_err(|e| e.to_string())
+    let done = with_conn(&path, |c| {
+        c.execute_batch(&format!(
+            "BEGIN IMMEDIATE;
+             DROP TABLE IF EXISTS convs;
+             CREATE TABLE convs(folder TEXT NOT NULL, tkey TEXT NOT NULL, latest INTEGER NOT NULL, top_id INTEGER NOT NULL,
+                                n INTEGER NOT NULL, unread INTEGER NOT NULL, PRIMARY KEY(folder, tkey)) WITHOUT ROWID;
+             INSERT INTO convs(folder, tkey, latest, top_id, n, unread)
+                 SELECT folder, tk, MAX(date), id, COUNT(*), TOTAL(read = 0) FROM msg_threads INDEXED BY msg_threads_by_conv GROUP BY folder, tk;
+             CREATE INDEX convs_by_latest ON convs(folder, latest, top_id);
+             DROP TRIGGER IF EXISTS convs_add;
+             DROP TRIGGER IF EXISTS convs_drop;
+             DROP TRIGGER IF EXISTS convs_change;
+             CREATE TRIGGER convs_add AFTER INSERT ON msg_threads BEGIN {} END;
+             CREATE TRIGGER convs_drop AFTER DELETE ON msg_threads BEGIN {} END;
+             CREATE TRIGGER convs_change AFTER UPDATE ON msg_threads BEGIN {} {} END;
+             INSERT OR REPLACE INTO meta(key, value) VALUES('convs', '2');
+             COMMIT;",
+            redo("NEW"),
+            redo("OLD"),
+            redo("OLD"),
+            redo("NEW")
+        ))
+        .map_err(|e| e.to_string())
+    });
+    if let Err(e) = done {
+        eprintln!("almanac: working out conversations: {e}");
+    }
 }
 
 /// A page of a mailbox's conversations, newest first: (folder, thread key)
@@ -368,7 +471,7 @@ pub fn conv_position(folders: &[String], unread_or: Option<i64>, id: i64) -> Opt
         return None;
     }
     with_conn(&path, |c| {
-        let (folder, tk): (String, String) = c.query_row("SELECT folder, tk FROM messages WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+        let (folder, tk): (String, String) = c.query_row("SELECT folder, tk FROM msg_threads WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
         if !folders.contains(&folder) {
             return Err("not here".into());
         }
@@ -394,7 +497,7 @@ fn conv_filter(c: &Connection, folders: &[String], unread_or: Option<i64>) -> (S
     let marks = (1..=folders.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
     let mut filter = format!("folder IN ({marks})");
     if let Some(keep) = unread_or {
-        let kept: Option<(String, String)> = c.query_row("SELECT folder, tk FROM messages WHERE id = ?1", params![keep], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+        let kept: Option<(String, String)> = c.query_row("SELECT folder, tk FROM msg_threads WHERE id = ?1", params![keep], |r| Ok((r.get(0)?, r.get(1)?))).ok();
         match kept {
             Some((f, t)) => {
                 args.push(Arg::Text(f));
@@ -414,7 +517,10 @@ pub fn conv_messages(folder: &str, tkey: &str) -> Vec<Message> {
         return Vec::new();
     }
     with_conn(&path, |c| {
-        let sql = format!("SELECT {ROW_COLS} FROM messages INDEXED BY messages_by_thread WHERE folder = ?1 AND tk = ?2 ORDER BY date DESC, id DESC");
+        let sql = format!(
+            "SELECT {ROW_COLS} FROM messages WHERE id IN (SELECT id FROM msg_threads INDEXED BY msg_threads_by_conv WHERE folder = ?1 AND tk = ?2)
+             ORDER BY date DESC, id DESC"
+        );
         let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
         let found = st.query_map(params![folder, tkey], row_message).map_err(|e| e.to_string())?;
         let mut list: Vec<Message> = found.filter_map(Result::ok).collect();

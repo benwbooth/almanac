@@ -863,6 +863,8 @@ ApplicationWindow {
     property bool shown: false
     onFrameSwapped: if (!shown) { shown = true; store.startupMark("first picture on screen") }
     Component.onCompleted: {
+        // (Once: the mail's conversations worked out in the background for the list.)
+        Qt.callLater(store.buildConversations)
         store.startupMark("window set up")
         // Window buttons drawn like the desktop's own (Plasma's round Breeze ones here).
         if (Qt.platform.os === "linux") Theme.windowButtons = /KDE/i.test(store.desktopName()) ? "breeze" : "adwaita"

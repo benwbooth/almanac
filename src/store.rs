@@ -308,6 +308,10 @@ pub mod qobject {
         /// Whether this list is read a page at a time anywhere (request_window).
         #[qinvokable]
         fn can_window(self: &Store, selection: &QString, query: &QString, sort_by: &QString, ascending: bool) -> bool;
+        /// Works out the mail's conversations for the list, once, in the
+        /// background (the list switches to reading a page at a time after).
+        #[qinvokable]
+        fn build_conversations(self: &Store);
         /// Rows offset… of the list, read in the background; the answer comes in
         /// windowJson with `token`. `counted`: with how many rows there are.
         #[qinvokable]
@@ -1722,6 +1726,18 @@ impl qobject::Store {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn build_conversations(&self) {
+        if !self.db.backed || crate::mailstore::conversations_ready() {
+            return;
+        }
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            crate::mailstore::build_conversations();
+            // (The list reads a page at a time from now on.)
+            let _ = thread.queue(|store| store.changed());
+        });
+    }
+
     fn can_window(&self, selection: &QString, query: &QString, sort_by: &QString, ascending: bool) -> bool {
         self.db.window_plan(&selection.to_string(), &query.to_string(), true, &sort_by.to_string(), ascending, false, 0).is_some()
     }

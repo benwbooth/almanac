@@ -123,7 +123,14 @@ Item {
     }
     // Mail changed: what's on screen is read again (and how long the list is).
     Timer { id: winRefresh; interval: 300; onTriggered: { mail.winLoaded = ({}); mail.winPending = ({}); mail.winEnsure(true) } }
-    Connections { target: store; function onRevisionChanged() { if (mail.windowed) winRefresh.restart() } }
+    Connections {
+        target: store
+        function onRevisionChanged() {
+            if (mail.windowed) winRefresh.restart()
+            // (Conversations just worked out, the first time: paging from now on.)
+            else if (store.canWindow(mail.selection, mail.query, mail.sortBy, mail.sortAscending)) Qt.callLater(mail.winReset)
+        }
+    }
     Connections {
         target: store
         function onWindowJsonChanged() {

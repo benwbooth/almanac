@@ -1967,6 +1967,10 @@ impl Db {
             return None;
         }
         let folders = self.window_folders(selection, query, sort_by)?;
+        // (Conversations not all worked out yet, the first time: read as before meanwhile.)
+        if threaded && !crate::mailstore::conversations_ready() {
+            return None;
+        }
         Some(WindowPlan { folders, threaded, unread_or: unread_only.then_some(keep), show_folder: selection.starts_with("kind:") && self.accounts.len() > 1 })
     }
 
@@ -2008,6 +2012,9 @@ impl Db {
         let Some(folders) = self.window_folders(selection, query, sort_by) else { return -1 };
         let unread_or = unread_only.then_some(id);
         if threaded {
+            if !crate::mailstore::conversations_ready() {
+                return -1;
+            }
             return crate::mailstore::conv_position(&folders, unread_or, id).unwrap_or(-1);
         }
         let Some(m) = self.get(id) else { return -1 };
