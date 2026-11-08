@@ -102,27 +102,49 @@ Item {
     readonly property string winKey: [selection, query, threaded, sortBy, sortAscending, unreadOnly].join("\u0001")
     onWinKeyChanged: Qt.callLater(winReset)
     // ---- Pull to refresh: the mail checked (Get Mail), the spinner held until
-    // it's done (or 20 s at most), then the list springs back.
+    // that check is really done (every account's new mail fetched, saved and
+    // in the list: store.checkMail's token answered in mailCheckDone), a
+    // moment at least so it doesn't flash, a minute at most. A check that
+    // failed says so in the spinner's place for 2 seconds.
     property bool pullChecking: false
-    property bool pullSawBusy: false
     property double pullStarted: 0
+    property int pullToken: -1
+    property string pullError: ""
+    property string pullAnswer: "-"
     function pullRefresh() {
         pullChecking = true
-        pullSawBusy = store.busy
+        pullError = ""
+        pullAnswer = "-"
         pullStarted = Date.now()
-        store.refreshAll()
+        pullToken = store.checkMail()
         pullDone.restart()
+    }
+    function pullFinished(error) {
+        pullDone.stop()
+        pullToken = -1
+        pullChecking = false
+        if (error) { pullError = error; pullErrorShown.restart() }
+    }
+    Connections {
+        target: mail.store
+        function onMailCheckDoneChanged() {
+            var d = JSON.parse(mail.store.mailCheckDone || "{}")
+            if (d.token === mail.pullToken && mail.pullChecking) {
+                mail.pullAnswer = d.error || ""
+                pullDone.restart()
+            }
+        }
     }
     Timer {
         id: pullDone
-        interval: 250; repeat: true
+        interval: 100; repeat: true
         onTriggered: {
-            if (store.busy) mail.pullSawBusy = true
             var spun = Date.now() - mail.pullStarted
-            // (At least a moment, so the spinner is seen; done when the check is.)
-            if ((spun > 700 && !store.busy) || spun > 20000) { stop(); mail.pullChecking = false }
+            if (mail.pullAnswer !== "-" && spun >= 600) mail.pullFinished(mail.pullAnswer)
+            else if (spun > 60000) mail.pullFinished("Still checking…")
         }
     }
+    Timer { id: pullErrorShown; interval: 2000; onTriggered: mail.pullError = "" }
     function placeholderRow(i) { return { id: -1 - i, placeholder: true, fromName: "", fromEmail: "", subject: "", preview: "", date: 0, read: true, flagged: false, attachments: false } }
     function winReset() {
         var on = store.canWindow(selection, query, sortBy, sortAscending)
@@ -1335,10 +1357,19 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: 26; height: 26
                     y: Math.max(4, (listMomentum.pull - height) / 2)
-                    visible: listMomentum.pull > 2
+                    visible: listMomentum.pull > 2 && mail.pullError === ""
                     opacity: Math.min(1, listMomentum.pull / listMomentum.pullTrigger)
                     // (Spinning once it's let go, or held while checking.)
                     running: mail.pullChecking || listMomentum.pull >= listMomentum.pullTrigger
+                }
+                // A check that failed: said in the spinner's place a moment.
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: 12
+                    visible: mail.pullError !== ""
+                    text: /^Still/.test(mail.pullError) ? mail.pullError : "Couldn't check mail"
+                    color: Theme.secondary
+                    font.pixelSize: 12
                 }
             }
             ListView {
@@ -1348,7 +1379,8 @@ Item {
                     flick: messageList
                     // Pull down past the top: Get Mail (see pullRefresh).
                     pullable: true
-                    refreshing: mail.pullChecking
+                    // (Held open while checking, and while a failure is said.)
+                    refreshing: mail.pullChecking || mail.pullError !== ""
                     onRefreshRequested: mail.pullRefresh()
                 }
                 id: messageList

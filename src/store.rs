@@ -59,6 +59,8 @@ pub mod qobject {
         /// A page of the message list read in the background (request_window):
         /// {"token", "offset", "rows", "total", "unread"} (total -1: not counted).
         #[qproperty(QString, window_json, cxx_name = "windowJson")]
+        /// A check_mail done: {"token", "error"} ("" when it went well).
+        #[qproperty(QString, mail_check_done, cxx_name = "mailCheckDone")]
         /// A message's list and how to leave it (list_info): {"id", "list",
         /// "key", "oneClick", "mailto", "https", "unsubscribed"} ("list" "": none).
         #[qproperty(QString, list_json, cxx_name = "listJson")]
@@ -123,6 +125,11 @@ pub mod qobject {
         fn mark_all_read(self: Pin<&mut Store>, selection: &QString);
         #[qinvokable]
         fn refresh_all(self: Pin<&mut Store>);
+        /// Get Mail with word of when it's done (pull to refresh): a token,
+        /// answered in mailCheckDone once every account's new mail is fetched,
+        /// saved and in the list (or the check failed).
+        #[qinvokable]
+        fn check_mail(self: Pin<&mut Store>) -> i32;
         /// Reads the next older messages of the shown mailbox from the server.
         #[qinvokable]
         fn load_older(self: Pin<&mut Store>, selection: &QString);
@@ -588,6 +595,7 @@ pub struct StoreRust {
     mail_undo: Vec<MailUndo>,
     mail_undo_text: QString,
     window_json: QString,
+    mail_check_done: QString,
     list_json: QString,
     revision: i32,
     screenshot_path: QString,
@@ -604,6 +612,10 @@ pub struct StoreRust {
     last_alert_check: i64,
     /// A check for new mail was asked for while one was running: run again then.
     check_again: bool,
+    /// Checks for new mail asked for with check_mail, waiting for the next one
+    /// to start (their tokens), and the next token.
+    check_waiting: Vec<i32>,
+    next_check: i32,
     /// Alerts on screen, and snoozed ones (when to show again, title, when)
     open_alerts: Vec<(String, String)>,
     snoozed_alerts: Vec<(i64, String, String)>,
@@ -711,6 +723,7 @@ impl Default for StoreRust {
             mail_undo: Vec::new(),
             mail_undo_text: QString::default(),
             window_json: QString::from("{}"),
+            mail_check_done: QString::from("{}"),
             list_json: QString::from("{}"),
             onboarded: db.onboarded,
             signing_in: QString::default(),
@@ -719,6 +732,8 @@ impl Default for StoreRust {
             attachments_ready: QString::default(),
             last_alert_check: 0,
             check_again: false,
+            check_waiting: Vec::new(),
+            next_check: 0,
             open_alerts: Vec::new(),
             snoozed_alerts: Vec::new(),
             alerts_json: QString::from("[]"),
@@ -1072,6 +1087,37 @@ impl qobject::Store {
             return;
         }
         self.start_jobs(ids, live);
+    }
+
+    fn check_mail(mut self: Pin<&mut Self>) -> i32 {
+        let token = {
+            let mut r = self.as_mut().rust_mut();
+            let r = r.get_mut();
+            r.next_check += 1;
+            r.check_waiting.push(r.next_check);
+            r.next_check
+        };
+        self.as_mut().refresh_all();
+        // Nothing started (no accounts, or a check running: then it's answered
+        // after the one that runs next).
+        if !self.busy && !self.check_again {
+            let error = if self.db.live.is_empty() && self.db.sources.iter().all(|s| !s.auto_import) { "No mail accounts yet" } else if crate::offline() { "Offline" } else { "" };
+            self.as_mut().checks_done(error);
+        }
+        token
+    }
+
+    /// Answers the checks waiting (mailCheckDone, one at a time).
+    fn checks_done(mut self: Pin<&mut Self>, error: &str) {
+        let tokens = std::mem::take(&mut self.as_mut().rust_mut().get_mut().check_waiting);
+        self.as_mut().answer_checks(tokens, error);
+    }
+
+    fn answer_checks(mut self: Pin<&mut Self>, tokens: Vec<i32>, error: &str) {
+        for t in tokens {
+            let v = serde_json::json!({"token": t, "error": error});
+            self.as_mut().set_mail_check_done(QString::from(v.to_string().as_str()));
+        }
     }
 
     fn message(&self, id: i64) -> QString {
@@ -2031,6 +2077,9 @@ impl qobject::Store {
             live.iter().map(|a| (a.id.clone(), (if backed { None } else { Some(self.db.known_uids(&a.source())) }, all))).collect();
         let marks = self.db.folder_marks.clone();
         self.as_mut().set_busy(true);
+        // The pulls waiting: answered when this check's newest mail is in.
+        let tokens = std::mem::take(&mut self.as_mut().rust_mut().get_mut().check_waiting);
+        let checked: Vec<String> = live.iter().map(|a| a.id.clone()).collect();
         // What's being done, by name (a bare "Syncing…" left people guessing).
         let names: Vec<String> = live.iter().map(|a| a.name.clone()).collect();
         let what = if !names.is_empty() { format!("{}: checking for new mail…", names.join(", ")) } else { "Importing…".to_string() };
@@ -2222,9 +2271,12 @@ impl qobject::Store {
             }
             // Free for the next check for new mail (which skips the older-mail stage
             // while this one is at it).
-            let _ = thread.queue(|mut store| {
+            let _ = thread.queue(move |mut store| {
                 store.as_mut().set_progress_total(0);
                 store.as_mut().set_busy(false);
+                let failed: Vec<String> = store.db.live.iter().filter(|a| checked.contains(&a.id) && !a.last_error.is_empty()).map(|a| a.name.clone()).collect();
+                let error = if failed.is_empty() { String::new() } else { format!("Couldn't check {}", failed.join(", ")) };
+                store.as_mut().answer_checks(tokens, &error);
                 if std::mem::take(&mut store.as_mut().rust_mut().get_mut().check_again) {
                     store.as_mut().refresh_all();
                 }

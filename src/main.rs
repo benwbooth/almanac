@@ -310,6 +310,6 @@ mod qml_checks {
         let log = String::from_utf8_lossy(&out.stderr);
         let checks: Vec<&str> = log.lines().filter(|l| l.contains("PULL-CHECK")).collect();
         assert!(out.status.success() && log.contains("PULL-CHECK done passed"), "{}", checks.join("\n"));
-        assert!(checks.len() >= 9, "every scenario ran:\n{}", checks.join("\n"));
+        assert!(checks.len() >= 11, "every scenario ran:\n{}", checks.join("\n"));
     }
 }

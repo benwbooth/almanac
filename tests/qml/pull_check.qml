@@ -19,8 +19,11 @@ Item {
         id: m
         flick: list
         pullable: true
-        onRefreshRequested: root.refreshes++
+        onRefreshRequested: { root.refreshes++; if (root.slowCheck) { refreshing = true; slow.restart() } }
     }
+    // A check for new mail that takes 1.5 s (the list is held open till then).
+    property bool slowCheck: false
+    Timer { id: slow; interval: 1500; onTriggered: m.refreshing = false }
     property int refreshes: 0
     property int failed: 0
     readonly property var pad: ({ type: PointerDevice.TouchPad })
@@ -78,6 +81,12 @@ Item {
         scenario("wheel at the top", function() { reset(0) },
                  repeat(8, function() { return ev(Qt.NoScrollPhase, 0, root.mouse, 120) }), 40, 700,
                  function(n) { check(n, refreshes === 1, "refreshes " + refreshes) })
+        // A slow check: held open (at the spinner's height) until it's done,
+        // then closed.
+        scenario("held open until a slow check is done", function() { reset(0); root.slowCheck = true },
+                 [ev(Qt.ScrollBegin, 0, root.pad)].concat(repeat(15, function() { return ev(Qt.ScrollUpdate, 20, root.pad) })).concat([ev(Qt.ScrollEnd, 0, root.pad)]), 16, 1100,
+                 function(n) { check(n, refreshes === 1 && m.refreshing && Math.abs(m.pull - 44) < 1, "refreshes " + refreshes + " refreshing " + m.refreshing + " pull " + m.pull) })
+        steps.push([900, function() { check("closed once the slow check is done", !m.refreshing && m.pull === 0, "refreshing " + m.refreshing + " pull " + m.pull); root.slowCheck = false }])
         steps.push([0, function() { console.warn("PULL-CHECK done " + (failed ? "failed" : "passed")); Qt.exit(failed ? 1 : 0) }])
         runner.start()
     }
