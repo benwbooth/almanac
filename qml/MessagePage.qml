@@ -70,6 +70,7 @@ WebEngineView {
         if (p[2] === "open") web.expandedState[m.id] = on
         else if (p[2] === "details") web.detailsState[m.id] = on
         else if (p[2] === "fmt") web.formatState[m.id] = on
+        else if (p[2] === "decrypt") { delete web.decs[m.id]; if (web.store) web.store.decryptMessage(m.id) }
         else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
     }
     onLoadingChanged: function(info) {
@@ -132,6 +133,20 @@ WebEngineView {
     property var formatState: ({})
     // OpenPGP signature checks by message id (from the store, in the background).
     property var sigs: ({})
+    // Encrypted messages, decrypted (by id; in memory only, never saved).
+    property var decs: ({})
+    Connections {
+        target: web.store
+        function onDecryptedJsonChanged() {
+            var d = JSON.parse(web.store.decryptedJson || "{}")
+            if (d.id === undefined) return
+            web.decs[d.id] = d
+            if (d.signature) web.sigs[d.id] = d.signature
+            // Drawn again with the text in place of the encrypted part.
+            web.shownKey = ""
+            Qt.callLater(web.render)
+        }
+    }
     function sigBadge(c) {
         if (!c || !c.state) return ""
         var who = c.signer ? c.signer : (c.key ? "key " + c.key : "")
@@ -552,6 +567,9 @@ WebEngineView {
                          + '<a href="#" data-all="1">Expand All</a><a href="#" data-all="0">Collapse All</a></div>' : '')
         for (var i = 0; i < web.messages.length; i++) {
             var m = web.messages[i]
+            // Decrypted (in memory): its text in place of the encrypted part.
+            var dec = web.decs[m.id]
+            if (dec && dec.state === "ok") m = Object.assign({}, m, { body: dec.body, html: dec.html, attachments: dec.attachments || [] })
             var fmtSet = web.formatState[m.id]
             var rich = !!m.html && (fmtSet !== undefined ? fmtSet : web.formatted)
             // A white page only when dark backgrounds for messages are turned off.
@@ -579,7 +597,9 @@ WebEngineView {
                + '<span class="grow"></span>' + (m.flagged ? '<span style="color:' + Theme.flagColors[m.flagColor || 0] + '" title="' + Theme.flagNames[m.flagColor || 0] + ' flag">⚑</span>' : '')
                + '<span class="acts">' + actions(i) + '</span>'
                + '</div>'
-               + '<div class="when">' + esc(Theme.fmtLongDate(m.date)) + '<span id="pgp-' + i + '">' + sigBadge(web.sigs[m.id]) + '</span></div>'
+               + '<div class="when">' + esc(Theme.fmtLongDate(m.date))
+               + (dec ? '<span class="pgp ' + (dec.state === "ok" ? "good" : "bad") + '" title="' + esc(dec.state === "ok" ? "Encrypted: only you (and whoever else it was sent to) can read it" : dec.detail || "") + '">🔒 Encrypted</span>' : '')
+               + '<span id="pgp-' + i + '">' + sigBadge(web.sigs[m.id]) + '</span></div>'
                + '<div class="sum"><span class="who2">' + esc(toLine) + '</span><a class="det" href="#" data-det="' + i + '">Details</a></div>'
                + '<div class="details">'
                // To and Cc each on a line of their own, wrapped so every address can be read.
@@ -590,6 +610,8 @@ WebEngineView {
                + '</div>'
                + '</div></div>'
                + '<div class="rule"></div>'
+            if (dec && dec.state === "error")
+                h += '<div class="remote"><span class="grow">🔒 ' + esc(dec.detail || "It couldn't be decrypted") + '</span><a href="#" data-redecrypt="' + i + '">Try Again</a></div>'
             if (m.partial && !m.html && !m.body) {
                 h += '<div class="wait">Downloading this message…</div>'
             } else {
@@ -635,7 +657,7 @@ WebEngineView {
             var inline = {}
             for (var ip = 0; ip < shown.length; ip++) inline[shown[ip].name] = true
             // (An OpenPGP signature is shown as the badge in the header, not as a file.)
-            var chipped = (m.attachments || []).filter(function(n) { return !inline[n] && !/^(signature\.asc|openpgp_signature(\.asc)?)$/i.test(n) })
+            var chipped = (m.attachments || []).filter(function(n) { return !inline[n] && !/^(signature\.asc|openpgp_signature(\.asc)?|encrypted\.asc|msg\.asc|openpgp-encrypted-message\.asc)$/i.test(n) })
             if (chipped.length) {
                 h += '<div class="atts">'
                 for (var a = 0; a < chipped.length; a++) {
@@ -688,6 +710,7 @@ WebEngineView {
            + 'f.setAttribute("data-alt",cur);f.setAttribute("data-alt-paper",w.classList.contains("paper")?"1":"0");w.classList.toggle("paper",ap);'
            + 'var toRich=fm.textContent==="Show Formatted";fm.textContent=toRich?"Show Plain Text":"Show Formatted";me.classList.toggle("plain",!toRich);'
            + 'f.__ready=null;f.srcdoc=alt;tell("fmt",me.getAttribute("data-i"),toRich);return}'
+           + 'var rd=e.target.closest("[data-redecrypt]");if(rd){e.preventDefault();tell("decrypt",rd.getAttribute("data-redecrypt"),1);return}'
            + 'var d=e.target.closest("[data-det]");if(d){e.preventDefault();var m=d.closest(".msg");var on=m.classList.toggle("det-on");d.textContent=on?"Hide Details":"Details";tell("details",m.getAttribute("data-i"),on);return}'
            + 'var a=e.target.closest("[data-all]");if(a){e.preventDefault();var open=a.getAttribute("data-all")==="1",changed=[];'
            + '[].forEach.call(document.querySelectorAll(".msg[data-i]"),function(el){if(setOpen(el,open))changed.push(el.getAttribute("data-i"))});'
@@ -825,6 +848,7 @@ WebEngineView {
         if (web.store) for (var si = 0; si < web.messages.length; si++) {
             var sm = web.messages[si]
             if (web.sigs[sm.id] === undefined) { web.sigs[sm.id] = null; web.store.checkSignature(sm.id) }
+            if (web.decs[sm.id] === undefined) { web.decs[sm.id] = null; web.store.decryptMessage(sm.id) }
         }
         web.previews = pv
         var doc = page()

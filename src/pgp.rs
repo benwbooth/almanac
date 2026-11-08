@@ -259,6 +259,90 @@ pub fn verify(raw: &[u8]) -> Option<Check> {
     Some(from_status(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// An encrypted message, decrypted (kept in memory only, never saved).
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct Decrypted {
+    /// "ok" or "error"
+    pub state: String,
+    pub body: String,
+    pub html: String,
+    pub attachments: Vec<String>,
+    /// A signature inside the encrypted part, if there was one.
+    pub signature: Option<Check>,
+    pub detail: String,
+}
+
+/// Whether a message (as the app keeps it) looks encrypted.
+pub fn looks_encrypted(attachments: &[String], body: &str, html: &str) -> bool {
+    attachments.iter().any(|a| {
+        let a = a.to_ascii_lowercase();
+        a == "encrypted.asc" || a == "msg.asc" || a == "openpgp-encrypted-message.asc"
+    }) || body.contains("-----BEGIN PGP MESSAGE-----") || html.contains("-----BEGIN PGP MESSAGE-----")
+}
+
+/// Decrypts an encrypted message with the person's keys (gpg-agent asks for
+/// the passphrase with its pinentry). None: not an encrypted message.
+pub fn decrypt(raw: &[u8]) -> Option<Decrypted> {
+    let k = kind(raw)?;
+    if !matches!(k, Kind::Encrypted | Kind::InlineEncrypted) {
+        return None;
+    }
+    let fail = |d: &str| Some(Decrypted { state: "error".into(), detail: d.into(), ..Default::default() });
+    let Some(gpg) = gpg() else { return fail("GnuPG isn't installed") };
+    let text = String::from_utf8_lossy(raw).to_string();
+    let start = text.find("-----BEGIN PGP MESSAGE-----")?;
+    let end = text[start..].find("-----END PGP MESSAGE-----").map(|e| start + e + "-----END PGP MESSAGE-----".len())?;
+    let mut child = match Command::new(&gpg)
+        .args(["--batch", "--no-tty", "--status-fd", "2", "--decrypt"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return fail(&e.to_string()),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(text[start..end].as_bytes());
+    }
+    let out = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => return fail(&e.to_string()),
+    };
+    let status = String::from_utf8_lossy(&out.stderr).to_string();
+    if !status.contains("[GNUPG:] DECRYPTION_OKAY") {
+        let why = if status.contains("NO_SECKEY") {
+            "This message was encrypted for a key you don't have"
+        } else if status.contains("BAD_PASSPHRASE") || status.contains("MISSING_PASSPHRASE") {
+            "The passphrase wasn't given"
+        } else {
+            "It couldn't be decrypted"
+        };
+        return fail(why);
+    }
+    let signature = (status.contains("GOODSIG") || status.contains("BADSIG") || status.contains("ERRSIG") || status.contains("EXPKEYSIG"))
+        .then(|| from_status(&status));
+    let plain = out.stdout;
+    let mut d = Decrypted { state: "ok".into(), signature, ..Default::default() };
+    if k == Kind::Encrypted {
+        // The decrypted part is a MIME entity of its own (maybe signed inside).
+        let p = crate::mime::parse(&plain);
+        d.body = p.body;
+        d.html = p.html;
+        d.attachments = p.attachments.into_iter().filter(|a| !a.eq_ignore_ascii_case("signature.asc")).collect();
+        if d.signature.is_none() && kind(&plain) == Some(Kind::Signed) {
+            d.signature = verify(&plain);
+        }
+    } else {
+        // Inline: the text instead of the armored block.
+        d.body = format!("{}{}{}", &text[..start].trim_end(), String::from_utf8_lossy(&plain), &text[end..]);
+        if let Some(at) = d.body.find("\r\n\r\n").or_else(|| d.body.find("\n\n")) {
+            d.body = d.body[at..].trim().to_string();
+        }
+    }
+    Some(d)
+}
+
 /// A private scratch folder for one check (removed after).
 fn tempdir() -> Option<std::path::PathBuf> {
     let d = std::env::temp_dir().join(format!("almanac-pgp-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()));
@@ -274,6 +358,9 @@ fn tempdir() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (The tests set GNUPGHOME for the whole process: one at a time.)
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A throwaway keyring with one new key (no passphrase), for the tests.
     fn test_home() -> Option<std::path::PathBuf> {
@@ -315,6 +402,51 @@ mod tests {
     }
 
     #[test]
+    fn a_pgp_mime_encrypted_message_is_decrypted() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(home) = test_home() else { return };
+        // An encryption subkey for the test key, then a message encrypted to it.
+        let fpr = String::from_utf8(
+            Command::new("gpg").env("GNUPGHOME", &home).args(["--batch", "--with-colons", "--list-keys", "signer@example.org"]).output().unwrap().stdout,
+        )
+        .unwrap()
+        .lines()
+        .find(|l| l.starts_with("fpr:"))
+        .map(|l| l.split(':').nth(9).unwrap().to_string())
+        .unwrap();
+        assert!(Command::new("gpg").env("GNUPGHOME", &home).args(["--batch", "--passphrase", "", "--quick-add-key", &fpr, "cv25519", "encrypt", "never"]).status().unwrap().success());
+        let inner = "Content-Type: text/plain; charset=utf-8\r\n\r\nThe secret plan.\r\n";
+        let mut child = Command::new("gpg")
+            .env("GNUPGHOME", &home)
+            .args(["--batch", "--armor", "--trust-model", "always", "--encrypt", "-r", "signer@example.org"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(inner.as_bytes()).unwrap();
+        let armored = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+        let raw = format!(
+            "From: a@example.org\r\nSubject: Secret\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=\"B\"\r\n\r\n\
+             --B\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n\r\n\
+             --B\r\nContent-Type: application/octet-stream; name=\"encrypted.asc\"\r\n\r\n{armored}\r\n--B--\r\n"
+        );
+        std::env::set_var("GNUPGHOME", &home);
+        let d = decrypt(raw.as_bytes()).expect("an encrypted message");
+        assert_eq!(d.state, "ok", "{d:?}");
+        assert!(d.body.contains("The secret plan."), "{d:?}");
+        // Someone else's keyring: can't.
+        let other = test_home().unwrap();
+        std::env::set_var("GNUPGHOME", &other);
+        let d = decrypt(raw.as_bytes()).unwrap();
+        assert_eq!(d.state, "error");
+        std::env::remove_var("GNUPGHOME");
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(other);
+    }
+
+    #[test]
     fn kinds_are_told_apart() {
         let signed = b"Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; boundary=x\r\n\r\n--x\r\n";
         assert_eq!(kind(signed), Some(Kind::Signed));
@@ -328,6 +460,7 @@ mod tests {
 
     #[test]
     fn a_pgp_mime_signature_is_checked() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let Some(home) = test_home() else { return }; // (no GnuPG here: nothing to test)
         std::env::set_var("GNUPGHOME", &home);
         let raw = signed_message(&home, "Meet at noon.");
