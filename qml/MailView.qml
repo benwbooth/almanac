@@ -484,7 +484,7 @@ Item {
         selectedId = -1
         selectedIds = []
         if (action === "delete") store.deleteMessages(JSON.stringify(ids))
-        else for (var i = 0; i < ids.length; i++) store.moveTo(ids[i], action)
+        else store.moveMany(JSON.stringify(ids), action)
         if (next >= 0) select(next)
     }
     function moveCurrentToFolder(folderId) {
@@ -796,10 +796,60 @@ Item {
         if (action === "reply") reply(false, m, here)
         else if (action === "replyAll") reply(true, m, here)
         else if (action === "forward") forward(m, here)
+        else if (action === "unsubscribe") unsubscribe(m)
         else if (action === "delete") {
             if (conversation.length <= 1 && current && current.id === m.id) removeCurrent("delete")
             else store.deleteMessages(JSON.stringify([m.id]))
         }
+    }
+    // Leaving a mailing list: only ever on a click, and asked first.
+    function unsubscribe(m) {
+        var c = JSON.parse(store.listJson || "{}")
+        var list = c.id === m.id && c.list ? c.list : (m.fromName || m.fromEmail)
+        confirm.ask("Unsubscribe from " + list + "?",
+                    c.id === m.id && !c.oneClick && !c.mailto ? "The list's own page opens in your browser to finish leaving it."
+                    : c.id === m.id && !c.oneClick ? "An email asking to be taken off the list opens for you to send."
+                    : "Almanac asks the list to take you off it. Mail already sent may still arrive for a few days.",
+                    "Unsubscribe", function() {
+            var r = store.unsubscribe(m.id)
+            if (r === "") { store.statusText = "This message doesn't say how to leave its list."; return }
+            if (r !== "posted" && r !== "opened") {
+                var d = JSON.parse(r)
+                compose.openWith({ to: d.mailto, subject: d.subject, body: d.body, account: store.messageAccount(m.id) })
+            }
+            // (One click: offered once the list has said yes.)
+            if (r === "posted") mail.leaving = m
+            else Qt.callLater(function() { mail.offerMoveFrom(m) })
+        })
+    }
+    property var leaving: null
+    Connections {
+        target: mail.store
+        function onListJsonChanged() {
+            var c = JSON.parse(mail.store.listJson || "{}")
+            if (mail.leaving && c.id === mail.leaving.id && c.unsubscribed) {
+                var m = mail.leaving
+                mail.leaving = null
+                mail.offerMoveFrom(m)
+            }
+        }
+        function onStatusTextChanged() {
+            if (mail.leaving && /^Couldn't unsubscribe/.test(mail.store.statusText)) mail.leaving = null
+        }
+    }
+    // Afterwards: the sender's mail already here moved away, if wanted (never on its own).
+    function offerMoveFrom(m) {
+        var ids = JSON.parse(store.inboxIdsFrom(m.fromEmail) || "[]")
+        if (ids.length === 0) return
+        var who = m.fromName || m.fromEmail
+        var go = function(kind) {
+            if (ids.indexOf(selectedId) >= 0) { selectedId = -1; selectedIds = [] }
+            if (kind === "trash") store.deleteMessages(JSON.stringify(ids))
+            else store.moveMany(JSON.stringify(ids), kind)
+        }
+        confirm.ask("Move the mail from " + who + " out of your Inbox?",
+                    ids.length + (ids.length === 1 ? " message" : " messages") + " from " + m.fromEmail + " in your inboxes. Edit › Undo (Ctrl+Z) puts " + (ids.length === 1 ? "it" : "them") + " back.",
+                    "Move to Trash", function() { go("trash") }, "Archive", function() { go("archive") })
     }
     readonly property alias composer: compose
     // For checks: runs a script in the reading pane's page.

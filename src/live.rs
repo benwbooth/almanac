@@ -2257,6 +2257,16 @@ fn remove_by_message_id(s: &mut Session, folder: &str, message_id: &str) -> Resu
     Ok(())
 }
 
+/// A message's headers from the server (its list's unsubscribe details).
+pub fn fetch_header(a: &LiveAccount, folder_path: &str, uid: u32) -> Result<Vec<u8>, String> {
+    let mut s = imap_connect(a)?;
+    s.examine(folder_path).map_err(|e| e.to_string())?;
+    let f = s.uid_fetch(uid.to_string(), "BODY.PEEK[HEADER]").map_err(|e| e.to_string())?;
+    let raw = f.iter().next().and_then(|x| x.header().or_else(|| x.body()).map(|b| b.to_vec())).ok_or("The message is no longer on the server")?;
+    let _ = s.logout();
+    Ok(raw)
+}
+
 /// The whole original message from the server (for attachments).
 pub fn fetch_full(a: &LiveAccount, folder_path: &str, uid: u32) -> Result<Vec<u8>, String> {
     let mut s = imap_connect(a)?;

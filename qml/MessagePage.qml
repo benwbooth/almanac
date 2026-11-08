@@ -76,7 +76,7 @@ WebEngineView {
         else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
     }
     onLoadingChanged: function(info) {
-        if (info.status === WebEngineView.LoadSucceededStatus) web.applySigs()
+        if (info.status === WebEngineView.LoadSucceededStatus) { web.applySigs(); web.applyLists() }
         paneLog("loading " + ["started", "stopped", "succeeded", "failed"][info.status] + (info.errorString ? " " + info.errorString : "")) }
     onRenderProcessTerminated: function(status, code) { paneLog("render process ended, status " + status + " code " + code) }
     property int redrawPasses: 0
@@ -230,6 +230,30 @@ WebEngineView {
             if (c.id === undefined) return
             web.sigs[c.id] = c
             web.applySigs()
+        }
+    }
+    // Mailing lists (List-Unsubscribe): message id → listJson's answer.
+    property var lists: ({})
+    Connections {
+        target: web.store
+        function onListJsonChanged() {
+            var c = JSON.parse(web.store.listJson || "{}")
+            if (c.id === undefined) return
+            web.lists[c.id] = c
+            web.applyLists()
+        }
+    }
+    function listBanner(i, c) {
+        if (!c || !c.list) return ""
+        if (c.unsubscribed)
+            return '<span class="grow">Sent from ' + esc(c.list) + ' · <b>Unsubscribed</b></span>'
+        return '<span class="grow">Sent from ' + esc(c.list) + '</span>'
+             + '<a href="almanac:act/' + i + '/unsubscribe" title="' + (c.oneClick ? "Leave this list (asks first)" : c.mailto ? "Leave this list by email (asks first)" : "Opens the list\'s page for leaving it") + '">Unsubscribe</a>'
+    }
+    function applyLists() {
+        for (var i = 0; i < web.messages.length; i++) {
+            var c = web.lists[web.messages[i].id]
+            if (c) web.runJavaScript("(function(){var e=document.getElementById('list-" + i + "');if(e)e.innerHTML=" + JSON.stringify(web.listBanner(i, c)) + "})()")
         }
     }
     // The badges known so far, put in the page (again once a page has loaded:
@@ -587,7 +611,7 @@ WebEngineView {
               + '.addr{color:' + css(Theme.tertiary) + ';font-size:12px}.fmt{color:' + css(Theme.accent) + ';font-size:11px;text-decoration:none;white-space:nowrap}'
               + '.rule{height:1px;background:' + css(Theme.borderSoft) + ';margin:10px 0}'
               + '.remote{display:flex;align-items:center;gap:10px;border:1px solid ' + css(Theme.borderSoft) + ';background:' + css(Theme.card) + ';border-radius:7px;padding:7px 10px;margin-bottom:10px;color:' + css(Theme.secondary) + ';font-size:12px}'
-              + '.remote{flex-wrap:wrap}.remote a{color:' + css(Theme.accent) + ';text-decoration:none;font-weight:600;white-space:nowrap}.remote a.more{font-weight:normal}'
+              + '.remote.list:empty{display:none}.remote{flex-wrap:wrap}.remote a{color:' + css(Theme.accent) + ';text-decoration:none;font-weight:600;white-space:nowrap}.remote a.more{font-weight:normal}'
               + '.paper{background:#fff;border-radius:8px}iframe{border:0;width:100%;height:24px;display:block;background:transparent}'
               + '.atts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.att{display:inline-flex;gap:6px;align-items:center;padding:7px 10px;border-radius:8px;background:' + css(Theme.segment) + ';color:' + css(Theme.text) + ';text-decoration:none;font-size:12px}'
               + '.att.cloud i{font-style:normal;color:' + css(Theme.secondary) + ';margin-left:2px}'
@@ -685,6 +709,7 @@ WebEngineView {
                // so they never squeeze the To and Cc lines.
                + '<div class="actrow"><span class="acts">' + actions(i) + '</span></div>'
                + '<div class="rule"></div>'
+               + '<div class="remote list" id="list-' + i + '">' + listBanner(i, web.lists[m.id]) + '</div>'
             if (dec && dec.state === "locked")
                 h += '<div class="remote"><span class="grow">🔒 ' + (dec.detail === "That passphrase isn't right" ? esc(dec.detail) : 'This message is encrypted: your key\'s passphrase is needed to read it') + '</span><a href="#" data-unlock="' + i + '">Unlock…</a></div>'
             if (dec && dec.state === "error")
@@ -941,6 +966,7 @@ WebEngineView {
         if (web.store) for (var si = 0; si < web.messages.length; si++) {
             var sm = web.messages[si]
             if (web.sigs[sm.id] === undefined) { web.sigs[sm.id] = null; web.store.checkSignature(sm.id) }
+            if (web.lists[sm.id] === undefined) { web.lists[sm.id] = null; web.store.listInfo(sm.id) }
             if (web.decs[sm.id] === undefined) { web.decs[sm.id] = null; web.store.decryptMessage(sm.id, "") }
         }
         web.previews = pv

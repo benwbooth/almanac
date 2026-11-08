@@ -59,6 +59,9 @@ pub mod qobject {
         /// A page of the message list read in the background (request_window):
         /// {"token", "offset", "rows", "total", "unread"} (total -1: not counted).
         #[qproperty(QString, window_json, cxx_name = "windowJson")]
+        /// A message's list and how to leave it (list_info): {"id", "list",
+        /// "key", "oneClick", "mailto", "https", "unsubscribed"} ("list" "": none).
+        #[qproperty(QString, list_json, cxx_name = "listJson")]
         /// False until the setup guide is finished or skipped
         #[qproperty(bool, onboarded)]
         /// Provider whose sign-in page is open ("" when none)
@@ -151,6 +154,9 @@ pub mod qobject {
         fn set_flag_color(self: Pin<&mut Store>, id: i64, color: i32);
         #[qinvokable]
         fn move_to(self: Pin<&mut Store>, id: i64, kind: &QString);
+        /// Several messages to a mailbox of a kind, undone together (Ctrl+Z).
+        #[qinvokable]
+        fn move_many(self: Pin<&mut Store>, ids_json: &QString, kind: &QString);
         #[qinvokable]
         fn delete_message(self: Pin<&mut Store>, id: i64);
         /// Deletes many messages at once (one save, one server call per folder).
@@ -447,6 +453,19 @@ pub mod qobject {
         /// Unlocks the key for `email` (gpg-agent remembers the passphrase a while).
         #[qinvokable]
         fn pgp_unlock(self: &Store, email: &QString, passphrase: &QString);
+        /// Whether message `id` is from a mailing list, and how to leave it
+        /// (read from its headers in the background; the answer in listJson).
+        #[qinvokable]
+        fn list_info(self: &Store, id: i64);
+        /// Leaves message `id`'s list (only ever on a click): "posted" (one
+        /// click, in the background: the status line says how it went),
+        /// {"mailto", "subject", "body"} for an email to send, or "opened" (its
+        /// page in the browser). "" when it can't be done.
+        #[qinvokable]
+        fn unsubscribe(self: Pin<&mut Store>, id: i64) -> QString;
+        /// The ids of the messages in the inboxes from `email` (to move them away).
+        #[qinvokable]
+        fn inbox_ids_from(self: &Store, email: &QString) -> QString;
         /// Settings › Privacy › S/MIME: your certificates and others'.
         #[qinvokable]
         fn smime_certs(self: &Store) -> QString;
@@ -569,6 +588,7 @@ pub struct StoreRust {
     mail_undo: Vec<MailUndo>,
     mail_undo_text: QString,
     window_json: QString,
+    list_json: QString,
     revision: i32,
     screenshot_path: QString,
     start_section: i32,
@@ -691,6 +711,7 @@ impl Default for StoreRust {
             mail_undo: Vec::new(),
             mail_undo_text: QString::default(),
             window_json: QString::from("{}"),
+            list_json: QString::from("{}"),
             onboarded: db.onboarded,
             signing_in: QString::default(),
             registering: QString::default(),
@@ -1103,6 +1124,28 @@ impl qobject::Store {
         self.as_mut().db_mut().move_to(id, &kind);
         if let Some(path) = to_path {
             self.as_mut().push_mail(target, crate::live::MailOp::Move(path));
+        }
+        self.changed();
+    }
+
+    fn move_many(mut self: Pin<&mut Self>, ids_json: &QString, kind: &QString) {
+        let _timed = crate::Timed::new("move_many");
+        let kind = kind.to_string();
+        let ids: Vec<i64> = serde_json::from_str(&ids_json.to_string()).unwrap_or_default();
+        let mut undo = Vec::new();
+        let mut ops = Vec::new();
+        for id in ids {
+            let target = self.db.live_message(id);
+            let to_path = self.db.live_folder_of_kind(id, &kind);
+            undo.push(self.undo_item(id, to_path.clone()));
+            ops.push((target, to_path));
+        }
+        self.as_mut().remember_undo(&format!("Move to {}", kind_name(&kind)), undo.clone());
+        for ((id, _, _), (target, to_path)) in undo.iter().zip(ops) {
+            self.as_mut().db_mut().move_to(*id, &kind);
+            if let Some(path) = to_path {
+                self.as_mut().push_mail(target, crate::live::MailOp::Move(path));
+            }
         }
         self.changed();
     }

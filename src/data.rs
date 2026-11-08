@@ -536,6 +536,8 @@ pub struct Settings {
     /// Attachments too big for the mail account: "ask" to upload them to cloud
     /// storage and send links, "always" upload them, or "never".
     pub cloud_attachments: String,
+    /// Lists left with Unsubscribe (their List-Id, or the sender's address).
+    pub unsubscribed: Vec<String>,
     /// Where big attachments go: "account" (the mail account's own Google
     /// Drive or OneDrive), "dropbox", "box" or "nextcloud".
     pub cloud_store: String,
@@ -590,6 +592,7 @@ impl Default for Settings {
             warn_no_subject: true,
             warn_missing_attachment: true,
             cloud_attachments: "ask".into(),
+            unsubscribed: Vec::new(),
             cloud_store: "account".into(),
             cloud_nextcloud_server: String::new(),
             cloud_nextcloud_user: String::new(),
@@ -1251,6 +1254,16 @@ impl Db {
     }
 
     /// Every message of a selection (newest first), from the database too.
+    /// The messages in a mailbox from one sender (found with a search for
+    /// their address, then matched exactly).
+    pub fn messages_from(&self, selection: &str, email: &str) -> Vec<Message> {
+        let e = email.trim().to_lowercase();
+        if e.is_empty() {
+            return Vec::new();
+        }
+        self.query_messages(selection, &e, None, "date", false, 100_000).0.into_iter().filter(|m| m.from_email.to_lowercase() == e).collect()
+    }
+
     pub fn messages_of(&self, selection: &str) -> Vec<Message> {
         self.query_messages(selection, "", None, "date", false, 50_000_000).0
     }

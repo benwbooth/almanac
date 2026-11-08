@@ -934,6 +934,103 @@ impl qobject::Store {
         q(&json!({"gpg": true, "canSign": !me.is_empty() && crate::pgp::can_sign(&me), "missing": crate::pgp::missing_keys(&to), "smime": smime}))
     }
 
+    pub(super) fn list_info(&self, id: i64) {
+        let Some(m) = self.db.get(id) else { return };
+        let live = self.db.live_message(id);
+        let unsubscribed = self.db.settings.unsubscribed.clone();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            static SEEN: std::sync::Mutex<Option<std::collections::HashMap<i64, Option<crate::unsubscribe::ListInfo>>>> = std::sync::Mutex::new(None);
+            let cached = SEEN.lock().ok().and_then(|c| c.as_ref().and_then(|c| c.get(&id).cloned()));
+            let info = match cached {
+                Some(i) => i,
+                None => {
+                    // The headers: a copy kept here, the message's own source, or the server's.
+                    let kept = crate::mailstore::attachment_dir(id).join("original.eml");
+                    let raw = std::fs::read(&kept).ok().or_else(|| {
+                        if m.raw_ref.starts_with("mbox:") {
+                            original_message(&m, None).ok()
+                        } else {
+                            live.as_ref().and_then(|(a, p, u)| crate::live::fetch_header(a, p, *u).ok())
+                        }
+                    });
+                    let i = raw.and_then(|r| crate::unsubscribe::parse(&r, &m.from_email));
+                    if let Ok(mut c) = SEEN.lock() {
+                        c.get_or_insert_with(Default::default).insert(id, i.clone());
+                    }
+                    i
+                }
+            };
+            let v = match info {
+                Some(i) => json!({"id": id, "list": i.list, "key": i.key, "oneClick": i.one_click.is_some(), "mailto": i.mailto.is_some(), "https": i.https.is_some(), "unsubscribed": unsubscribed.contains(&i.key)}),
+                None => json!({"id": id, "list": ""}),
+            };
+            let _ = thread.queue(move |mut store| store.as_mut().set_list_json(QString::from(v.to_string().as_str())));
+        });
+    }
+
+    pub(super) fn unsubscribe(mut self: Pin<&mut Self>, id: i64) -> QString {
+        let Some(m) = self.db.get(id) else { return QString::default() };
+        // (Read again from the headers: quick when they're kept.)
+        let live = self.db.live_message(id);
+        let kept = crate::mailstore::attachment_dir(id).join("original.eml");
+        let raw = std::fs::read(&kept).ok().or_else(|| {
+            if m.raw_ref.starts_with("mbox:") {
+                original_message(&m, None).ok()
+            } else {
+                live.as_ref().and_then(|(a, p, u)| crate::live::fetch_header(a, p, *u).ok())
+            }
+        });
+        let Some(info) = raw.and_then(|r| crate::unsubscribe::parse(&r, &m.from_email)) else { return QString::default() };
+        let note = |mut store: Pin<&mut Self>, info: &crate::unsubscribe::ListInfo| {
+            if !store.db.settings.unsubscribed.iter().any(|k| *k == info.key) {
+                store.as_mut().db_mut().settings.unsubscribed.push(info.key.clone());
+            }
+            let v = json!({"id": id, "list": info.list, "key": info.key, "unsubscribed": true});
+            store.as_mut().set_list_json(QString::from(v.to_string().as_str()));
+            store.changed();
+        };
+        if let Some(url) = info.one_click.clone() {
+            let thread = self.qt_thread();
+            let (key, list) = (info.key.clone(), info.list.clone());
+            self.as_mut().set_status_text(QString::from(format!("Unsubscribing from {list}…").as_str()));
+            std::thread::spawn(move || {
+                let r = crate::unsubscribe::one_click(&url);
+                let _ = thread.queue(move |mut store| {
+                    match r {
+                        Ok(()) => {
+                            store.as_mut().set_status_text(QString::from(format!("Unsubscribed from {list}.").as_str()));
+                            let v = json!({"id": id, "list": list, "key": key, "oneClick": true, "unsubscribed": true});
+                            store.as_mut().set_list_json(QString::from(v.to_string().as_str()));
+                            if !store.db.settings.unsubscribed.iter().any(|k| *k == key) {
+                                store.as_mut().db_mut().settings.unsubscribed.push(key.clone());
+                            }
+                            store.changed();
+                        }
+                        Err(e) => store.as_mut().set_status_text(QString::from(format!("Couldn't unsubscribe from {list}: {e}").as_str())),
+                    }
+                });
+            });
+            return QString::from("posted");
+        }
+        if let Some(mailto) = info.mailto.clone() {
+            let (to, subject, body) = crate::unsubscribe::parse_mailto(&mailto);
+            note(self.as_mut(), &info);
+            return q(&json!({"mailto": to, "subject": subject, "body": body, "list": info.list}));
+        }
+        if let Some(url) = info.https.clone() {
+            self.as_mut().set_open_url(QString::from(url.as_str()));
+            note(self.as_mut(), &info);
+            return QString::from("opened");
+        }
+        QString::default()
+    }
+
+    pub(super) fn inbox_ids_from(&self, email: &QString) -> QString {
+        let ids: Vec<i64> = self.db.messages_from("kind:inbox", &email.to_string()).into_iter().map(|m| m.id).collect();
+        q(&json!(ids))
+    }
+
     /// Settings › Privacy › S/MIME: {"available", "mine": [...], "others": [...]},
     /// each {"email", "name", "fingerprint", "ends"}.
     pub(super) fn smime_certs(&self) -> QString {
