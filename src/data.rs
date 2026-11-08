@@ -536,6 +536,13 @@ pub struct Settings {
     /// Attachments too big for the mail account: "ask" to upload them to cloud
     /// storage and send links, "always" upload them, or "never".
     pub cloud_attachments: String,
+    /// Where big attachments go: "account" (the mail account's own Google
+    /// Drive or OneDrive), "dropbox", "box" or "nextcloud".
+    pub cloud_store: String,
+    /// The Nextcloud server and user Almanac signed in to (its app password
+    /// is in the keychain).
+    pub cloud_nextcloud_server: String,
+    pub cloud_nextcloud_user: String,
     /// Underline misspelled words while writing
     pub spell_check: bool,
     /// …and grammar problems too
@@ -583,6 +590,9 @@ impl Default for Settings {
             warn_no_subject: true,
             warn_missing_attachment: true,
             cloud_attachments: "ask".into(),
+            cloud_store: "account".into(),
+            cloud_nextcloud_server: String::new(),
+            cloud_nextcloud_user: String::new(),
             download_all_mail: true,
             mail_layout: "standard".into(),
             conversations: true,

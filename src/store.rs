@@ -457,6 +457,17 @@ pub mod qobject {
         /// {"over", "limitMb", "store" ("Google Drive", or "" for none), "mode"}.
         #[qinvokable]
         fn cloud_offer(self: &Store, account: &QString, bytes: i64) -> QString;
+        /// Big attachments' services (Settings › Mail): which is used, and which
+        /// are connected: {"store", "dropbox": {"connected", "clientId"}, "box": {…},
+        /// "nextcloud": {"connected", "server", "user"}}.
+        #[qinvokable]
+        fn cloud_stores(self: &Store) -> QString;
+        /// Signs in to Dropbox or Box (`a`: the app key, `b`: its secret) or a
+        /// Nextcloud server (`a`: its address), in the browser, in the background.
+        #[qinvokable]
+        fn cloud_connect(self: &Store, provider: &QString, a: &QString, b: &QString);
+        #[qinvokable]
+        fn cloud_disconnect(self: Pin<&mut Store>, provider: &QString);
         /// Uploads a file to the account's cloud storage and shares it by link
         /// (in the background; progress in cloudUploadsJson).
         #[qinvokable]

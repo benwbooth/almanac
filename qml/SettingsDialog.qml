@@ -190,6 +190,77 @@ Popup {
                             onActivated: dlg.set("cloud_attachments", ["ask", "always", "never"][currentIndex])
                         }
                     }
+                    // Where they go: the mail account's own (Google Drive, OneDrive), or
+                    // Dropbox, Box or a Nextcloud server, each connected here once.
+                    Row2 {
+                        id: storeRow
+                        label: "Send them through:"
+                        readonly property var info: { store.revision; return dlg.visible ? JSON.parse(store.cloudStores()) : ({}) }
+                        readonly property var keys: ["account", "dropbox", "box", "nextcloud"]
+                        property string shown: info.store || "account"
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            ComboX {
+                                Layout.preferredWidth: 320
+                                model: ["The mail account's own (Drive, OneDrive)", "Dropbox", "Box", "Nextcloud"]
+                                currentIndex: Math.max(0, storeRow.keys.indexOf(storeRow.shown))
+                                onActivated: {
+                                    storeRow.shown = storeRow.keys[currentIndex]
+                                    // (A service is used once it's connected; the account's own at once.)
+                                    if (storeRow.shown === "account" || (storeRow.info[storeRow.shown] && storeRow.info[storeRow.shown].connected)) dlg.set("cloud_store", storeRow.shown)
+                                }
+                            }
+                            // Dropbox or Box: an app registered with them (once), then Connect.
+                            ColumnLayout {
+                                visible: storeRow.shown === "dropbox" || storeRow.shown === "box"
+                                Layout.fillWidth: true
+                                spacing: 6
+                                readonly property var it: storeRow.info[storeRow.shown] || ({})
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; font.pixelSize: 12
+                                    text: storeRow.shown === "dropbox"
+                                          ? "Register an app at dropbox.com/developers (Scoped access; permissions files.content.write and sharing.write) with the redirect URI http://127.0.0.1:" + storeRow.info.port + ", then paste its App key here."
+                                          : "Register an app at developer.box.com (Custom App, User Authentication (OAuth 2.0); Write all files and folders) with the redirect URI http://127.0.0.1:" + storeRow.info.port + ", then paste its Client ID and Client Secret here."
+                                }
+                                RowLayout {
+                                    spacing: 8
+                                    FieldX { id: appKey; Layout.preferredWidth: 220; placeholderText: storeRow.shown === "dropbox" ? "App key" : "Client ID"; text: parent.parent.it.clientId || "" }
+                                    FieldX { id: appSecret; visible: storeRow.shown === "box"; Layout.preferredWidth: 180; placeholderText: "Client Secret"; echoMode: TextInput.Password }
+                                    ToolButtonX {
+                                        text: parent.parent.it.connected ? "Connect Again" : "Connect"
+                                        primary: !parent.parent.it.connected
+                                        enabled: appKey.text.trim() !== "" && (storeRow.shown !== "box" || appSecret.text !== "")
+                                        onClicked: store.cloudConnect(storeRow.shown, appKey.text, appSecret.text)
+                                    }
+                                    ToolButtonX { visible: !!parent.parent.it.connected; text: "Disconnect"; onClicked: store.cloudDisconnect(storeRow.shown) }
+                                }
+                                Text { visible: !!parent.it.connected; text: "Connected ✓"; color: Theme.secondary; font.pixelSize: 12 }
+                            }
+                            // Nextcloud: its address, then its own sign-in in the browser.
+                            ColumnLayout {
+                                visible: storeRow.shown === "nextcloud"
+                                Layout.fillWidth: true
+                                spacing: 6
+                                readonly property var it: storeRow.info.nextcloud || ({})
+                                RowLayout {
+                                    spacing: 8
+                                    FieldX { id: ncServer; Layout.preferredWidth: 260; placeholderText: "cloud.example.com"; text: parent.parent.it.server || "" }
+                                    ToolButtonX {
+                                        text: parent.parent.it.connected ? "Connect Again" : "Connect"
+                                        primary: !parent.parent.it.connected
+                                        enabled: ncServer.text.trim() !== ""
+                                        onClicked: store.cloudConnect("nextcloud", ncServer.text, "")
+                                    }
+                                    ToolButtonX { visible: !!parent.parent.it.connected; text: "Disconnect"; onClicked: store.cloudDisconnect("nextcloud") }
+                                }
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; font.pixelSize: 12
+                                    text: parent.it.connected ? "Connected ✓ as " + parent.it.user : "Nextcloud's own sign-in opens in your browser; nothing to register."
+                                }
+                            }
+                        }
+                    }
                     Row2 {
                         label: "VIPs:"
                         Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; text: dlg.lists.vips.length ? dlg.lists.vips.join(", ") : "None. Right-click a message: Add Sender to VIPs." }

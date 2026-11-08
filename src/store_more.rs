@@ -975,13 +975,87 @@ impl qobject::Store {
         std::fs::metadata(path.to_string()).map(|m| m.len() as i64).unwrap_or(0)
     }
 
+    pub(super) fn cloud_stores(&self) -> QString {
+        let s = &self.db.settings;
+        let connected = |k: &str| crate::live::password(k).is_some_and(|p| !p.is_empty());
+        let client = |p: &str| crate::oauth::builtin_client(p).map(|(id, _)| id).unwrap_or_default();
+        q(&json!({
+            "store": if s.cloud_store.is_empty() { "account" } else { &s.cloud_store },
+            "dropbox": {"connected": connected("storage-dropbox:refresh"), "clientId": client(crate::oauth::DROPBOX)},
+            "box": {"connected": connected("storage-box:refresh"), "clientId": client(crate::oauth::BOX)},
+            "nextcloud": {"connected": connected("storage-nextcloud:password"), "server": s.cloud_nextcloud_server, "user": s.cloud_nextcloud_user},
+            "port": crate::oauth::STORAGE_PORT,
+        }))
+    }
+
+    pub(super) fn cloud_connect(&self, provider: &QString, a: &QString, b: &QString) {
+        let (provider, a, b) = (provider.to_string(), a.to_string().trim().to_string(), b.to_string().trim().to_string());
+        let thread = self.qt_thread();
+        let t2 = thread.clone();
+        std::thread::spawn(move || {
+            let open = move |url: String| {
+                let _ = t2.queue(move |mut store| store.as_mut().set_open_url(QString::from(url.as_str())));
+            };
+            let name = match provider.as_str() { "dropbox" => "Dropbox", "box" => "Box", _ => "Nextcloud" };
+            let result: Result<Option<(String, String)>, String> = if provider == "nextcloud" {
+                crate::cloudfiles::nextcloud_login(&a, &open).map(|(server, user, pass)| {
+                    let _ = crate::live::save_password("storage-nextcloud:password", &pass);
+                    Some((server, user))
+                })
+            } else {
+                let _ = crate::oauth::save_client(&provider, &a, &b);
+                crate::oauth::sign_in(&provider, &a, &b, "", &open).map(|si| {
+                    let _ = crate::live::save_password(&format!("storage-{provider}:refresh"), &si.refresh_token);
+                    crate::oauth::forget_tokens(&format!("storage-{provider}"));
+                    None
+                })
+            };
+            let _ = thread.queue(move |mut store| {
+                match result {
+                    Ok(nc) => {
+                        if let Some((server, user)) = nc {
+                            store.as_mut().db_mut().settings.cloud_nextcloud_server = server;
+                            store.as_mut().db_mut().settings.cloud_nextcloud_user = user;
+                        }
+                        store.as_mut().db_mut().settings.cloud_store = provider.clone();
+                        store.as_mut().set_status_text(QString::from(format!("Connected to {name}: big attachments go there now.").as_str()));
+                    }
+                    Err(e) => store.as_mut().set_status_text(QString::from(format!("{name}: {e}").as_str())),
+                }
+                store.changed();
+            });
+        });
+    }
+
+    pub(super) fn cloud_disconnect(mut self: Pin<&mut Self>, provider: &QString) {
+        let provider = provider.to_string();
+        let key = if provider == "nextcloud" { "storage-nextcloud:password".to_string() } else { format!("storage-{provider}:refresh") };
+        crate::live::forget_password(&key);
+        crate::oauth::forget_tokens(&format!("storage-{provider}"));
+        if self.db.settings.cloud_store == provider {
+            self.as_mut().db_mut().settings.cloud_store = "account".into();
+        }
+        self.changed();
+    }
+
+    /// The service big attachments go to from `provider`'s accounts (its name
+    /// for the offer), "" for none.
+    fn cloud_store_name(&self, provider: &str) -> &'static str {
+        match self.db.settings.cloud_store.as_str() {
+            "dropbox" => "Dropbox",
+            "box" => "Box",
+            "nextcloud" => "Nextcloud",
+            _ => crate::cloudfiles::store_name(provider),
+        }
+    }
+
     pub(super) fn cloud_offer(&self, account: &QString, bytes: i64) -> QString {
         let provider = self.db.live_account(&account.to_string()).map(|a| a.provider.clone()).unwrap_or_default();
         let limit = crate::cloudfiles::mail_limit(&provider);
         q(&json!({
             "over": crate::cloudfiles::as_sent(bytes.max(0) as u64) > limit,
             "limitMb": limit / 1024 / 1024,
-            "store": crate::cloudfiles::store_name(&provider),
+            "store": self.cloud_store_name(&provider),
             "mode": self.db.settings.cloud_attachments,
         }))
     }
@@ -1000,16 +1074,35 @@ impl qobject::Store {
         }
         let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        let Some(a) = self.db.live_account(&account.to_string()).cloned() else {
-            report(&thread, &path, json!({"state": "error", "name": name, "size": size, "error": "Big attachments can be sent as links from Google and Microsoft accounts"}));
+        let choice = self.db.settings.cloud_store.clone();
+        let (nc_server, nc_user) = (self.db.settings.cloud_nextcloud_server.clone(), self.db.settings.cloud_nextcloud_user.clone());
+        let a = self.db.live_account(&account.to_string()).cloned();
+        if a.is_none() && !["dropbox", "box", "nextcloud"].contains(&choice.as_str()) {
+            report(&thread, &path, json!({"state": "error", "name": name, "size": size, "error": "Big attachments can be sent as links from Google and Microsoft accounts, or through Dropbox, Box or Nextcloud (Settings › Mail)"}));
             return;
-        };
+        }
         report(&thread, &path, json!({"state": "uploading", "name": name, "size": size, "sent": 0, "total": size}));
         std::thread::spawn(move || {
             let result = (|| {
-                // (A stand-in Drive for tests needs no sign-in.)
-                let token = if std::env::var("ALMANAC_DRIVE_TEST_BASE").is_ok() || std::env::var("ALMANAC_ONEDRIVE_TEST_BASE").is_ok() { "test".to_string() } else { crate::live::token(&a, crate::oauth::Resource::Drive)? };
-                let store = crate::cloudfiles::store_for(&a.provider, token).ok_or("Big attachments can be sent as links from Google and Microsoft accounts")?;
+                // The service chosen in Settings › Mail, or the account's own.
+                let store: Box<dyn crate::cloudfiles::CloudStore + Send> = match choice.as_str() {
+                    "dropbox" | "box" => {
+                        let (id, secret) = crate::oauth::builtin_client(&choice).ok_or("Connect it again in Settings › Mail")?;
+                        let token = crate::oauth::access_token(&format!("storage-{choice}"), &choice, &id, &secret, "", crate::oauth::Resource::Data)
+                            .map_err(|_| format!("Almanac isn't signed in to {} any more: Connect it again in Settings › Mail", if choice == "box" { "Box" } else { "Dropbox" }))?;
+                        if choice == "box" { Box::new(crate::cloudfiles::BoxCom::new(token)) } else { Box::new(crate::cloudfiles::Dropbox::new(token)) }
+                    }
+                    "nextcloud" => {
+                        let pass = crate::live::password("storage-nextcloud:password").filter(|p| !p.is_empty()).ok_or("Connect Nextcloud again in Settings › Mail")?;
+                        Box::new(crate::cloudfiles::Nextcloud { server: nc_server, user: nc_user, app_password: pass })
+                    }
+                    _ => {
+                        let a = a.ok_or("No mail account to send from")?;
+                        // (A stand-in Drive for tests needs no sign-in.)
+                        let token = if std::env::var("ALMANAC_DRIVE_TEST_BASE").is_ok() || std::env::var("ALMANAC_ONEDRIVE_TEST_BASE").is_ok() { "test".to_string() } else { crate::live::token(&a, crate::oauth::Resource::Drive)? };
+                        crate::cloudfiles::store_for(&a.provider, token).ok_or("Big attachments can be sent as links from Google and Microsoft accounts, or through Dropbox, Box or Nextcloud (Settings › Mail)")?
+                    }
+                };
                 let last = std::cell::Cell::new(std::time::Instant::now());
                 store.upload(std::path::Path::new(&path), &|sent, total| {
                     // (The window hears about it a few times a second at most.)

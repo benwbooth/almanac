@@ -20,6 +20,11 @@ pub const GOOGLE: &str = "google";
 pub const MICROSOFT: &str = "microsoft";
 pub const YAHOO: &str = "yahoo";
 pub const AOL: &str = "aol";
+/// Cloud storage for big attachments (not mail accounts): signed in with an
+/// app registered with them, whose return address is this fixed one.
+pub const DROPBOX: &str = "dropbox";
+pub const BOX: &str = "box";
+pub const STORAGE_PORT: u16 = 53682;
 
 /// Sign-in providers: (id, name shown, what it syncs).
 pub const PROVIDERS: [(&str, &str, &str); 4] = [
@@ -339,6 +344,8 @@ fn test_base() -> String {
 
 fn auth_url(provider: &str, tenant: &str) -> String {
     match provider {
+        DROPBOX => "https://www.dropbox.com/oauth2/authorize".into(),
+        BOX => "https://account.box.com/api/oauth2/authorize".into(),
         TEST => format!("{}/auth", test_base()),
         GOOGLE => "https://accounts.google.com/o/oauth2/v2/auth".into(),
         YAHOO => "https://api.login.yahoo.com/oauth2/request_auth".into(),
@@ -349,6 +356,8 @@ fn auth_url(provider: &str, tenant: &str) -> String {
 
 fn token_url(provider: &str, tenant: &str) -> String {
     match provider {
+        DROPBOX => "https://api.dropboxapi.com/oauth2/token".into(),
+        BOX => "https://api.box.com/oauth2/token".into(),
         TEST => format!("{}/token", test_base()),
         GOOGLE => "https://oauth2.googleapis.com/token".into(),
         YAHOO => "https://api.login.yahoo.com/oauth2/get_token".into(),
@@ -536,14 +545,19 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
     if client_id.trim().is_empty() {
         return Err("Enter the app (client) ID first.".into());
     }
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let storage = provider == DROPBOX || provider == BOX;
+    let listener = if storage {
+        TcpListener::bind(("127.0.0.1", STORAGE_PORT)).map_err(|e| format!("Port {STORAGE_PORT} is busy ({e}): close what's using it and try again."))?
+    } else {
+        TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?
+    };
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     // Yahoo and AOL only allow fixed return addresses, so their page shows a
     // code to paste back ("oob"); the others come straight back here.
     let manual = provider == YAHOO || provider == AOL;
     let redirect = if manual {
         "oob".to_string()
-    } else if provider == GOOGLE || provider == TEST {
+    } else if provider == GOOGLE || provider == TEST || storage {
         format!("http://127.0.0.1:{port}")
     } else {
         format!("http://localhost:{port}")
@@ -552,7 +566,11 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
     let round = SIGN_IN_ROUND.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let verifier = random_string(48);
     let state = random_string(16);
-    let scope = if provider == GOOGLE {
+    let scope = if provider == DROPBOX {
+        "files.content.write files.content.read sharing.write sharing.read".to_string()
+    } else if provider == BOX {
+        String::new()
+    } else if provider == GOOGLE {
         // (Drive too, for big attachments: only files Almanac itself puts there.)
         format!("{} {}", scopes(GOOGLE, &Resource::Data), scopes(GOOGLE, &Resource::Drive))
     } else if provider != MICROSOFT {
@@ -579,7 +597,11 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
         params.push(("include_granted_scopes", "true".into()));
     } else if provider == MICROSOFT {
         params.push(("prompt", "select_account".into()));
+    } else if provider == DROPBOX {
+        // (A refresh token, so it stays signed in.)
+        params.push(("token_access_type", "offline".into()));
     }
+    params.retain(|(k, v)| !(*k == "scope" && v.is_empty()));
     let query = params.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&");
     open_url(format!("{}?{query}", auth_url(provider, tenant)));
 
@@ -659,6 +681,10 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
 
 /// The signed-in address, from the ID token or the provider's profile.
 fn who_am_i(provider: &str, access: &str, id_token: &str) -> String {
+    // (Storage sign-ins: no mail address to find.)
+    if provider == DROPBOX || provider == BOX {
+        return String::new();
+    }
     if let Some(payload) = id_token.split('.').nth(1) {
         if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) {
             if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
