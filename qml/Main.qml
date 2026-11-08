@@ -280,9 +280,10 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 currentIndex: win.section
-                MailView { id: mailView; store: store; onAccountsRequested: sourcesDialog.open() }
-                CalendarView { id: calendarView; store: store }
-                ContactsView { id: contactsView; store: store; onComposeRequested: function(p) { win.section = 0; mailView.reopen(p) } }
+                // (A pane resized: saved a moment after the drag.)
+                MailView { id: mailView; store: store; onAccountsRequested: sourcesDialog.open(); onPanesChanged: if (win.keepState && win.restored) geometrySave.restart() }
+                CalendarView { id: calendarView; store: store; onPanesChanged: if (win.keepState && win.restored) geometrySave.restart() }
+                ContactsView { id: contactsView; store: store; onComposeRequested: function(p) { win.section = 0; mailView.reopen(p) }; onPanesChanged: if (win.keepState && win.restored) geometrySave.restart() }
             }
         }
 

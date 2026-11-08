@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import QtCore
 
 // Messages (each with its whole conversation) and pictures / PDFs from them in
 // a window of their own, opened by Shift + double-clicking a message in the
@@ -64,7 +65,13 @@ Window {
     function raiseWindow() { w.raise(); w.requestActivate() }
 
     title: (tab ? tab.title : "Message") + " — Almanac"
-    width: 780; height: 760
+    // The size the last one was (kept between runs).
+    Settings { id: popSize; category: "MessageWindow"; property real w: 780; property real h: 760 }
+    width: Math.max(420, Math.min(popSize.w, Screen.desktopAvailableWidth || 100000))
+    height: Math.max(320, Math.min(popSize.h, Screen.desktopAvailableHeight || 100000))
+    onWidthChanged: popSave.restart()
+    onHeightChanged: popSave.restart()
+    Timer { id: popSave; interval: 800; onTriggered: if (w.visible && w.visibility === Window.Windowed) { popSize.w = w.width; popSize.h = w.height } }
     minimumWidth: 420; minimumHeight: 320
     transientParent: null
     // The top bar is the title bar, as in the main window.

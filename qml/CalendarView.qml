@@ -20,14 +20,20 @@ Item {
     Component.onCompleted: view = prefs.calendar_view || "week"
     // What's on screen, saved when Almanac closes and put back when it opens.
     property real keptSideW: 0
-    function saveState() { return { sidebar: sidebarShown, view: view, cursor: cursor.getTime(), sideW: visible && width > 0 && sidebarShown ? sidebarPane.width : keptSideW } }
+    // (Noted as it changes, so a hidden view or window still saves the right one.)
+    signal panesChanged()
+    Connections {
+        target: sidebarPane
+        function onWidthChanged() { if (page.visible && page.width > 0 && page.sidebarShown && sidebarPane.width > 60) { page.keptSideW = sidebarPane.width; page.panesChanged() } }
+    }
+    function saveState() { return { sidebar: sidebarShown, view: view, cursor: cursor.getTime(), sideW: keptSideW } }
     function restoreState(s) {
         if (!s) return
         keptSideW = s.sideW || 0
         sidebarShown = s.sidebar !== false
         if (s.view) view = s.view
         if (s.cursor) cursor = new Date(s.cursor)
-        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = s.sideW
+        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, ((page.Window.window ? page.Window.window.width : 0) || 1280) * 0.4)
     }
     function newEventNow() { var n = new Date(cursor); var now = new Date(); n.setHours(now.getHours() + 1, 0, 0, 0); newEvent(n, false) }
     function newCalendar() { calEditor.openFor(null) }

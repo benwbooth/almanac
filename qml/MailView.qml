@@ -300,12 +300,25 @@ Item {
                 if (accts[i].folders[j].kind === "inbox") { out.push({ id: accts[i].folders[j].id, account: accts[i].name, badge: accts[i].folders[j].badge }); break }
         return out
     }
+    // Pane sizes noted as they change (dragged, or put back), so what's saved is
+    // right even when the window is hidden then (closing, minimised): it took
+    // the sizes from when Almanac started, and a drag was lost.
+    signal panesChanged()
+    function notePanes() {
+        if (!visible || width <= 0) return
+        var p = Object.assign({}, paneSizes)
+        if (sidebarShown && sidebarPane.width > 60) p.sideW = sidebarPane.width
+        if (!classic && listPane.width > 120) p.listW = listPane.width
+        if (classic && listPane.height > 80) p.listH = listPane.height
+        paneSizes = p
+        panesChanged()
+    }
+    Connections { target: sidebarPane; function onWidthChanged() { mail.notePanes() } }
+    Connections { target: listPane; function onWidthChanged() { mail.notePanes() } function onHeightChanged() { mail.notePanes() } }
     function saveState() {
-        var on = visible && width > 0
+        notePanes()
         return { sidebar: sidebarShown,
-                 sideW: on && sidebarShown ? sidebarPane.width : paneSizes.sideW,
-                 listW: on && !classic ? listPane.width : paneSizes.listW,
-                 listH: on && classic ? listPane.height : paneSizes.listH,
+                 sideW: paneSizes.sideW, listW: paneSizes.listW, listH: paneSizes.listH,
                  selection: selection, selectionName: selectionName, selectedId: selectedId,
                  threaded: threaded, unreadOnly: unreadOnly, formatted: formatted, zoom: textZoom,
                  listY: messageList.contentY, folded: foldedAccounts }
@@ -315,9 +328,11 @@ Item {
         paneSizes = { sideW: s.sideW, listW: s.listW, listH: s.listH }
         foldedAccounts = s.folded || {}
         sidebarShown = s.sidebar !== false
-        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = s.sideW
-        if (s.listW > 120) listPane.SplitView.preferredWidth = s.listW
-        if (s.listH > 80) listPane.SplitView.preferredHeight = s.listH
+        // (Kept within the window: a pane never comes back too big to leave room.)
+        var W = (mail.Window.window ? mail.Window.window.width : 0) || 1280, H = (mail.Window.window ? mail.Window.window.height : 0) || 800
+        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, W * 0.4)
+        if (s.listW > 120) listPane.SplitView.preferredWidth = Math.min(s.listW, Math.max(220, W - Math.min(s.sideW || 0, W * 0.4) - 320))
+        if (s.listH > 80) listPane.SplitView.preferredHeight = Math.min(s.listH, Math.max(120, H - 220))
         if (s.selection) { selection = s.selection; selectionName = s.selectionName || selectionName }
         if (s.threaded !== undefined) threaded = s.threaded
         if (s.unreadOnly !== undefined) unreadOnly = s.unreadOnly

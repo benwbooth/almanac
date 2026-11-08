@@ -17,10 +17,20 @@ Item {
     property var selectedId: -1
     // What's on screen, saved when Almanac closes and put back when it opens.
     property var paneSizes: ({})
+    signal panesChanged()
+    function notePanes() {
+        if (!visible || width <= 0) return
+        var p = Object.assign({}, paneSizes)
+        if (sidebarShown && sidebarPane.width > 60) p.sideW = sidebarPane.width
+        if (listPane.width > 120) p.listW = listPane.width
+        paneSizes = p
+        panesChanged()
+    }
+    Connections { target: sidebarPane; function onWidthChanged() { page.notePanes() } }
+    Connections { target: listPane; function onWidthChanged() { page.notePanes() } }
     function saveState() {
-        var on = visible && width > 0
-        return { sidebar: sidebarShown, group: group, selectedId: selectedId,
-                 sideW: on && sidebarShown ? sidebarPane.width : paneSizes.sideW, listW: on ? listPane.width : paneSizes.listW }
+        notePanes()
+        return { sidebar: sidebarShown, group: group, selectedId: selectedId, sideW: paneSizes.sideW, listW: paneSizes.listW }
     }
     function restoreState(s) {
         if (!s) return
@@ -28,8 +38,9 @@ Item {
         sidebarShown = s.sidebar !== false
         if (s.group !== undefined) group = s.group
         if (s.selectedId !== undefined) selectedId = s.selectedId
-        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = s.sideW
-        if (s.listW > 120) listPane.SplitView.preferredWidth = s.listW
+        var W = (page.Window.window ? page.Window.window.width : 0) || 1280
+        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, W * 0.4)
+        if (s.listW > 120) listPane.SplitView.preferredWidth = Math.min(s.listW, Math.max(220, W - Math.min(s.sideW || 0, W * 0.4) - 320))
     }
     property bool editing: false
     property var draft: null
