@@ -13,6 +13,8 @@ Item {
     property var store
     property bool sidebarShown: true
     property string selection: "kind:inbox"
+    // New mail the junk filter thinks is junk (left in place): id → true.
+    readonly property var junkSuspects: { var o = {}; JSON.parse(store.junkSuspectsJson || "[]").forEach(function(i) { o[i] = true }); return o }
     onSelectionChanged: { selectedIds = []; resetPage() }
     property string selectionName: "Inbox"
     property var selectedId: -1
@@ -819,6 +821,11 @@ Item {
         else if (action === "replyAll") reply(true, m, here)
         else if (action === "forward") forward(m, here)
         else if (action === "unsubscribe") unsubscribe(m)
+        else if (action === "notjunk") store.notJunk(JSON.stringify([m.id]))
+        else if (action === "movejunk") {
+            if (current && current.id === m.id && conversation.length <= 1) removeCurrent("junk")
+            else store.moveMany(JSON.stringify([m.id]), "junk")
+        }
         else if (action === "delete") {
             if (conversation.length <= 1 && current && current.id === m.id) removeCurrent("delete")
             else store.deleteMessages(JSON.stringify([m.id]))
@@ -872,6 +879,16 @@ Item {
         confirm.ask("Move the mail from " + who + " out of your Inbox?",
                     ids.length + (ids.length === 1 ? " message" : " messages") + " from " + m.fromEmail + " in your inboxes. Edit › Undo (Ctrl+Z) puts " + (ids.length === 1 ? "it" : "them") + " back.",
                     "Move to Trash", function() { go("trash") }, "Archive", function() { go("archive") })
+    }
+    // Not junk: the message (or those picked) back to the Inbox, and the
+    // filter taught so.
+    function notJunk() {
+        if (selectedId < 0) return
+        var ids = rowIds()
+        var next = multi ? -1 : neighbour()
+        if (selection === "kind:junk") { selectedId = -1; selectedIds = [] }
+        store.notJunk(JSON.stringify(ids))
+        if (selection === "kind:junk" && next >= 0) select(next)
     }
     readonly property alias composer: compose
     // For checks: runs a script in the reading pane's page.
@@ -931,7 +948,11 @@ Item {
             Item { Layout.fillWidth: true }
             ToolButtonX { priority: 1; icon: "archive"; tip: "Archive (Ctrl+Shift+A)"; enabled: mail.current !== null; onClicked: mail.removeCurrent("archive") }
             ToolButtonX { priority: 2; icon: "trash"; tip: "Delete"; enabled: mail.current !== null; onClicked: mail.removeCurrent("delete") }
-            ToolButtonX { icon: "junk"; tip: "Move to Junk (Ctrl+Shift+J)"; enabled: mail.current !== null; onClicked: mail.removeCurrent("junk") }
+            ToolButtonX {
+                readonly property bool inJunk: mail.selection === "kind:junk" || (mail.current !== null && /\/(junk|spam|\[gmail\]\/spam|junk e-?mail)$/i.test(mail.current.folder || ""))
+                icon: "junk"; tip: inJunk ? "Not Junk: back to the Inbox" : "Move to Junk (Ctrl+Shift+J)"; enabled: mail.current !== null
+                onClicked: inJunk ? mail.notJunk() : mail.removeCurrent("junk")
+            }
             Item { width: 6 }
             ToolButtonX { priority: 2; icon: "reply"; tip: "Reply (Ctrl+R)"; enabled: mail.current !== null; onClicked: mail.reply(false) }
             ToolButtonX { priority: 1; icon: "replyAll"; tip: "Reply All (Ctrl+Shift+R)"; enabled: mail.current !== null; onClicked: mail.reply(true) }
@@ -1618,6 +1639,7 @@ Item {
                             ToolTip.text: modelData.subject
                         }
                         Icon { visible: !!modelData.attachments; name: "paperclip"; width: 13; height: 13; color: row.sub }
+                        Icon { visible: !!mail.junkSuspects[modelData.id]; name: "junk"; width: 13; height: 13; color: row.strong ? Theme.accentInk : Theme.orange; ToolTip.text: "Looks like junk"; ToolTip.visible: junkHover.hovered; HoverHandler { id: junkHover } }
                         Icon { visible: modelData.flagged; name: "flag"; width: 13; height: 13; color: row.strong ? Theme.accentInk : Theme.flagColors[modelData.flagColor || 0] }
                         Text { text: Theme.fmtListDate(modelData.date); color: row.sub; font.pixelSize: 12 }
                     }
@@ -1661,6 +1683,7 @@ Item {
                             Icon { visible: !!modelData.vip; name: "star"; width: 13; height: 13; color: row.strong ? Theme.accentInk : Theme.accent }
                             Icon { visible: !!modelData.muted; name: "bellOff"; width: 13; height: 13; color: row.sub }
                             Icon { visible: !!modelData.remind; name: "clock"; width: 13; height: 13; color: row.strong ? Theme.accentInk : Theme.red }
+                            Icon { visible: !!mail.junkSuspects[modelData.id]; name: "junk"; width: 13; height: 13; color: row.strong ? Theme.accentInk : Theme.orange; ToolTip.text: "Looks like junk"; ToolTip.visible: junkHover2.hovered; HoverHandler { id: junkHover2 } }
                             Icon { visible: modelData.flagged; name: "flag"; width: 13; height: 13; color: row.strong ? Theme.accentInk : Theme.flagColors[modelData.flagColor || 0] }
                             Text { text: Theme.fmtListDate(modelData.date); color: row.sub; font.pixelSize: 12 }
                         }

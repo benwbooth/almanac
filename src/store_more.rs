@@ -275,6 +275,7 @@ impl qobject::Store {
             new_ids.iter().filter_map(|id| self.db.live_message(*id).map(|t| (*id, t))).collect();
         let ops = self.as_mut().db_mut().apply_rules(&new_ids);
         self.as_mut().push_rule_ops(ops, targets);
+        self.screen_new_mail(&new_ids);
         // Notification for new unread mail in the inbox (not muted).
         let fresh: Vec<(String, String, i64)> = new_ids
             .iter()
@@ -932,6 +933,122 @@ impl qobject::Store {
             return q(&json!({"gpg": false, "canSign": false, "missing": to, "smime": smime}));
         }
         q(&json!({"gpg": true, "canSign": !me.is_empty() && crate::pgp::can_sign(&me), "missing": crate::pgp::missing_keys(&to), "smime": smime}))
+    }
+
+    // ------------------------------------------------- junk
+
+    fn folder_kind_of(&self, id: i64) -> String {
+        self.db.get(id).and_then(|m| self.db.folders.iter().find(|f| f.id == m.folder).map(|f| f.kind.clone())).unwrap_or_default()
+    }
+
+    /// The filter taught (in the background); its first lessons first, when
+    /// it hasn't had any.
+    pub(super) fn learn_junk(&self, ids: Vec<i64>, spam: bool) {
+        if !crate::junk::ENABLED || self.db.settings.junk_filter == "off" {
+            return;
+        }
+        let first = self.first_junk_lessons();
+        std::thread::spawn(move || {
+            if let Some(f) = first {
+                f();
+            }
+            crate::junk::learn(&ids, spam);
+        });
+    }
+
+    /// What the filter learns from at first (Junk / Spam against the
+    /// inboxes), once: None when it already has.
+    fn first_junk_lessons(&self) -> Option<impl FnOnce()> {
+        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !self.db.backed || STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let of = |k: &str| self.db.folders.iter().filter(|f| f.kind == k).map(|f| f.id.clone()).collect::<Vec<_>>();
+        let (junk, inbox) = (of("junk"), of("inbox"));
+        Some(move || {
+            if !crate::junk::trained() {
+                let _t = crate::Timed::new("junk filter's first lessons");
+                let (s, h) = crate::junk::first_lessons(&junk, &inbox);
+                eprintln!("junk filter: learned {s} junk and {h} good messages");
+            }
+        })
+    }
+
+    pub(super) fn junk_check(mut self: Pin<&mut Self>, id: i64) {
+        let in_junk = self.folder_kind_of(id) == "junk";
+        if !crate::junk::ENABLED || self.db.settings.junk_filter == "off" || !self.db.backed {
+            // (Still: whether it's in Junk, for its Not Junk.)
+            let v = json!({"id": id, "score": 0.5, "junk": false, "inJunk": in_junk, "taught": null});
+            self.as_mut().set_junk_json(QString::from(v.to_string().as_str()));
+            return;
+        }
+        let first = self.first_junk_lessons();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            if let Some(f) = first {
+                f();
+            }
+            let score = crate::junk::score(id);
+            let taught = crate::junk::taught(id);
+            let v = json!({"id": id, "score": score, "junk": score > crate::junk::THRESHOLD, "inJunk": in_junk, "taught": taught});
+            let _ = thread.queue(move |mut store| store.as_mut().set_junk_json(QString::from(v.to_string().as_str())));
+        });
+    }
+
+    pub(super) fn not_junk(mut self: Pin<&mut Self>, ids_json: &QString) {
+        let ids: Vec<i64> = serde_json::from_str(&ids_json.to_string()).unwrap_or_default();
+        let back: Vec<i64> = ids.iter().copied().filter(|id| self.folder_kind_of(*id) == "junk").collect();
+        if !back.is_empty() {
+            self.as_mut().move_many(&QString::from(json!(back).to_string().as_str()), &QString::from("inbox"));
+        }
+        // No longer suspected; the bar says so at once.
+        let mut sus: Vec<i64> = serde_json::from_str(&self.junk_suspects_json().to_string()).unwrap_or_default();
+        sus.retain(|x| !ids.contains(x));
+        self.as_mut().set_junk_suspects_json(QString::from(json!(sus).to_string().as_str()));
+        if let Some(&id) = ids.first() {
+            let v = json!({"id": id, "score": 0.0, "junk": false, "inJunk": false, "taught": false});
+            self.as_mut().set_junk_json(QString::from(v.to_string().as_str()));
+        }
+        self.learn_junk(ids, false);
+    }
+
+    pub(super) fn teach_junk(&self, ids_json: &QString, spam: bool) {
+        let ids: Vec<i64> = serde_json::from_str(&ids_json.to_string()).unwrap_or_default();
+        self.learn_junk(ids, spam);
+    }
+
+    /// New mail in the inboxes through the filter (in the background): what
+    /// it thinks is junk marked, or moved to Junk, as Settings say.
+    pub(super) fn screen_new_mail(&self, new_ids: &[i64]) {
+        let how = self.db.settings.junk_filter.clone();
+        if !crate::junk::ENABLED || how == "off" || !self.db.backed {
+            return;
+        }
+        let ids: Vec<i64> = new_ids.iter().copied().filter(|id| self.folder_kind_of(*id) == "inbox").collect();
+        if ids.is_empty() {
+            return;
+        }
+        let first = self.first_junk_lessons();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            if let Some(f) = first {
+                f();
+            }
+            let junk: Vec<i64> = ids.into_iter().filter(|id| crate::junk::taught(*id).is_none() && crate::junk::score(*id) > crate::junk::THRESHOLD).collect();
+            if junk.is_empty() {
+                return;
+            }
+            let _ = thread.queue(move |mut store| {
+                if how == "move" {
+                    // (Not a lesson: the filter's own guess.)
+                    store.as_mut().move_guessed_junk(&junk);
+                } else {
+                    let mut sus: Vec<i64> = serde_json::from_str(&store.junk_suspects_json().to_string()).unwrap_or_default();
+                    sus.extend(junk.iter().copied().filter(|x| !sus.contains(x)).collect::<Vec<_>>());
+                    store.as_mut().set_junk_suspects_json(QString::from(json!(sus).to_string().as_str()));
+                }
+            });
+        });
     }
 
     pub(super) fn list_info(&self, id: i64) {

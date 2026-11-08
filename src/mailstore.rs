@@ -163,6 +163,13 @@ fn open_at(path: &Path) -> Result<Connection, String> {
     // in a moment (a column of the messages would mean remaking the list's index
     // or reading scattered rows of a file of gigabytes).
     c.execute_batch("CREATE TABLE IF NOT EXISTS flag_colors(id INTEGER PRIMARY KEY, color INTEGER NOT NULL)").map_err(|e| e.to_string())?;
+    // The junk filter: tokens seen in junk and in good mail, and which way
+    // each message was learned (so a change of mind takes it back).
+    c.execute_batch(
+        "CREATE TABLE IF NOT EXISTS junk_tokens(token TEXT PRIMARY KEY, spam INTEGER NOT NULL, ham INTEGER NOT NULL) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS junk_learned(id INTEGER PRIMARY KEY, spam INTEGER NOT NULL);",
+    )
+    .map_err(|e| e.to_string())?;
     // Mailing lists' headers (how to unsubscribe), kept as mail arrives.
     c.execute_batch("CREATE TABLE IF NOT EXISTS list_heads(id INTEGER PRIMARY KEY, heads TEXT NOT NULL)").map_err(|e| e.to_string())?;
     // (Mail stored before then wasn't looked at: its headers are read when it's opened.)
@@ -778,6 +785,105 @@ pub fn keep_list_heads(id: i64, heads: &str) {
         return;
     }
     let _ = with_conn(&path, |c| c.execute("INSERT OR REPLACE INTO list_heads(id, heads) VALUES(?1, ?2)", params![id, heads]).map_err(|e| e.to_string()));
+}
+
+/// The junk filter as saved (junk_tokens; message counts in meta).
+pub fn junk_model() -> Option<crate::junk::Model> {
+    let path = db_path();
+    if !path.exists() {
+        return None;
+    }
+    with_conn(&path, |c| {
+        let n = |k: &str| -> u32 { c.query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?1", params![k], |r| r.get(0)).unwrap_or(0) };
+        let mut m = crate::junk::Model { spam_docs: n("junk_spam_docs"), ham_docs: n("junk_ham_docs"), ..Default::default() };
+        let mut st = c.prepare("SELECT token, spam, ham FROM junk_tokens").map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?, r.get::<_, u32>(2)?))).map_err(|e| e.to_string())?;
+        for (t, a, b) in rows.flatten() {
+            m.counts.insert(t, (a, b));
+        }
+        Ok(m)
+    })
+    .ok()
+}
+
+/// Saves the junk filter: the tokens a lesson touched, the counts, and which
+/// way each message was learned (id → junk?).
+pub fn save_junk(model: &crate::junk::Model, touched: &std::collections::HashSet<String>, learned: &[(i64, Option<bool>)]) {
+    let path = db_path();
+    if !path.exists() {
+        return;
+    }
+    let _ = with_conn(&path, |c| {
+        let tx = c.transaction().map_err(|e| e.to_string())?;
+        {
+            let mut put = tx.prepare_cached("INSERT OR REPLACE INTO junk_tokens(token, spam, ham) VALUES(?1, ?2, ?3)").map_err(|e| e.to_string())?;
+            let mut drop = tx.prepare_cached("DELETE FROM junk_tokens WHERE token = ?1").map_err(|e| e.to_string())?;
+            for t in touched {
+                match model.counts.get(t) {
+                    Some(&(a, b)) if a + b > 0 => put.execute(params![t, a, b]),
+                    _ => drop.execute(params![t]),
+                }
+                .map_err(|e| e.to_string())?;
+            }
+            let mut learn = tx.prepare_cached("INSERT OR REPLACE INTO junk_learned(id, spam) VALUES(?1, ?2)").map_err(|e| e.to_string())?;
+            let mut unlearn = tx.prepare_cached("DELETE FROM junk_learned WHERE id = ?1").map_err(|e| e.to_string())?;
+            for (id, way) in learned {
+                match way {
+                    Some(spam) => learn.execute(params![id, spam]),
+                    None => unlearn.execute(params![id]),
+                }
+                .map_err(|e| e.to_string())?;
+            }
+            let mut meta = tx.prepare_cached("INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)").map_err(|e| e.to_string())?;
+            meta.execute(params!["junk_spam_docs", model.spam_docs.to_string()]).map_err(|e| e.to_string())?;
+            meta.execute(params!["junk_ham_docs", model.ham_docs.to_string()]).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    });
+}
+
+/// Which way the filter learned these messages (id → junk?).
+pub fn junk_learned(ids: &[i64]) -> HashMap<i64, bool> {
+    let path = db_path();
+    if !path.exists() || ids.is_empty() {
+        return HashMap::new();
+    }
+    with_conn(&path, |c| {
+        let mut st = c.prepare_cached("SELECT spam FROM junk_learned WHERE id = ?1").map_err(|e| e.to_string())?;
+        Ok(ids.iter().filter_map(|id| st.query_row(params![id], |r| r.get::<_, bool>(0)).ok().map(|b| (*id, b))).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// Messages to learn from at first: (id, from a junk mailbox?) — every one
+/// in Junk / Spam, and up to `good` from the inboxes (the newest, and some
+/// from across the years).
+pub fn junk_examples(junk_folders: &[String], inbox_folders: &[String], good: i64) -> Vec<(i64, bool)> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let mut out = Vec::new();
+        for f in junk_folders {
+            let mut st = c.prepare_cached("SELECT id FROM messages WHERE folder = ?1").map_err(|e| e.to_string())?;
+            out.extend(st.query_map(params![f], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?.flatten().map(|id| (id, true)));
+        }
+        // (Half the newest, half from across the years; per inbox, as most
+        // people's mail is in one.)
+        let each = (good / 2).max(1);
+        for f in inbox_folders {
+            let mut st = c
+                .prepare_cached(
+                    "SELECT id FROM (SELECT id FROM messages WHERE folder = ?1 ORDER BY date DESC LIMIT ?2)
+                     UNION SELECT id FROM (SELECT id FROM messages WHERE folder = ?1 AND id % 17 = 3 LIMIT ?2)",
+                )
+                .map_err(|e| e.to_string())?;
+            out.extend(st.query_map(params![f, each], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?.flatten().map(|id| (id, false)));
+        }
+        Ok(out)
+    })
+    .unwrap_or_default()
 }
 
 pub fn text(id: i64) -> Option<(String, String, String)> {

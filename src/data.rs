@@ -543,6 +543,9 @@ pub struct Settings {
     pub cloud_attachments: String,
     /// Lists left with Unsubscribe (their List-Id, or the sender's address).
     pub unsubscribed: Vec<String>,
+    /// What the junk filter does with mail it thinks is junk: "mark" (says so
+    /// on the message and in the list), "move" (to Junk) or "off".
+    pub junk_filter: String,
     /// Where big attachments go: "account" (the mail account's own Google
     /// Drive or OneDrive), "dropbox", "box" or "nextcloud".
     pub cloud_store: String,
@@ -598,6 +601,7 @@ impl Default for Settings {
             warn_missing_attachment: true,
             cloud_attachments: "ask".into(),
             unsubscribed: Vec::new(),
+            junk_filter: "mark".into(),
             cloud_store: "account".into(),
             cloud_nextcloud_server: String::new(),
             cloud_nextcloud_user: String::new(),

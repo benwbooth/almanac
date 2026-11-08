@@ -19,6 +19,7 @@ mod gist;
 mod pgp;
 mod smime;
 mod unsubscribe;
+mod junk;
 mod ics;
 mod imap_pipe;
 mod instance;

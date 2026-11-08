@@ -190,6 +190,16 @@ Popup {
                             onActivated: dlg.set("cloud_attachments", ["ask", "always", "never"][currentIndex])
                         }
                     }
+                    // The junk filter (learns from Junk / Spam and from Move to Junk / Not Junk).
+                    Row2 {
+                        label: "Junk mail:"
+                        ComboX {
+                            Layout.preferredWidth: 320
+                            model: ["Mark mail that looks like junk", "Move mail that looks like junk to Junk", "Leave it to the mail server"]
+                            currentIndex: Math.max(0, ["mark", "move", "off"].indexOf(dlg.s.junk_filter || "mark"))
+                            onActivated: dlg.set("junk_filter", ["mark", "move", "off"][currentIndex])
+                        }
+                    }
                     // Where they go: the mail account's own (Google Drive, OneDrive), or
                     // a service connected in Accounts › Cloud Storage.
                     Row2 {

@@ -64,6 +64,11 @@ pub mod qobject {
         /// A message's list and how to leave it (list_info): {"id", "list",
         /// "key", "oneClick", "mailto", "https", "unsubscribed"} ("list" "": none).
         #[qproperty(QString, list_json, cxx_name = "listJson")]
+        /// The junk filter on message `id` (junk_check): {"id", "score",
+        /// "junk", "inJunk", "taught"}.
+        #[qproperty(QString, junk_json, cxx_name = "junkJson")]
+        /// New mail the filter thinks is junk (left where it is): [ids].
+        #[qproperty(QString, junk_suspects_json, cxx_name = "junkSuspectsJson")]
         /// False until the setup guide is finished or skipped
         #[qproperty(bool, onboarded)]
         /// Provider whose sign-in page is open ("" when none)
@@ -460,6 +465,17 @@ pub mod qobject {
         /// Unlocks the key for `email` (gpg-agent remembers the passphrase a while).
         #[qinvokable]
         fn pgp_unlock(self: &Store, email: &QString, passphrase: &QString);
+        /// Asks the junk filter about message `id` (in the background; the
+        /// answer in junkJson).
+        #[qinvokable]
+        fn junk_check(self: Pin<&mut Store>, id: i64);
+        /// Not junk: these messages back to the Inbox (when in Junk), and the
+        /// filter taught so.
+        #[qinvokable]
+        fn not_junk(self: Pin<&mut Store>, ids_json: &QString);
+        /// Teaches the filter in the background (from a Move to Junk).
+        #[qinvokable]
+        fn teach_junk(self: &Store, ids_json: &QString, spam: bool);
         /// Whether message `id` is from a mailing list, and how to leave it
         /// (read from its headers in the background; the answer in listJson).
         #[qinvokable]
@@ -597,6 +613,8 @@ pub struct StoreRust {
     window_json: QString,
     mail_check_done: QString,
     list_json: QString,
+    junk_json: QString,
+    junk_suspects_json: QString,
     revision: i32,
     screenshot_path: QString,
     start_section: i32,
@@ -725,6 +743,8 @@ impl Default for StoreRust {
             window_json: QString::from("{}"),
             mail_check_done: QString::from("{}"),
             list_json: QString::from("{}"),
+            junk_json: QString::from("{}"),
+            junk_suspects_json: QString::from("[]"),
             onboarded: db.onboarded,
             signing_in: QString::default(),
             registering: QString::default(),
@@ -1237,6 +1257,9 @@ impl qobject::Store {
         let to_path = self.db.live_folder_of_kind(id, &kind);
         let undo = self.undo_item(id, to_path.clone());
         self.as_mut().remember_undo(&format!("Move to {}", kind_name(&kind)), vec![undo]);
+        if kind == "junk" {
+            self.learn_junk(vec![id], true);
+        }
         self.as_mut().db_mut().move_to(id, &kind);
         if let Some(path) = to_path {
             self.as_mut().push_mail(target, crate::live::MailOp::Move(path));
@@ -1244,10 +1267,19 @@ impl qobject::Store {
         self.changed();
     }
 
-    fn move_many(mut self: Pin<&mut Self>, ids_json: &QString, kind: &QString) {
+    fn move_many(self: Pin<&mut Self>, ids_json: &QString, kind: &QString) {
+        let ids: Vec<i64> = serde_json::from_str(&ids_json.to_string()).unwrap_or_default();
+        self.move_kind(ids, &kind.to_string(), true);
+    }
+
+    /// New mail the junk filter is sure of, to Junk (undoable; not a lesson).
+    pub(crate) fn move_guessed_junk(self: Pin<&mut Self>, ids: &[i64]) {
+        self.move_kind(ids.to_vec(), "junk", false);
+    }
+
+    fn move_kind(mut self: Pin<&mut Self>, ids: Vec<i64>, kind: &str, lesson: bool) {
         let _timed = crate::Timed::new("move_many");
         let kind = kind.to_string();
-        let ids: Vec<i64> = serde_json::from_str(&ids_json.to_string()).unwrap_or_default();
         let mut undo = Vec::new();
         let mut ops = Vec::new();
         for id in ids {
@@ -1257,6 +1289,9 @@ impl qobject::Store {
             ops.push((target, to_path));
         }
         self.as_mut().remember_undo(&format!("Move to {}", kind_name(&kind)), undo.clone());
+        if kind == "junk" && lesson {
+            self.learn_junk(undo.iter().map(|u| u.0).collect(), true);
+        }
         for ((id, _, _), (target, to_path)) in undo.iter().zip(ops) {
             self.as_mut().db_mut().move_to(*id, &kind);
             if let Some(path) = to_path {

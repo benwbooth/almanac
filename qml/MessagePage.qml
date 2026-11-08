@@ -232,6 +232,25 @@ WebEngineView {
             web.applySigs()
         }
     }
+    // The junk filter's answer per message (junkJson): in Junk, or looks like junk.
+    property var junks: ({})
+    Connections {
+        target: web.store
+        function onJunkJsonChanged() {
+            var c = JSON.parse(web.store.junkJson || "{}")
+            if (c.id === undefined) return
+            web.junks[c.id] = c
+            web.applyLists()
+        }
+    }
+    function junkBanner(i, c) {
+        if (!c) return ""
+        if (c.inJunk)
+            return '<span class="grow">This message is in Junk.</span><a href="almanac:act/' + i + '/notjunk" title="Back to the Inbox; the junk filter learns from it">Not Junk</a>'
+        if (c.junk && c.taught !== false)
+            return '<span class="grow">This looks like junk mail.</span><a href="almanac:act/' + i + '/movejunk">Move to Junk</a><a class="more" href="almanac:act/' + i + '/notjunk" title="The junk filter learns from it">Not Junk</a>'
+        return ""
+    }
     // Mailing lists (List-Unsubscribe): message id → listJson's answer.
     property var lists: ({})
     Connections {
@@ -254,6 +273,8 @@ WebEngineView {
         for (var i = 0; i < web.messages.length; i++) {
             var c = web.lists[web.messages[i].id]
             if (c) web.runJavaScript("(function(){var e=document.getElementById('list-" + i + "');if(e)e.innerHTML=" + JSON.stringify(web.listBanner(i, c)) + "})()")
+            var j = web.junks[web.messages[i].id]
+            if (j) web.runJavaScript("(function(){var e=document.getElementById('junk-" + i + "');if(e)e.innerHTML=" + JSON.stringify(web.junkBanner(i, j)) + "})()")
         }
     }
     // The badges known so far, put in the page (again once a page has loaded:
@@ -709,6 +730,7 @@ WebEngineView {
                // so they never squeeze the To and Cc lines.
                + '<div class="actrow"><span class="acts">' + actions(i) + '</span></div>'
                + '<div class="rule"></div>'
+               + '<div class="remote list junk" id="junk-' + i + '">' + junkBanner(i, web.junks[m.id]) + '</div>'
                + '<div class="remote list" id="list-' + i + '">' + listBanner(i, web.lists[m.id]) + '</div>'
             if (dec && dec.state === "locked")
                 h += '<div class="remote"><span class="grow">🔒 ' + (dec.detail === "That passphrase isn't right" ? esc(dec.detail) : 'This message is encrypted: your key\'s passphrase is needed to read it') + '</span><a href="#" data-unlock="' + i + '">Unlock…</a></div>'
@@ -967,6 +989,7 @@ WebEngineView {
             var sm = web.messages[si]
             if (web.sigs[sm.id] === undefined) { web.sigs[sm.id] = null; web.store.checkSignature(sm.id) }
             if (web.lists[sm.id] === undefined) { web.lists[sm.id] = null; web.store.listInfo(sm.id) }
+            if (web.junks[sm.id] === undefined) { web.junks[sm.id] = null; web.store.junkCheck(sm.id) }
             if (web.decs[sm.id] === undefined) { web.decs[sm.id] = null; web.store.decryptMessage(sm.id, "") }
         }
         web.previews = pv
