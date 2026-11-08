@@ -784,8 +784,13 @@ ApplicationWindow {
                 var on = Qt.application.screens[s]
                 if (st.window.x >= on.virtualX && st.window.x < on.virtualX + on.width && st.window.y >= on.virtualY && st.window.y < on.virtualY + on.height) room = on
             }
-            var maxW = room ? Math.min(room.width, room.desktopAvailableWidth) - 48 : 100000
-            var maxH = room ? Math.min(room.height, room.desktopAvailableHeight) - 48 : 100000
+            // (Placed by KWin, on Plasma with Wayland: the size as it was, up to the
+            // free area; it keeps the window's place and maximised state itself.
+            // Taking 48 px off there made the window come back a little short of
+            // the bottom every time: the title bar is smaller than that.)
+            var margin = win.placedByKWin ? 0 : 48
+            var maxW = room ? Math.min(room.width, room.desktopAvailableWidth) - margin : 100000
+            var maxH = room ? Math.min(room.height, room.desktopAvailableHeight) - margin : 100000
             var wantW = Math.min(st.window.w || 0, maxW), wantH = Math.min(st.window.h || 0, maxH)
             // Saved while snapped to the full height or width of the screen: it would
             // open filling the screen, so it opens at a comfortable size instead.
