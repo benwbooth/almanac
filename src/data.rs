@@ -398,6 +398,23 @@ pub struct Db {
 /// `Db::messages`, newest first), sorted; with the number of rows and of unread ones.
 /// A live account's messages still waiting for their text, from the database
 /// (inbox first, newest first), for the download on the sync's thread.
+    /// The preview of a message whose text just arrived: from its plain text,
+    /// else its HTML, else an invisible mark. Never empty: an empty preview
+    /// means "text not fetched yet", and messages with no text of their own
+    /// (photos with an empty line of HTML) were fetched again on every check
+    /// for new mail, ahead of the new mail itself.
+    pub fn fetched_preview(body: &str, html: &str) -> String {
+        let p = strip_preview(body);
+        if !p.trim().is_empty() {
+            return p;
+        }
+        let h = strip_preview(&crate::mime::html_to_text(html));
+        if !h.trim().is_empty() {
+            return h;
+        }
+        "\u{200B}".into()
+    }
+
 pub fn partial_wanted(source: &str, folders: &[Folder]) -> Vec<crate::live::Wanted> {
     let filled = crate::mailstore::fill_from_copies(source);
     if filled > 0 {
@@ -2110,22 +2127,6 @@ impl Db {
 
     /// Puts downloaded text into messages that only had their headers.
     pub fn fill_texts(&mut self, texts: Vec<crate::live::Text>) -> bool {
-        /// The preview of a message whose text just arrived: from its plain text,
-        /// else its HTML, else an invisible mark. Never empty: an empty preview
-        /// means "text not fetched yet", and messages with no text of their own
-        /// (photos with an empty line of HTML) were fetched again on every check
-        /// for new mail, ahead of the new mail itself.
-        fn fetched_preview(body: &str, html: &str) -> String {
-            let p = strip_preview(body);
-            if !p.trim().is_empty() {
-                return p;
-            }
-            let h = strip_preview(&crate::mime::html_to_text(html));
-            if !h.trim().is_empty() {
-                return h;
-            }
-            "\u{200B}".into()
-        }
         let _t = crate::Timed::new("filling in message text");
         let mut any = false;
         for t in texts {

@@ -810,6 +810,54 @@ pub fn saved_state(id: i64) -> Option<(String, bool, bool)> {
     STATE.lock().unwrap().as_ref().and_then(|s| s.get(&id).cloned())
 }
 
+/// Downloaded text stored straight into the database, on the download's own
+/// thread (handed to the window's thread, 100 messages and ~10 MB at a time
+/// froze the window while it was saved). Only messages still waiting for it
+/// are filled. Returns the ids filled.
+pub fn store_texts(texts: &[crate::live::Text]) -> Vec<i64> {
+    let path = db_path();
+    if !path.exists() || texts.is_empty() {
+        return Vec::new();
+    }
+    let _t = crate::Timed::new("storing downloaded text");
+    with_conn(&path, |c| {
+        let tx = c.transaction().map_err(|e| e.to_string())?;
+        let mut done = Vec::new();
+        {
+            let mut old = tx.prepare_cached("SELECT attachments FROM messages WHERE id = ?1 AND partial = 1").map_err(|e| e.to_string())?;
+            let mut set = tx
+                .prepare_cached("UPDATE messages SET body = ?2, html = ?3, invite = ?4, preview = ?5, attachments = ?6, partial = ?7 WHERE id = ?1")
+                .map_err(|e| e.to_string())?;
+            let mut unindex = tx.prepare_cached("DELETE FROM search WHERE rowid = ?1").map_err(|e| e.to_string())?;
+            let mut index = tx
+                .prepare_cached(
+                    "INSERT INTO search(rowid, subject, people, body)
+                     SELECT id, subject, from_name || ' ' || from_email || ' ' || to_addr || ' ' || cc, body FROM messages WHERE id = ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            for t in texts {
+                let Ok(was) = old.query_row(params![t.id], |r| r.get::<_, String>(0)) else { continue };
+                // Whole: its attachments as found; just its start: those known so far too.
+                let mut atts: Vec<String> = if t.complete { Vec::new() } else { serde_json::from_str(&was).unwrap_or_default() };
+                for a in &t.attachments {
+                    if !atts.contains(a) {
+                        atts.push(a.clone());
+                    }
+                }
+                let atts = serde_json::to_string(&atts).unwrap_or_else(|_| "[]".into());
+                let preview = crate::data::fetched_preview(&t.body, &t.html);
+                set.execute(params![t.id, t.body, t.html, t.invite, preview, atts, !t.complete]).map_err(|e| e.to_string())?;
+                let _ = unindex.execute(params![t.id]);
+                index.execute(params![t.id]).map_err(|e| e.to_string())?;
+                done.push(t.id);
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(done)
+    })
+    .unwrap_or_default()
+}
+
 /// Messages waiting for their text that are already here in another folder
 /// (Gmail shows one message in every label it has: Inbox, All Mail, Important,
 /// …), filled in from that copy instead of being downloaded again, as

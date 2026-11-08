@@ -1850,10 +1850,26 @@ impl qobject::Store {
                 let progress = progress_for(thread.clone());
                 let t = thread.clone();
                 let deliver = move |texts: Vec<crate::live::Text>| {
-                    let _ = t.queue(move |mut store| {
-                        if store.as_mut().db_mut().fill_texts(texts) {
-                            store.changed_soon();
+                    // Saved here, on the download's thread; the window's thread only
+                    // updates copies it holds in memory (an open message) and redraws.
+                    let texts = if backed {
+                        let stored = crate::mailstore::store_texts(&texts);
+                        if stored.is_empty() {
+                            return;
                         }
+                        texts
+                    } else {
+                        texts
+                    };
+                    let _ = t.queue(move |mut store| {
+                        let texts: Vec<crate::live::Text> = if store.db.backed {
+                            let here: std::collections::HashSet<i64> = store.db.messages.iter().map(|m| m.id).collect();
+                            texts.into_iter().filter(|x| here.contains(&x.id)).collect()
+                        } else {
+                            texts
+                        };
+                        store.as_mut().db_mut().fill_texts(texts);
+                        store.changed_soon();
                     });
                 };
                 if let Err(e) = crate::live::fetch_texts(acct, wanted, lane, &deliver, &progress) {
