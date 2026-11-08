@@ -643,10 +643,11 @@ WebEngineView {
                + (m.fromName && m.fromEmail ? '<div class="addr">' + esc(m.fromEmail) + (m.folder ? ' · ' + esc(m.folder) : '') + '</div>' : '')
                + (m.html ? '<div class="fmtline"><a class="fmt" data-fmt="' + i + '" href="almanac:format/' + i + '">' + (rich ? 'Show Plain Text' : 'Show Formatted') + '</a></div>' : '')
                + '</div>'
-               // The message's buttons: a row of their own under who it went to,
-               // centred, so they never squeeze the To and Cc lines.
-               + '<div class="actrow"><span class="acts">' + actions(i) + '</span></div>'
                + '</div></div>'
+               // The message's buttons: a row of their own under who it went to,
+               // centred on the whole message (as the line and the text below are),
+               // so they never squeeze the To and Cc lines.
+               + '<div class="actrow"><span class="acts">' + actions(i) + '</span></div>'
                + '<div class="rule"></div>'
             if (dec && dec.state === "locked")
                 h += '<div class="remote"><span class="grow">🔒 ' + (dec.detail === "That passphrase isn't right" ? esc(dec.detail) : 'This message is encrypted: your key\'s passphrase is needed to read it') + '</span><a href="#" data-unlock="' + i + '">Unlock…</a></div>'
