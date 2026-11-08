@@ -56,6 +56,9 @@ pub mod qobject {
         #[qproperty(i64, undo_id, cxx_name = "undoId")]
         /// What Edit › Undo would put back ("" when nothing): "Undo Move to Trash".
         #[qproperty(QString, mail_undo_text, cxx_name = "mailUndoText")]
+        /// A page of the message list read in the background (request_window):
+        /// {"token", "offset", "rows", "total", "unread"} (total -1: not counted).
+        #[qproperty(QString, window_json, cxx_name = "windowJson")]
         /// False until the setup guide is finished or skipped
         #[qproperty(bool, onboarded)]
         /// Provider whose sign-in page is open ("" when none)
@@ -302,6 +305,16 @@ pub mod qobject {
         /// can load that far at once; -1 when not in it or not known.
         #[qinvokable]
         fn rows_before(self: &Store, selection: &QString, query: &QString, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) -> i64;
+        /// Whether this list is read a page at a time anywhere (request_window).
+        #[qinvokable]
+        fn can_window(self: &Store, selection: &QString, query: &QString, sort_by: &QString, ascending: bool) -> bool;
+        /// Rows offset… of the list, read in the background; the answer comes in
+        /// windowJson with `token`. `counted`: with how many rows there are.
+        #[qinvokable]
+        fn request_window(self: Pin<&mut Store>, token: i32, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, keep: i64, offset: i32, count: i32, counted: bool);
+        /// The row of message `id` in that list, or -1.
+        #[qinvokable]
+        fn list_position(self: &Store, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) -> i64;
         /// Plasma on Wayland: has KWin remember the main window's place and
         /// whether it's maximised (Plasma's own window rule, added once). False elsewhere.
         #[qinvokable]
@@ -527,6 +540,7 @@ pub struct MailUndo {
 pub struct StoreRust {
     mail_undo: Vec<MailUndo>,
     mail_undo_text: QString,
+    window_json: QString,
     revision: i32,
     screenshot_path: QString,
     start_section: i32,
@@ -648,6 +662,7 @@ impl Default for StoreRust {
             undo_id: 0,
             mail_undo: Vec::new(),
             mail_undo_text: QString::default(),
+            window_json: QString::from("{}"),
             onboarded: db.onboarded,
             signing_in: QString::default(),
             registering: QString::default(),
@@ -1707,6 +1722,36 @@ impl qobject::Store {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn can_window(&self, selection: &QString, query: &QString, sort_by: &QString, ascending: bool) -> bool {
+        self.db.window_plan(&selection.to_string(), &query.to_string(), true, &sort_by.to_string(), ascending, false, 0).is_some()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn request_window(mut self: Pin<&mut Self>, token: i32, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, keep: i64, offset: i32, count: i32, counted: bool) {
+        // (Pages are read from the database: changes still only in memory, a
+        // message just deleted say, are written first.)
+        if self.db.backed && !self.db.messages.is_empty() {
+            self.as_mut().flush();
+        }
+        let Some(plan) = self.db.window_plan(&selection.to_string(), &query.to_string(), threaded, &sort_by.to_string(), ascending, unread_only, keep) else { return };
+        let thread = self.qt_thread();
+        let (offset, count) = (offset.max(0) as usize, count.max(1) as usize);
+        std::thread::spawn(move || {
+            let (groups, total, unread) = crate::data::fetch_window(&plan, offset, count, counted);
+            let _ = thread.queue(move |mut store| {
+                let rows = store.db.window_rows(&plan, &groups);
+                let v = json!({"token": token, "offset": offset, "rows": rows, "total": total, "unread": unread});
+                store.as_mut().set_window_json(QString::from(v.to_string().as_str()));
+            });
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn list_position(&self, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) -> i64 {
+        let _timed = crate::Timed::new("list_position");
+        self.db.list_position(&selection.to_string(), &query.to_string(), threaded, &sort_by.to_string(), ascending, unread_only, id)
+    }
+
     fn rows_before(&self, selection: &QString, query: &QString, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) -> i64 {
         let _timed = crate::Timed::new("rows_before");
         self.db.rows_before(&selection.to_string(), &query.to_string(), &sort_by.to_string(), ascending, unread_only, id)

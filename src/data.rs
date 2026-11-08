@@ -674,6 +674,44 @@ fn addresses(s: &str) -> Vec<String> {
 /// lacks those headers joins an earlier message with the same subject that
 /// shares a person with it. Different mail that merely has the same subject
 /// ("Your order", "Invoice") stays apart.
+/// What a list read a page at a time lists (see `Db::window_plan`).
+#[derive(Clone, Debug)]
+pub struct WindowPlan {
+    pub folders: Vec<String>,
+    pub threaded: bool,
+    /// Only rows with unread mail (or the one with this message).
+    pub unread_or: Option<i64>,
+    pub show_folder: bool,
+}
+
+/// Reads rows `offset`… of a list (on any thread): the messages of each row
+/// (a conversation, or one message), and with `counted`, how many rows there
+/// are and how many have unread mail.
+pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: bool) -> (Vec<Vec<Message>>, i64, i64) {
+    if plan.threaded {
+        let (total, unread) = if counted { crate::mailstore::conv_count(&plan.folders, plan.unread_or) } else { (-1, -1) };
+        let groups = crate::mailstore::conv_page(&plan.folders, plan.unread_or, offset as i64, count as i64)
+            .into_iter()
+            .map(|(folder, tkey)| crate::mailstore::conv_messages(&folder, &tkey))
+            .collect();
+        return (groups, total, unread);
+    }
+    let marks = (1..=plan.folders.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+    let mut args: Vec<crate::mailstore::Arg> = plan.folders.iter().map(|f| crate::mailstore::Arg::Text(f.clone())).collect();
+    let base = format!("folder IN ({marks})");
+    let unread = if counted { crate::mailstore::count(&format!("{base} AND read = 0"), &args) } else { -1 };
+    let filter = match plan.unread_or {
+        Some(keep) => {
+            args.push(crate::mailstore::Arg::Integer(keep));
+            format!("{base} AND (read = 0 OR id = ?{})", args.len())
+        }
+        None => base,
+    };
+    let total = if counted { crate::mailstore::count(&filter, &args) } else { -1 };
+    let groups = crate::mailstore::rows(&filter, &args, "date DESC, id DESC", count as i64, offset as i64).into_iter().map(|m| vec![m]).collect();
+    (groups, total, unread)
+}
+
 pub fn conversation_keys(msgs: &[Message]) -> std::collections::HashMap<i64, String> {
     use std::collections::HashMap;
     // Message-IDs as numbers (hashed as they're read, lower case, without
@@ -819,8 +857,9 @@ fn data_dirs() -> (PathBuf, PathBuf) {
 
 pub fn data_dir() -> PathBuf {
     // Tests never read or write the real mail.
+    // (A copy named for a timing check, never the real folder.)
     #[cfg(test)]
-    return std::env::temp_dir().join(format!("almanac-test-data-{}", std::process::id()));
+    return std::env::var_os("ALMANAC_TEST_DATA").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join(format!("almanac-test-data-{}", std::process::id())));
     #[cfg(not(test))]
     {
     let (dir, old) = data_dirs();
@@ -1904,6 +1943,90 @@ impl Db {
     /// selection, sorted and filtered (so big mailboxes stay quick), with the
     /// totals. The row of `keep` is always included (the open message).
     #[allow(clippy::too_many_arguments)]
+    /// The folders a selection lists, when the list can be read a page at a time
+    /// anywhere (a mailbox, or a kind of mailbox, by date, no search). None otherwise.
+    fn window_folders(&self, selection: &str, query: &str, sort_by: &str) -> Option<Vec<String>> {
+        if !self.backed || !query.trim().is_empty() || !(sort_by == "date" || sort_by.is_empty()) {
+            return None;
+        }
+        if let Some(f) = selection.strip_prefix("folder:") {
+            return Some(vec![f.to_string()]);
+        }
+        let k = selection.strip_prefix("kind:")?;
+        if ["vip", "flagged", "unread"].contains(&k) || k.starts_with("flag") {
+            return None;
+        }
+        Some(self.folders_of_kind(&[k]))
+    }
+
+    /// How to read a list a page at a time (see `list_window`), or None when
+    /// it can't be (a search, another order, a smart mailbox).
+    #[allow(clippy::too_many_arguments)]
+    pub fn window_plan(&self, selection: &str, query: &str, threaded: bool, sort_by: &str, ascending: bool, unread_only: bool, keep: i64) -> Option<WindowPlan> {
+        if ascending {
+            return None;
+        }
+        let folders = self.window_folders(selection, query, sort_by)?;
+        Some(WindowPlan { folders, threaded, unread_or: unread_only.then_some(keep), show_folder: selection.starts_with("kind:") && self.accounts.len() > 1 })
+    }
+
+    /// The list's rows from what `fetch_window` read.
+    pub fn window_rows(&self, plan: &WindowPlan, groups: &[Vec<Message>]) -> Vec<Value> {
+        groups
+            .iter()
+            .filter(|g| !g.is_empty())
+            .map(|g| {
+                let group: Vec<&Message> = g.iter().collect();
+                let mut row = self.list_row(&group, plan.show_folder);
+                if plan.threaded {
+                    row["count"] = json!(group.len());
+                    row["ids"] = json!(group.iter().map(|x| x.id).collect::<Vec<_>>());
+                }
+                row
+            })
+            .collect()
+    }
+
+    /// Rows `offset`… of the message list (newest first), and how many there
+    /// are in all: read a page at a time, however far down. With conversations
+    /// on, each row is a conversation of the mailbox. None when this list
+    /// can't be read that way.
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_window(&self, selection: &str, query: &str, threaded: bool, sort_by: &str, ascending: bool, unread_only: bool, keep: i64, offset: usize, count: usize) -> Option<Value> {
+        let plan = self.window_plan(selection, query, threaded, sort_by, ascending, unread_only, keep)?;
+        let (groups, total, unread) = fetch_window(&plan, offset, count, true);
+        Some(json!({"rows": self.window_rows(&plan, &groups), "total": total, "unread": unread, "offset": offset}))
+    }
+
+    /// The row of message `id` in that list (how many rows come before it), or
+    /// -1 when it isn't in it or the list can't be read a page at a time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_position(&self, selection: &str, query: &str, threaded: bool, sort_by: &str, ascending: bool, unread_only: bool, id: i64) -> i64 {
+        if ascending {
+            return -1;
+        }
+        let Some(folders) = self.window_folders(selection, query, sort_by) else { return -1 };
+        let unread_or = unread_only.then_some(id);
+        if threaded {
+            return crate::mailstore::conv_position(&folders, unread_or, id).unwrap_or(-1);
+        }
+        let Some(m) = self.get(id) else { return -1 };
+        if !folders.contains(&m.folder) {
+            return -1;
+        }
+        let marks = (1..=folders.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+        let mut args: Vec<crate::mailstore::Arg> = folders.iter().map(|f| crate::mailstore::Arg::Text(f.clone())).collect();
+        let mut filter = format!("folder IN ({marks})");
+        if unread_only {
+            args.push(crate::mailstore::Arg::Integer(id));
+            filter = format!("{filter} AND (read = 0 OR id = ?{})", args.len());
+        }
+        args.push(crate::mailstore::Arg::Integer(m.date));
+        args.push(crate::mailstore::Arg::Integer(id));
+        let (a, b) = (args.len() - 1, args.len());
+        crate::mailstore::count(&format!("{filter} AND (date > ?{a} OR (date = ?{a} AND id > ?{b}))"), &args)
+    }
+
     /// How many messages of a mailbox come before message `id` in the list
     /// (by date): a row number it's at or before, even with conversations on.
     /// -1 when it's not in that list, or can't be told (a search, another order).
@@ -4642,6 +4765,41 @@ mod backed_tests {
         db.release_saved();
         assert_eq!(badge(&db), 0);
         crate::mailstore::remove(src, crate::mailstore::Gone::All);
+    }
+}
+
+#[cfg(test)]
+mod window_timings {
+    /// On a copy of real mail (XDG_DATA_HOME pointing at it): how long reading
+    /// the list a page at a time takes, top, middle and bottom.
+    /// XDG_DATA_HOME=<copy> cargo test window_timings -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn window_timings() {
+        if std::env::var_os("ALMANAC_WINDOW_TEST").is_none() {
+            return;
+        }
+        let t = std::time::Instant::now();
+        let mut db = super::Db::load();
+        db.backed = true;
+        eprintln!("load (with the one-time grouping): {:?} backed={} folders={}", t.elapsed(), db.backed, db.folders.len());
+        for threaded in [true, false] {
+            let t = std::time::Instant::now();
+            let first = db.list_window("kind:inbox", "", threaded, "date", false, false, 0, 0, 100).unwrap();
+            let total = first["total"].as_i64().unwrap();
+            eprintln!("threaded={threaded}: total {total}, first page {:?}", t.elapsed());
+            for at in [total / 2, total - 50] {
+                let t = std::time::Instant::now();
+                let w = db.list_window("kind:inbox", "", threaded, "date", false, false, 0, at as usize, 100).unwrap();
+                let rows = w["rows"].as_array().unwrap();
+                eprintln!("  page at {at}: {} rows in {:?}", rows.len(), t.elapsed());
+                if let Some(id) = rows.first().and_then(|r| r["id"].as_i64()) {
+                    let t = std::time::Instant::now();
+                    let p = db.list_position("kind:inbox", "", threaded, "date", false, false, id);
+                    eprintln!("  position of its first row: {p} (expected {at}) in {:?}", t.elapsed());
+                }
+            }
+        }
     }
 }
 

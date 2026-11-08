@@ -264,7 +264,165 @@ fn open_at(path: &Path) -> Result<Connection, String> {
         )
         .map_err(|e| e.to_string())?;
     }
+    convs_ready(&c)?;
     Ok(c)
+}
+
+/// A message's conversation, from its headers: the first message it refers
+/// to (References, else In-Reply-To), else its own Message-ID.
+const THREAD_KEY: &str = "lower(CASE
+    WHEN instr(refs, '<') > 0 THEN substr(refs, instr(refs, '<') + 1, instr(substr(refs, instr(refs, '<')), '>') - 2)
+    WHEN instr(in_reply_to, '<') > 0 THEN substr(in_reply_to, instr(in_reply_to, '<') + 1, instr(substr(in_reply_to, instr(in_reply_to, '<')), '>') - 2)
+    WHEN instr(message_id, '<') > 0 THEN substr(message_id, instr(message_id, '<') + 1, instr(substr(message_id, instr(message_id, '<')), '>') - 2)
+    WHEN trim(message_id) <> '' THEN trim(message_id)
+    ELSE '#' || date || '|' || from_email || '|' || subject END)";
+
+/// Each folder's conversations (newest message, how many, how many unread)
+/// in a table the database keeps right itself, so the message list can be
+/// read a page at a time anywhere in a mailbox of any size (and know its
+/// length) with conversations on. Made once.
+fn convs_ready(c: &Connection) -> Result<(), String> {
+    let made: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'convs'", [], |r| r.get(0)).ok();
+    if made.as_deref() == Some("1") {
+        return Ok(());
+    }
+    let _t = crate::Timed::new("grouping the mail into conversations once (for the list)");
+    let has_tk: bool = c.prepare("SELECT tk FROM messages LIMIT 0").is_ok();
+    if !has_tk {
+        c.execute_batch(&format!("ALTER TABLE messages ADD COLUMN tk TEXT GENERATED ALWAYS AS ({THREAD_KEY}) VIRTUAL")).map_err(|e| e.to_string())?;
+    }
+    let redo = |x: &str| {
+        format!(
+            "DELETE FROM convs WHERE folder = {x}.folder AND tkey = {x}.tk;
+             INSERT INTO convs(folder, tkey, latest, top_id, n, unread)
+                 SELECT folder, tk, MAX(date), id, COUNT(*), TOTAL(read = 0) FROM messages INDEXED BY messages_by_thread
+                 WHERE folder = {x}.folder AND tk = {x}.tk GROUP BY folder, tk;"
+        )
+    };
+    c.execute_batch(&format!(
+        "BEGIN;
+         DROP TRIGGER IF EXISTS convs_add;
+         DROP TRIGGER IF EXISTS convs_drop;
+         DROP TRIGGER IF EXISTS convs_change;
+         DROP TABLE IF EXISTS convs;
+         CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(folder, tk, date);
+         CREATE TABLE convs(folder TEXT NOT NULL, tkey TEXT NOT NULL, latest INTEGER NOT NULL, top_id INTEGER NOT NULL,
+                            n INTEGER NOT NULL, unread INTEGER NOT NULL, PRIMARY KEY(folder, tkey)) WITHOUT ROWID;
+         INSERT INTO convs(folder, tkey, latest, top_id, n, unread)
+             SELECT folder, tk, MAX(date), id, COUNT(*), TOTAL(read = 0) FROM messages INDEXED BY messages_by_thread GROUP BY folder, tk;
+         CREATE INDEX convs_by_latest ON convs(folder, latest, top_id);
+         CREATE TRIGGER convs_add AFTER INSERT ON messages BEGIN {} END;
+         CREATE TRIGGER convs_drop AFTER DELETE ON messages BEGIN {} END;
+         CREATE TRIGGER convs_change AFTER UPDATE OF folder, read, date, refs, in_reply_to, message_id ON messages BEGIN {} {} END;
+         INSERT OR REPLACE INTO meta(key, value) VALUES('convs', '1');
+         COMMIT;",
+        redo("NEW"),
+        redo("OLD"),
+        redo("OLD"),
+        redo("NEW")
+    ))
+    .map_err(|e| e.to_string())
+}
+
+/// A page of a mailbox's conversations, newest first: (folder, thread key)
+/// of each, skipping `offset`. `unread_or`: only those with unread mail (or
+/// the conversation of that message, kept while it's open).
+pub fn conv_page(folders: &[String], unread_or: Option<i64>, offset: i64, limit: i64) -> Vec<(String, String)> {
+    let path = db_path();
+    if !path.exists() || folders.is_empty() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let (filter, args) = conv_filter(c, folders, unread_or);
+        let sql = format!("SELECT folder, tkey FROM convs WHERE {filter} ORDER BY latest DESC, top_id DESC LIMIT {limit} OFFSET {offset}");
+        let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(Result::ok).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// How many conversations a mailbox has (and with unread mail).
+pub fn conv_count(folders: &[String], unread_or: Option<i64>) -> (i64, i64) {
+    let path = db_path();
+    if !path.exists() || folders.is_empty() {
+        return (0, 0);
+    }
+    with_conn(&path, |c| {
+        let (filter, args) = conv_filter(c, folders, unread_or);
+        let n: i64 = c.query_row(&format!("SELECT COUNT(*) FROM convs WHERE {filter}"), rusqlite::params_from_iter(args.iter()), |r| r.get(0)).map_err(|e| e.to_string())?;
+        let (filter, args) = conv_filter(c, folders, None);
+        let u: i64 = c
+            .query_row(&format!("SELECT COUNT(*) FROM convs WHERE {filter} AND unread > 0"), rusqlite::params_from_iter(args.iter()), |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok((n, u))
+    })
+    .unwrap_or((0, 0))
+}
+
+/// Where message `id`'s conversation is in a mailbox's list (how many come
+/// before it), or None when it's not in it.
+pub fn conv_position(folders: &[String], unread_or: Option<i64>, id: i64) -> Option<i64> {
+    let path = db_path();
+    if !path.exists() || folders.is_empty() {
+        return None;
+    }
+    with_conn(&path, |c| {
+        let (folder, tk): (String, String) = c.query_row("SELECT folder, tk FROM messages WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+        if !folders.contains(&folder) {
+            return Err("not here".into());
+        }
+        let (latest, top): (i64, i64) = c
+            .query_row("SELECT latest, top_id FROM convs WHERE folder = ?1 AND tkey = ?2", params![folder, tk], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?;
+        let (filter, mut args) = conv_filter(c, folders, unread_or);
+        args.push(Arg::Integer(latest));
+        args.push(Arg::Integer(top));
+        let (a, b) = (args.len() - 1, args.len());
+        c.query_row(
+            &format!("SELECT COUNT(*) FROM convs WHERE {filter} AND (latest > ?{a} OR (latest = ?{a} AND top_id > ?{b}))"),
+            rusqlite::params_from_iter(args.iter()),
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .ok()
+}
+
+fn conv_filter(c: &Connection, folders: &[String], unread_or: Option<i64>) -> (String, Vec<Arg>) {
+    let mut args: Vec<Arg> = folders.iter().map(|f| Arg::Text(f.clone())).collect();
+    let marks = (1..=folders.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+    let mut filter = format!("folder IN ({marks})");
+    if let Some(keep) = unread_or {
+        let kept: Option<(String, String)> = c.query_row("SELECT folder, tk FROM messages WHERE id = ?1", params![keep], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+        match kept {
+            Some((f, t)) => {
+                args.push(Arg::Text(f));
+                args.push(Arg::Text(t));
+                filter = format!("{filter} AND (unread > 0 OR (folder = ?{} AND tkey = ?{}))", args.len() - 1, args.len());
+            }
+            None => filter = format!("{filter} AND unread > 0"),
+        }
+    }
+    (filter, args)
+}
+
+/// The messages of one conversation in one folder, newest first.
+pub fn conv_messages(folder: &str, tkey: &str) -> Vec<Message> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let sql = format!("SELECT {ROW_COLS} FROM messages INDEXED BY messages_by_thread WHERE folder = ?1 AND tk = ?2 ORDER BY date DESC, id DESC");
+        let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let found = st.query_map(params![folder, tkey], row_message).map_err(|e| e.to_string())?;
+        let mut list: Vec<Message> = found.filter_map(Result::ok).collect();
+        drop(st);
+        colors_of(c, &mut list);
+        Ok(list)
+    })
+    .unwrap_or_default()
 }
 
 /// The text, formatted text and invitation of one message.

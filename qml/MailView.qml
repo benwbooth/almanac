@@ -25,7 +25,7 @@ Item {
     function pick(id, index, modifiers) {
         if (modifiers & Qt.ShiftModifier && anchorIndex >= 0) {
             var a = Math.min(anchorIndex, index), b = Math.max(anchorIndex, index), ids = []
-            for (var i = a; i <= b && i < list.length; i++) ids.push(list[i].id)
+            for (var i = a; i <= b && i < list.length; i++) ids.push((list[i] || {}).id)
             selectedIds = ids
             selectedId = id
             return
@@ -43,7 +43,7 @@ Item {
         anchorIndex = index
         select(id)
     }
-    function selectAll() { selectedIds = list.map(function(r) { return r.id }); if (list.length) selectedId = list[0].id }
+    function selectAll() { selectedIds = list.filter(function(r) { return !!r }).map(function(r) { return r.id }); if (list.length && list[0]) selectedId = (list[0] || {}).id }
     property string query: ""
     property bool unreadOnly: false
     property bool threaded: true
@@ -64,7 +64,7 @@ Item {
     property bool hasAccounts: { store.revision; return JSON.parse(store.liveAccounts()).length > 0 }
     // The shown mailbox is on a mail server: older mail and server search apply.
     property bool serverBox: { store.revision; return store.isServerMailbox(selection) }
-    Component.onCompleted: { threaded = prefs.conversations; formatted = prefs.show_formatted }
+    Component.onCompleted: { threaded = prefs.conversations; formatted = prefs.show_formatted; Qt.callLater(winReset) }
     // Settings changes apply straight away.
     readonly property bool prefConversations: prefs.conversations
     readonly property bool prefFormatted: prefs.show_formatted
@@ -82,14 +82,135 @@ Item {
     // scroll near the end (or press End / Page Down).
     readonly property int pageSize: 300
     property int limit: pageSize
-    property var page: { store.revision; return JSON.parse(store.messagePage(selection, query, threaded, sortBy, sortAscending, unreadOnly, keepId, limit)) }
+    property var page: windowed ? ({ rows: winRows, total: winTotal, all: winTotal, unread: winUnread, countsMessages: !threaded })
+                                : (store.revision, JSON.parse(store.messagePage(selection, query, threaded, sortBy, sortAscending, unreadOnly, keepId, limit)))
+
+    // ---- A mailbox's list read a page at a time (by date, no search): the
+    // list is as long as the mailbox from the start, rows not read yet show as
+    // placeholders, and only the pages around what's on screen are kept. Pages
+    // are read in the background.
+    readonly property int winSize: 100
+    readonly property int winKeep: 12
+    property bool windowed: false
+    property int winTotal: 0
+    property int winUnread: 0
+    property int winGen: 0
+    property var winRows: []
+    property var winLoaded: ({})
+    property var winPending: ({})
+    property int winWant: -1
+    readonly property string winKey: [selection, query, threaded, sortBy, sortAscending, unreadOnly].join("\u0001")
+    onWinKeyChanged: Qt.callLater(winReset)
+    function placeholderRow(i) { return { id: -1 - i, placeholder: true, fromName: "", fromEmail: "", subject: "", preview: "", date: 0, read: true, flagged: false, attachments: false } }
+    function winReset() {
+        var on = store.canWindow(selection, query, sortBy, sortAscending)
+        winGen++
+        winLoaded = ({}); winPending = ({}); winRows = []; winTotal = 0; winUnread = 0
+        rowsModel.clear()
+        winModel.clear()
+        windowed = on
+        if (!on) { syncRows(); return }
+        // The open message's place, so its page is read first.
+        var at = selectedId >= 0 ? store.listPosition(selection, query, threaded, sortBy, sortAscending, unreadOnly, selectedId) : -1
+        winWant = at
+        winFetch(at >= 0 ? Math.floor(at / winSize) : 0, true)
+    }
+    function winFetch(p, counted) {
+        // (A page already asked for is asked again only for the list's length.)
+        if (p < 0 || (winPending[p] === winGen && !counted)) return
+        winPending[p] = winGen
+        store.requestWindow(winGen, selection, query, threaded, sortBy, sortAscending, unreadOnly, selectedId, p * winSize, winSize, !!counted)
+    }
+    // Mail changed: what's on screen is read again (and how long the list is).
+    Timer { id: winRefresh; interval: 300; onTriggered: { mail.winLoaded = ({}); mail.winPending = ({}); mail.winEnsure(true) } }
+    Connections { target: store; function onRevisionChanged() { if (mail.windowed) winRefresh.restart() } }
+    Connections {
+        target: store
+        function onWindowJsonChanged() {
+            var w = JSON.parse(store.windowJson || "{}")
+            if (!mail.windowed || w.token !== mail.winGen) return
+            var p = Math.floor(w.offset / mail.winSize)
+            delete mail.winPending[p]
+            var rows = mail.winRows
+            if (w.total >= 0) {
+                mail.winUnread = w.unread
+                var n = winModel.count
+                if (n === 0 && w.total > 0) {
+                    var ph = []
+                    for (var i = 0; i < w.total; i++) ph.push({ r: 0 })
+                    winModel.append(ph)
+                    // (null, not empty: QML drops an array's empty slots at the end.)
+                    rows = new Array(w.total).fill(null)
+                } else if (w.total > n) {
+                    // New mail (at the top): room for it there, and what's below kept.
+                    var more = []
+                    for (var j = 0; j < w.total - n; j++) more.push({ r: 0 })
+                    winModel.insert(0, more)
+                    rows = new Array(w.total - n).fill(null).concat(rows)
+                    mail.winLoaded = ({})
+                } else if (w.total < n) {
+                    winModel.remove(w.total, n - w.total)
+                    rows = rows.slice(0, w.total)
+                    mail.winLoaded = ({})
+                }
+                mail.winTotal = w.total
+            }
+            for (var k = 0; k < w.rows.length; k++) {
+                var at = w.offset + k
+                if (at >= winModel.count) break
+                rows[at] = w.rows[k]
+            }
+            // (Its length not known yet: asked for.)
+            if (w.total < 0 && winModel.count === 0) { mail.winFetch(p, true); return }
+            mail.winLoaded[p] = Date.now()
+            mail.winTrim(p)
+            mail.winRows = rows.slice()
+            if (mail.winWant >= 0) console.warn("DBGEND reply off=" + w.offset + " want=" + mail.winWant + " has=" + !!rows[mail.winWant])
+            if (mail.winWant >= 0 && mail.winWant < mail.winTotal && rows[mail.winWant]) {
+                var want = mail.winWant
+                mail.winWant = -1
+                if (rows[want].id !== mail.selectedId && !(rows[want].ids && rows[want].ids.indexOf(mail.selectedId) >= 0)) mail.select(rows[want].id)
+                messageList.currentIndex = want
+                messageList.positionViewAtIndex(want, ListView.Contain)
+            }
+            Qt.callLater(mail.winEnsure)
+        }
+    }
+    // The pages around what's on screen are read (a page above and below too).
+    function winEnsure(counted) {
+        if (!windowed) return
+        var lv = messageList
+        var top = lv.indexAt(10, lv.contentY + 1), bottom = lv.indexAt(10, lv.contentY + lv.height - 1)
+        if (top < 0) top = 0
+        if (bottom < 0) bottom = Math.min(winTotal - 1, top + Math.ceil(lv.height / lv.rowEstimate))
+        var p0 = Math.max(0, Math.floor((top - 30) / winSize)), p1 = Math.floor((bottom + 30) / winSize)
+        var asked = false
+        for (var p = p0; p <= p1 && p * winSize < Math.max(winTotal, 1); p++) {
+            if (winLoaded[p] === undefined) { winFetch(p, counted && !asked); asked = true }
+        }
+        if (counted && !asked) winFetch(p0, true)
+    }
+    // Only the pages near `keep` are kept: the rest go back to placeholders.
+    function winTrim(keep) {
+        var pages = Object.keys(winLoaded).map(Number)
+        if (pages.length <= winKeep) return
+        pages.sort(function(a, b) { return Math.abs(b - keep) - Math.abs(a - keep) })
+        for (var i = 0; i < pages.length - winKeep; i++) {
+            var p = pages[i]
+            delete winLoaded[p]
+            for (var at = p * winSize; at < Math.min(winModel.count, (p + 1) * winSize); at++) {
+                if (winRows[at] && winRows[at].id === selectedId) continue
+                winRows[at] = null
+            }
+        }
+    }
     // The open message is always in the page (a moment after it's chosen, so
     // choosing doesn't re-read the list while it's being read).
     property var keepId: -1
     onSelectedIdChanged: { compose.leaveInline(); Qt.callLater(function() {
         if (mail.keepId === mail.selectedId) return
         // (With "only unread", the open one is kept in view once it's read.)
-        if (!mail.unreadOnly) for (var i = 0; i < mail.list.length; i++) if (mail.list[i].id === mail.selectedId || (mail.list[i].ids && mail.list[i].ids.indexOf(mail.selectedId) >= 0)) return
+        if (!mail.unreadOnly) for (var i = 0; i < mail.list.length; i++) if ((mail.list[i] || {}).id === mail.selectedId || ((mail.list[i] || {}).ids && (mail.list[i] || {}).ids.indexOf(mail.selectedId) >= 0)) return
         mail.keepId = mail.selectedId
     }) }
     function resetPage() { limit = pageSize }
@@ -106,7 +227,7 @@ Item {
     function setSort(key, ascending) { store.setSetting("sort_by", JSON.stringify(key)); store.setSetting("sort_ascending", JSON.stringify(ascending)) }
     property var list: page.rows
     property var folders: { store.revision; return JSON.parse(store.mailFolders()) }
-    property var currentRow: { for (var i = 0; i < list.length; i++) if (list[i].id === selectedId) return list[i]; return null }
+    property var currentRow: { for (var i = 0; i < list.length; i++) if ((list[i] || {}).id === selectedId) return list[i]; return null }
     property var conversation: { store.revision; return selectedId >= 0 ? (threaded ? JSON.parse(store.thread(selection, selectedId)) : [JSON.parse(store.message(selectedId))]) : [] }
     property var current: conversation.length ? conversation[conversation.length - 1] : null
     property int unreadCount: page.unread
@@ -115,6 +236,8 @@ Item {
     // removed one by one), so the list keeps its scroll position and
     // selection while mail arrives in the background.
     ListModel { id: rowsModel; dynamicRoles: true }
+    // (Windowed: one small entry per row; each row's contents come from winRows.)
+    ListModel { id: winModel }
     readonly property alias listView: messageList
     // What's on screen, saved when Almanac closes and put back when it opens.
     // Pane sizes from when this view was last on screen (a hidden view's panes
@@ -171,6 +294,7 @@ Item {
     function setLayout(name) { store.setSetting("mail_layout", JSON.stringify(name)) }
     property int lastIndex: 0
     function syncRows() {
+        if (windowed) return
         var rows = list, n = rowsModel.count
         var top = 0
         while (top < rows.length && top < n && rowsModel.get(top).rid === rows[top].id) top++
@@ -206,13 +330,23 @@ Item {
     onListChanged: {
         syncRows()
         var idx = -1
-        for (var i = 0; i < list.length; i++) if (list[i].id === selectedId) { idx = i; break }
+        for (var i = 0; i < list.length; i++) if ((list[i] || {}).id === selectedId) { idx = i; break }
         if (idx < 0 && selectedId >= 0) {
             // The open conversation got a newer message: its row has the newest
             // message's id now. Stay on it.
-            for (var k = 0; k < list.length && idx < 0; k++) if (list[k].ids && list[k].ids.indexOf(selectedId) >= 0) { idx = k; selectedId = list[k].id }
+            for (var k = 0; k < list.length && idx < 0; k++) if ((list[k] || {}).ids && (list[k] || {}).ids.indexOf(selectedId) >= 0) { idx = k; selectedId = (list[k] || {}).id }
         }
-        if (idx < 0 && selectedId >= 0 && list.length > 0) {
+        if (windowed && idx < 0 && selectedId >= 0) {
+            // Not among the rows read: where it is, if it's still in the list.
+            var pos = store.listPosition(selection, query, threaded, sortBy, sortAscending, unreadOnly, selectedId)
+            if (pos >= 0) {
+                if (messageList.currentIndex !== pos) messageList.currentIndex = pos
+                if (list[pos] === undefined) winFetch(Math.floor(pos / winSize))
+                return
+            }
+        }
+        if (windowed && list.length > 0 && !list.some(function(r) { return r !== undefined })) return
+        if (!windowed && idx < 0 && selectedId >= 0 && list.length > 0) {
             // Still in this list, only further down than the rows read so far
             // (Only Unread turned off, a search cleared): read that far at once
             // and stay on it (the list comes back here with it in).
@@ -224,7 +358,7 @@ Item {
             // Nothing selected yet, or the selected message went away: the one
             // now in its place (not the top of the list).
             idx = Math.min(selectedId < 0 && lastIndex === 0 ? 0 : lastIndex, list.length - 1)
-            select(list[idx].id)
+            if (list[idx]) select((list[idx] || {}).id)
         }
         if (idx >= 0) lastIndex = idx
         if (messageList.currentIndex !== idx) messageList.currentIndex = idx
@@ -245,12 +379,12 @@ Item {
     function rowIds() {
         if (multi) {
             var out = []
-            for (var i = 0; i < list.length; i++) if (selectedIds.indexOf(list[i].id) >= 0) out = out.concat(list[i].ids || [list[i].id])
+            for (var i = 0; i < list.length; i++) if (selectedIds.indexOf((list[i] || {}).id) >= 0) out = out.concat((list[i] || {}).ids || [(list[i] || {}).id])
             return out
         }
         return currentRow && currentRow.ids ? currentRow.ids : (selectedId >= 0 ? [selectedId] : [])
     }
-    function indexOfSelected() { for (var i = 0; i < list.length; i++) if (list[i].id === selectedId) return i; return messageList.currentIndex }
+    function indexOfSelected() { for (var i = 0; i < list.length; i++) if ((list[i] || {}).id === selectedId) return i; return messageList.currentIndex }
     function select(id, keepUnread) {
         selectedIds = []
         selectedId = id
@@ -275,7 +409,7 @@ Item {
     function neighbour() {
         var i = messageList.currentIndex
         if (list.length <= 1) return -1
-        return i + 1 < list.length ? list[i + 1].id : list[i - 1].id
+        return i + 1 < list.length ? (list[i + 1] || {}).id : (list[i - 1] || {}).id
     }
     function removeCurrent(action, sure) {
         if (selectedId < 0) return
@@ -407,7 +541,7 @@ Item {
     // there, else in a tab of its own.
     function openMessageById(id) {
         goTo("inbox", "Inbox")
-        for (var i = 0; i < list.length; i++) if (list[i].id === id || (list[i].ids && list[i].ids.indexOf(id) >= 0)) { tabIndex = 0; select(list[i].id); return }
+        for (var i = 0; i < list.length; i++) if ((list[i] || {}).id === id || ((list[i] || {}).ids && (list[i] || {}).ids.indexOf(id) >= 0)) { tabIndex = 0; select((list[i] || {}).id); return }
         openInTab(id)
     }
     // For checks: scrolls the open message's PDF box and reports its scroll bar.
@@ -422,8 +556,8 @@ Item {
         onTriggered: messagePage.runJavaScript('(function(){var bar=document.querySelector(".pdfbar"),th=document.querySelector(".pdfthumb");return "bar "+bar.className+" shown "+getComputedStyle(bar).opacity+" thumb top "+th.style.top+" height "+th.style.height})()',
             function(r) { console.warn("ALMANAC-PDFBAR " + r) })
     }
-    function selectSubject(prefix) { for (var i = 0; i < list.length; i++) if (list[i].subject.indexOf(prefix) === 0) { select(list[i].id); return } }
-    function selectInvite() { for (var i = 0; i < list.length; i++) if (list[i].subject.indexOf("Invitation") === 0) { select(list[i].id); return } }
+    function selectSubject(prefix) { for (var i = 0; i < list.length; i++) if ((list[i] || {}).subject.indexOf(prefix) === 0) { select((list[i] || {}).id); return } }
+    function selectInvite() { for (var i = 0; i < list.length; i++) if ((list[i] || {}).subject.indexOf("Invitation") === 0) { select((list[i] || {}).id); return } }
     function remindIn(ms) { if (current) store.remindMe(current.id, Date.now() + ms) }
     function remindAt(hour, daysAhead) { if (!current) return; var d = Theme.addDays(new Date(), daysAhead); d.setHours(hour, 0, 0, 0); store.remindMe(current.id, d.getTime()) }
     function esc(t) { return (t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>") }
@@ -1094,7 +1228,7 @@ Item {
                 Layout.fillHeight: true
                 clip: true
                 focus: true
-                model: rowsModel
+                model: mail.windowed ? winModel : rowsModel
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
                 keyNavigationEnabled: true
@@ -1128,10 +1262,12 @@ Item {
                 readonly property real rowHeight: count > 0 ? Math.max(30, (contentHeight - (footerItem ? footerItem.height : 0)) / count) : 86
                 // Rows not loaded yet are estimated at a typical row's height.
                 readonly property real rowEstimate: mail.classic ? 30 : 86
-                readonly property real unloadedHeight: Math.max(0, mail.page.total - mail.list.length) * rowEstimate
+                readonly property real unloadedHeight: mail.windowed ? 0 : Math.max(0, mail.page.total - mail.list.length) * rowEstimate
                 // Near the end of the loaded rows (or scrolled or dragged into the
                 // room left for the rest): load up to a page past what's on screen.
-                onContentYChanged: { loadMoreIfNear(); trimLater.restart() }
+                onContentYChanged: { if (mail.windowed) winScroll.restart(); else { loadMoreIfNear(); trimLater.restart() } }
+                // (Windowed: the pages for what's on screen, once the list settles a moment.)
+                Timer { id: winScroll; interval: 60; onTriggered: mail.winEnsure() }
                 // Back near the top for a moment after going far down: the rows
                 // loaded on the way go again, so a change to the mail (several a
                 // minute) doesn't re-read thousands of them, freezing the window.
@@ -1142,7 +1278,7 @@ Item {
                     onTriggered: if (messageList.contentY - messageList.originY < messageList.height * 2 && mail.limit > mail.pageSize * 2) mail.resetPage()
                 }
                 // (Also as rows come in: the ones loaded may still end above what's on screen.)
-                onContentHeightChanged: Qt.callLater(loadMoreIfNear)
+                onContentHeightChanged: if (!mail.windowed) Qt.callLater(loadMoreIfNear)
                 function loadMoreIfNear() {
                     var loadedEnd = contentHeight - (footerItem ? footerItem.height : 0)
                     var bottom = contentY - originY + height
@@ -1152,7 +1288,7 @@ Item {
                 }
                 onCurrentIndexChanged: {
                     if (currentIndex >= 0) mail.lastIndex = currentIndex
-                    if (currentIndex >= 0 && currentIndex < mail.list.length && mail.list[currentIndex].id !== mail.selectedId) mail.select(mail.list[currentIndex].id)
+                    if (currentIndex >= 0 && currentIndex < mail.list.length && mail.list[currentIndex] && (mail.list[currentIndex] || {}).id !== mail.selectedId) mail.select((mail.list[currentIndex] || {}).id)
                 }
                 // Delete / Backspace: once per press. Held down, the key repeats,
                 // and each repeat used to take the next row too: a whole run of
@@ -1169,17 +1305,32 @@ Item {
                         mail.loadRows(to + 1)
                         to = Math.min(to, mail.list.length - 1)
                         mail.selectedIds = []
-                        mail.select(mail.list[to].id)
+                        if (mail.windowed && !mail.list[to]) {
+                            // (Not read yet: chosen when its page comes.)
+                            mail.winWant = to
+                            messageList.positionViewAtIndex(to, ListView.Contain)
+                            mail.winFetch(Math.floor(to / mail.winSize))
+                            ev.accepted = true
+                            return
+                        }
+                        mail.select((mail.list[to] || {}).id)
                         messageList.currentIndex = to
                         messageList.positionViewAtIndex(to, ListView.Contain)
                         ev.accepted = true
                     } else if ((ev.key === Qt.Key_Home || ev.key === Qt.Key_End) && mail.list.length) {
                         // (The total is an estimate with conversations on, until all are read.)
-                        if (ev.key === Qt.Key_End)
+                        if (ev.key === Qt.Key_End && !mail.windowed)
                             for (var more = 0; more < 10 && mail.list.length < mail.page.total; more++) mail.loadRows(mail.page.total)
                         var i = ev.key === Qt.Key_Home ? 0 : mail.list.length - 1
                         mail.selectedIds = []
-                        mail.select(mail.list[i].id)
+                        if (mail.windowed && !mail.list[i]) {
+                            mail.winWant = i
+                            messageList.positionViewAtIndex(i, ev.key === Qt.Key_Home ? ListView.Beginning : ListView.End)
+                            mail.winFetch(Math.floor(i / mail.winSize))
+                            ev.accepted = true
+                            return
+                        }
+                        mail.select((mail.list[i] || {}).id)
                         messageList.currentIndex = i
                         messageList.positionViewAtIndex(i, ev.key === Qt.Key_Home ? ListView.Beginning : ListView.End)
                         ev.accepted = true
@@ -1189,15 +1340,31 @@ Item {
 
                 delegate: Rectangle {
                     id: row
-                    required property var msg
+                    required property var model
                     required property int index
-                    readonly property var modelData: msg
+                    readonly property var modelData: mail.windowed ? (mail.winRows[index] || mail.placeholderRow(index)) : model.msg
                     property bool sel: mail.isPicked(modelData.id)
                     property bool strong: sel && messageList.activeFocus
                     width: ListView.view.width
                     // As tall as what's in it (a subject can take two lines).
-                    height: mail.classic ? 30 : Math.max(86, rowText.implicitHeight + 18)
+                    height: mail.classic ? 30 : (modelData.placeholder ? 86 : Math.max(86, rowText.implicitHeight + 18))
                     color: "transparent"
+                    // Not read yet (the list reads a page at a time): a light outline of a row.
+                    Rectangle {
+                        z: 50
+                        anchors.fill: parent
+                        visible: !!row.modelData.placeholder
+                        color: Theme.window
+                        Column {
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 20; anchors.rightMargin: 20; anchors.topMargin: mail.classic ? 10 : 16
+                            spacing: 9
+                            Rectangle { width: parent.width * 0.4; height: 10; radius: 5; color: Theme.segment }
+                            Rectangle { visible: !mail.classic; width: parent.width * 0.75; height: 9; radius: 4.5; color: Theme.segment }
+                            Rectangle { visible: !mail.classic; width: parent.width * 0.6; height: 9; radius: 4.5; color: Theme.segment }
+                        }
+                        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
+                    }
                     property color face: sel ? (messageList.activeFocus ? Theme.accentFill : Theme.accentSoft) : Theme.window
                     property color main: strong ? Theme.accentInk : Theme.text
                     property color sub: strong ? "#e8f1ff" : Theme.secondary
