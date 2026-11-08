@@ -853,7 +853,8 @@ impl qobject::Store {
     pub(super) fn check_signature(&self, id: i64) {
         let Some(m) = self.db.get(id) else { return };
         let (body, html, _) = self.db.text_of(id);
-        if !crate::pgp::looks_signed(&m.attachments, &body, &html) {
+        // (OpenPGP, or S/MIME.)
+        if !crate::pgp::looks_signed(&m.attachments, &body, &html) && !crate::smime::looks_signed(&m.attachments) {
             return;
         }
         let live = self.db.live_message(id);
@@ -868,7 +869,7 @@ impl qobject::Store {
                 }),
             };
             let result = match raw {
-                Ok(raw) => match crate::pgp::verify(&raw) {
+                Ok(raw) => match crate::pgp::verify(&raw).or_else(|| crate::smime::verify(&raw)) {
                     Some(c) => serde_json::to_value(c).unwrap_or_default(),
                     None => return,
                 },
@@ -887,7 +888,7 @@ impl qobject::Store {
         let pass = passphrase.to_string();
         let Some(m) = self.db.get(id) else { return };
         let (body, html, _) = self.db.text_of(id);
-        if !crate::pgp::looks_encrypted(&m.attachments, &body, &html) {
+        if !crate::pgp::looks_encrypted(&m.attachments, &body, &html) && !crate::smime::looks_encrypted(&m.attachments) {
             return;
         }
         let live = self.db.live_message(id);
@@ -903,7 +904,9 @@ impl qobject::Store {
                 }),
             };
             let mut result = match raw {
-                Ok(raw) => match crate::pgp::decrypt(&raw, (!pass.is_empty()).then_some(pass.as_str())) {
+                Ok(raw) => match crate::pgp::decrypt(&raw, (!pass.is_empty()).then_some(pass.as_str()))
+                    .or_else(|| crate::smime::decrypt(&raw, (!pass.is_empty()).then_some(pass.as_str())))
+                {
                     Some(d) => serde_json::to_value(d).unwrap_or_default(),
                     None => return,
                 },
@@ -917,12 +920,42 @@ impl qobject::Store {
 
     pub(super) fn pgp_ready(&self, from: &QString, recipients: &QString) -> QString {
         let _timed = crate::Timed::new("pgp_ready");
-        if !crate::pgp::available() {
-            return q(&json!({"gpg": false, "canSign": false, "missing": []}));
-        }
         let me = crate::pgp::addresses(&from.to_string()).into_iter().next().unwrap_or_default();
         let to = crate::pgp::addresses(&recipients.to_string());
-        q(&json!({"gpg": true, "canSign": !me.is_empty() && crate::pgp::can_sign(&me), "missing": crate::pgp::missing_keys(&to)}))
+        // S/MIME too: a certificate of yours, and the recipients' (from their signed mail).
+        let smime = if crate::smime::available() {
+            json!({"available": true, "canSign": !me.is_empty() && crate::smime::can_sign(&me), "missing": crate::smime::missing_certificates(&to)})
+        } else {
+            json!({"available": false, "canSign": false, "missing": to})
+        };
+        if !crate::pgp::available() {
+            return q(&json!({"gpg": false, "canSign": false, "missing": to, "smime": smime}));
+        }
+        q(&json!({"gpg": true, "canSign": !me.is_empty() && crate::pgp::can_sign(&me), "missing": crate::pgp::missing_keys(&to), "smime": smime}))
+    }
+
+    /// Settings › Privacy › S/MIME: {"available", "mine": [...], "others": [...]},
+    /// each {"email", "name", "fingerprint", "ends"}.
+    pub(super) fn smime_certs(&self) -> QString {
+        let list = |v: Vec<(String, String, String, String)>| -> Vec<Value> {
+            v.into_iter().map(|(e, n, f, end)| json!({"email": e, "name": n, "fingerprint": f, "ends": end})).collect()
+        };
+        q(&json!({"available": crate::smime::available(), "mine": list(crate::smime::own_certificates()), "others": list(crate::smime::others_certificates())}))
+    }
+
+    pub(super) fn smime_import(&self, file_url: &QString, password: &QString) {
+        let u = file_url.to_string();
+        let path = std::path::PathBuf::from(u.strip_prefix("file://").unwrap_or(&u));
+        let pass = password.to_string();
+        self.pgp_job("smime-import", "", "Importing the certificate…", move || {
+            crate::smime::import_p12(&path, &pass).map(|emails| format!("Imported the certificate for {}", emails.join(", ")))
+        });
+    }
+
+    pub(super) fn smime_remove(mut self: Pin<&mut Self>, mine: bool, email: &QString) {
+        let e = email.to_string();
+        if mine { crate::smime::remove_own(&e) } else { crate::smime::remove_other(&e) }
+        self.changed();
     }
 
     pub(super) fn pgp_keys(&self) -> QString {

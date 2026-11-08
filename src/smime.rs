@@ -166,9 +166,11 @@ fn cert_info(cert: &Path) -> (String, String, String) {
     let field = |args: &[&str]| openssl(args).ok().filter(|r| r.0).map(|r| String::from_utf8_lossy(&r.1).trim().to_string()).unwrap_or_default();
     let subject = field(&["x509", "-in", path(cert), "-noout", "-subject", "-nameopt", "oneline"]);
     let fpr = field(&["x509", "-in", path(cert), "-noout", "-fingerprint", "-sha256"]);
-    let end = field(&["x509", "-in", path(cert), "-noout", "-enddate"]);
-    let cn = subject.split(',').find_map(|p| p.trim().strip_prefix("CN = ")).unwrap_or("").to_string();
-    (cn, fpr.rsplit('=').next().unwrap_or("").replace(':', ""), end.trim_start_matches("notAfter=").to_string())
+    // (As a date: 2027-11-08.)
+    let end = field(&["x509", "-in", path(cert), "-noout", "-enddate", "-dateopt", "iso_8601"]);
+    let end = end.trim_start_matches("notAfter=").split(' ').next().unwrap_or("").to_string();
+    let cn = subject.trim_start_matches("subject=").split(',').find_map(|p| p.trim().strip_prefix("CN = ")).unwrap_or("").to_string();
+    (cn, fpr.rsplit('=').next().unwrap_or("").replace(':', ""), end)
 }
 
 /// Checks an S/MIME signature (multipart/signed or opaque). None: not S/MIME signed.
@@ -184,12 +186,17 @@ pub fn verify(raw: &[u8]) -> Option<Check> {
     // without that.
     let mut trusted = false;
     let mut ok = false;
+    let mut expired = false;
     if let Some(ca) = ca_bundle() {
         let mut a = base.to_vec();
         a.extend(["-CAfile", path(&ca), "-purpose", "smimesign"]);
-        if let Ok((true, _, _)) = openssl(&a) {
-            trusted = true;
-            ok = true;
+        match openssl(&a) {
+            Ok((true, _, _)) => {
+                trusted = true;
+                ok = true;
+            }
+            Ok((false, _, e)) => expired = e.contains("expired"),
+            Err(_) => {}
         }
     }
     let mut detail = String::new();
@@ -206,6 +213,18 @@ pub fn verify(raw: &[u8]) -> Option<Check> {
         }
     }
     let (cn, fpr, _) = if signer.exists() { cert_info(&signer) } else { (String::new(), String::new(), String::new()) };
+    let issuer = if signer.exists() {
+        openssl(&["x509", "-in", path(&signer), "-noout", "-issuer", "-nameopt", "oneline"])
+            .ok()
+            .filter(|r| r.0)
+            .map(|r| String::from_utf8_lossy(&r.1).trim().trim_start_matches("issuer=").split(',').find_map(|p| p.trim().strip_prefix("CN = ").map(str::to_string)).unwrap_or_default())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if !issuer.is_empty() {
+        detail = if detail.is_empty() { format!("Certificate issued by {issuer}") } else { format!("{detail}\nCertificate issued by {issuer}") };
+    }
     let emails = if signer.exists() { cert_emails(&signer) } else { Vec::new() };
     // Kept, to encrypt to this person later.
     if ok && signer.exists() {
@@ -219,12 +238,33 @@ pub fn verify(raw: &[u8]) -> Option<Check> {
         _ => cn,
     };
     Some(Check {
-        state: if ok { "good".into() } else { "bad".into() },
+        state: if ok && expired { "expired".into() } else if ok { "good".into() } else { "bad".into() },
         signer: who,
         key: fpr.chars().rev().take(16).collect::<String>().chars().rev().collect(),
         trust: if trusted { "full".into() } else { "unknown".into() },
         detail,
     })
+}
+
+/// Other people's certificates (from their signed mail): [(address, name, fingerprint, ends)].
+pub fn others_certificates() -> Vec<(String, String, String, String)> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(store_dir("others")) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "pem") {
+                let addr = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let (cn, fpr, end) = cert_info(&p);
+                out.push((addr, cn, fpr, end));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+pub fn remove_other(addr: &str) {
+    let _ = std::fs::remove_file(store_dir("others").join(format!("{}.pem", safe(addr))));
 }
 
 /// Your certificates: [(address, name, fingerprint, ends)].
@@ -310,6 +350,8 @@ pub fn import_p12(file: &Path, password: &str) -> Result<Vec<String>, String> {
     }
     let mine = store_dir("mine");
     for e in &emails {
+        // (Its password in the system keychain: no asking to sign or read.)
+        let _ = crate::live::save_password(&format!("smime:{}", safe(e)), password);
         let a = safe(e);
         std::fs::copy(&crt, mine.join(format!("{a}.crt"))).map_err(|e| e.to_string())?;
         std::fs::copy(&key, mine.join(format!("{a}.key"))).map_err(|e| e.to_string())?;
@@ -329,6 +371,7 @@ pub fn import_p12(file: &Path, password: &str) -> Result<Vec<String>, String> {
 pub fn remove_own(addr: &str) {
     let d = store_dir("mine");
     let a = safe(addr);
+    crate::live::forget_password(&format!("smime:{a}"));
     for ext in ["crt", "key", "chain.pem"] {
         let _ = std::fs::remove_file(d.join(format!("{a}.{ext}")));
     }
@@ -378,7 +421,9 @@ fn password_for(addr: &str, given: Option<&str>) -> Result<String, String> {
             unlock(addr, p)?;
             Ok(p.to_string())
         }
-        None => remembered(addr).ok_or_else(|| crate::pgp::NEED_PASSPHRASE.to_string()),
+        None => remembered(addr)
+            .or_else(|| crate::live::password(&format!("smime:{}", safe(addr))).filter(|p| !p.is_empty()))
+            .ok_or_else(|| crate::pgp::NEED_PASSPHRASE.to_string()),
     }
 }
 
@@ -497,7 +542,8 @@ mod tests {
         assert_eq!(import_p12(&p12, "wrong").unwrap_err(), "That password isn't right for this file");
         assert_eq!(import_p12(&p12, "secret pw").unwrap(), vec!["me@example.org".to_string()]);
         assert!(can_sign("me@example.org"));
-        // Signing needs the password once.
+        // Signing: the password comes from the keychain; without it there, asked for once.
+        crate::live::forget_password("smime:me@example.org");
         // (Signed without the line break before the next boundary: it's the boundary's.)
         let part = b"Content-Type: text/plain\r\n\r\nHello there";
         assert_eq!(sign_detached(part, "me@example.org").unwrap_err(), crate::pgp::NEED_PASSPHRASE);
@@ -537,6 +583,43 @@ mod tests {
         assert_eq!(d.state, "ok");
         remove_own("me@example.org");
         assert!(!can_sign("me@example.org"));
+    }
+
+    /// Mail sent signed, encrypted or both with S/MIME (the real message
+    /// builder) checks out and reads back.
+    #[test]
+    fn mail_sent_with_smime_reads_back() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        if !available() {
+            return;
+        }
+        let dir = Scratch::new().unwrap();
+        let (p12, _) = make_p12(&dir.0, "signer@example.org", "pw2");
+        import_p12(&p12, "pw2").expect("imported");
+        let a = crate::live::LiveAccount { email: "signer@example.org".into(), name: "Test Signer".into(), ..Default::default() };
+        let base = crate::live::OutMsg { to: "signer@example.org".into(), subject: "Plan".into(), body: "Meet at noon.".into(), html: "<p>Meet at <b>noon</b>.</p>".into(), smime: true, ..Default::default() };
+        // Signed (the key's password from the keychain: nothing asked).
+        let signed = crate::live::build_message(&a, &crate::live::OutMsg { sign: true, ..base.clone() }).expect("signed");
+        let raw = signed.formatted();
+        assert_eq!(kind(&raw), Some(Kind::Signed));
+        let c = verify(&raw).expect("checked");
+        assert_eq!(c.state, "good", "{c:?}");
+        assert!(c.detail.contains("Test CA"), "the issuer is said: {c:?}");
+        // Encrypted: nothing readable, and reads back.
+        let enc = crate::live::build_message(&a, &crate::live::OutMsg { encrypt: true, ..base.clone() }).expect("encrypted");
+        let raw = enc.formatted();
+        assert!(!String::from_utf8_lossy(&raw).contains("Meet at noon"));
+        let d = decrypt(&raw, None).expect("encrypted");
+        assert_eq!(d.state, "ok", "{d:?}");
+        assert!(d.body.contains("Meet at noon."), "{d:?}");
+        // Both: the signature inside checks out.
+        let both = crate::live::build_message(&a, &crate::live::OutMsg { sign: true, encrypt: true, ..base.clone() }).expect("both");
+        let d = decrypt(&both.formatted(), None).unwrap();
+        assert_eq!(d.signature.map(|s| s.state).as_deref(), Some("good"));
+        // Someone without a certificate: not sent.
+        let err = crate::live::build_message(&a, &crate::live::OutMsg { encrypt: true, to: "nocert@example.net".into(), ..base }).err().unwrap();
+        assert!(err.contains("nocert@example.net"), "{err}");
+        remove_own("signer@example.org");
     }
 
     #[test]

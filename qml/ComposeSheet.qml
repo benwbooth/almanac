@@ -95,12 +95,22 @@ Popup {
     // OpenPGP: sign with your key, encrypt to every recipient (and you).
     property bool sign: false
     property bool encrypt: false
-    property var pgp: ({ gpg: false, canSign: false, missing: [] })
-    readonly property bool canEncrypt: pgp.gpg && pgp.missing.length === 0 && (toRow.field.text + ccRow.field.text + bccRow.field.text).indexOf("@") >= 0
+    property var pgp: ({ gpg: false, canSign: false, missing: [], smime: { available: false, canSign: false, missing: [] } })
+    // OpenPGP or S/MIME: chosen ("pgp" / "smime"), or "" to pick by itself (the
+    // one that covers everyone: S/MIME when there's only a certificate to sign
+    // with, or the recipients' certificates are known and their keys aren't).
+    property string scheme: ""
+    readonly property var sm: pgp.smime || ({ available: false, canSign: false, missing: [] })
+    readonly property bool useSmime: scheme === "smime" ? sm.canSign
+                                   : scheme === "pgp" ? false
+                                   : sm.canSign && (!pgp.canSign || (pgp.missing.length > 0 && sm.missing.length === 0))
+    readonly property bool canSignNow: useSmime ? sm.canSign : pgp.canSign
+    readonly property bool hasRecipients: (toRow.field.text + ccRow.field.text + bccRow.field.text).indexOf("@") >= 0
+    readonly property bool canEncrypt: hasRecipients && (useSmime ? sm.missing.length === 0 : (pgp.gpg && pgp.missing.length === 0))
     function checkPgp() {
         var from = senders.length ? senders[fromBox.currentIndex].label : ""
         pgp = JSON.parse(store.pgpReady(from, [toRow.field.text, ccRow.field.text, bccRow.field.text].join(",")))
-        if (!pgp.canSign) sign = false
+        if (!canSignNow) sign = false
         if (encrypt && !canEncrypt) encrypt = false
     }
     Timer { id: pgpCheck; interval: 500; onTriggered: sheet.checkPgp() }
@@ -246,7 +256,7 @@ Popup {
         forwardOf = -1
         inReplyTo = m.inReplyTo || ""
         // (A reply to an encrypted message is encrypted too, when it can be.)
-        sign = false
+        sign = false; scheme = ""
         encrypt = !!m.encrypt
         Qt.callLater(checkPgp)
         draftId = m.draftId === undefined ? null : m.draftId
@@ -269,7 +279,8 @@ Popup {
         var p = { to: toRow.field.text, cc: ccRow.field.text, bcc: bccRow.field.text, subject: subjectRow.field.text,
                   body: plainText() + cloudCard(false), html: withCard(store.restoreColours(body.text.replace(/\u200b|&#8203;/g, ""), JSON.stringify(colourBack))),
                   attachments: attachments.filter(function(p) { return !sheet.cloudPaths[p] || !sheet.uploads[p] || sheet.uploads[p].state !== "done" }), inReplyTo: inReplyTo,
-                  account: senders.length ? senders[fromBox.currentIndex].id : "", sign: sign, encrypt: encrypt }
+                  account: senders.length ? senders[fromBox.currentIndex].id : "", sign: sign, encrypt: encrypt,
+                  secure: useSmime ? "smime" : "pgp" }
         if (draftId !== null) p.draftId = draftId
         return p
     }
@@ -322,7 +333,8 @@ Popup {
             return
         }
         // Signing needs the key unlocked: Almanac asks for its passphrase.
-        if (sign && checked !== "unlocked" && !store.pgpSignReady(senderEmail())) {
+        // (S/MIME's password is in the keychain: nothing to unlock.)
+        if (sign && !useSmime && checked !== "unlocked" && !store.pgpSignReady(senderEmail())) {
             unlockThenSend(atMs, "")
             return
         }
@@ -534,24 +546,33 @@ Popup {
                     elide: Text.ElideRight
                 }
                 ToolButtonX { visible: !sheet.headTight; icon: "paperclip"; tip: "Attach Files"; onClicked: sheet.attachFiles() }
-                // OpenPGP (when GnuPG is installed): sign, encrypt.
+                // OpenPGP or S/MIME (when either is set up): sign, encrypt.
                 ToolButtonX {
-                    visible: sheet.pgp.gpg
+                    visible: sheet.pgp.gpg || sheet.sm.available
                     icon: "seal"
                     checked: sheet.sign
-                    tip: sheet.pgp.canSign ? (sheet.sign ? "Signed with your key (click to not sign)" : "Sign with your key (OpenPGP)")
-                                           : "No key of yours to sign with: Settings › Accounts › OpenPGP Key"
-                    opacity: sheet.pgp.canSign ? 1 : 0.45
-                    onClicked: if (sheet.pgp.canSign) sheet.sign = !sheet.sign
+                    readonly property string kind: sheet.useSmime ? "S/MIME" : "OpenPGP"
+                    tip: sheet.canSignNow ? (sheet.sign ? "Signed (" + kind + ", click to not sign)" : "Sign (" + kind + ")")
+                                          : "Nothing of yours to sign with: Settings › Privacy (OpenPGP key or S/MIME certificate)"
+                    opacity: sheet.canSignNow ? 1 : 0.45
+                    onClicked: if (sheet.canSignNow) sheet.sign = !sheet.sign
                 }
                 ToolButtonX {
-                    visible: sheet.pgp.gpg
+                    visible: sheet.pgp.gpg || sheet.sm.available
                     icon: sheet.encrypt ? "lock" : "lockOpen"
                     checked: sheet.encrypt
-                    tip: sheet.canEncrypt ? (sheet.encrypt ? "Encrypted to every recipient and you (click to not encrypt)" : "Encrypt (OpenPGP)")
-                                          : (sheet.pgp.missing.length ? "No key to encrypt to " + sheet.pgp.missing.join(", ") : "Add recipients to encrypt to")
+                    readonly property var missing: sheet.useSmime ? sheet.sm.missing : sheet.pgp.missing
+                    tip: sheet.canEncrypt ? (sheet.encrypt ? "Encrypted to every recipient and you (click to not encrypt)" : "Encrypt (" + (sheet.useSmime ? "S/MIME" : "OpenPGP") + ")")
+                                          : (missing.length ? (sheet.useSmime ? "No certificate for " : "No key to encrypt to ") + missing.join(", ") : "Add recipients to encrypt to")
                     opacity: sheet.canEncrypt ? 1 : 0.45
                     onClicked: if (sheet.canEncrypt) sheet.encrypt = !sheet.encrypt
+                }
+                // Both possible: which one.
+                ToolButtonX {
+                    visible: sheet.sm.canSign && sheet.pgp.gpg && (sheet.pgp.canSign || sheet.pgp.missing.length === 0)
+                    text: sheet.useSmime ? "S/MIME" : "PGP"
+                    tip: "Signing and encrypting with " + (sheet.useSmime ? "S/MIME (certificates)" : "OpenPGP (keys)") + ": click for " + (sheet.useSmime ? "OpenPGP" : "S/MIME")
+                    onClicked: { sheet.scheme = sheet.useSmime ? "pgp" : "smime"; sheet.checkPgp() }
                 }
                 ToolButtonX {
                     visible: !sheet.detached && !sheet.headTight

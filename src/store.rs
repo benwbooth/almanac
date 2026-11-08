@@ -447,6 +447,15 @@ pub mod qobject {
         /// Unlocks the key for `email` (gpg-agent remembers the passphrase a while).
         #[qinvokable]
         fn pgp_unlock(self: &Store, email: &QString, passphrase: &QString);
+        /// Settings › Privacy › S/MIME: your certificates and others'.
+        #[qinvokable]
+        fn smime_certs(self: &Store) -> QString;
+        /// Imports your certificate from a .p12 / .pfx (its password kept in the
+        /// keychain), in the background (pgpStatusJson says how it went).
+        #[qinvokable]
+        fn smime_import(self: &Store, file_url: &QString, password: &QString);
+        #[qinvokable]
+        fn smime_remove(self: Pin<&mut Store>, mine: bool, email: &QString);
         /// Whether the key for `email` can sign now without its passphrase.
         #[qinvokable]
         fn pgp_sign_ready(self: &Store, email: &QString) -> bool;

@@ -737,7 +737,7 @@ WebEngineView {
             var inline = {}
             for (var ip = 0; ip < shown.length; ip++) inline[shown[ip].name] = true
             // (An OpenPGP signature is shown as the badge in the header, not as a file.)
-            var chipped = (m.attachments || []).filter(function(n) { return !inline[n] && !/^(signature\.asc|openpgp_signature(\.asc)?|encrypted\.asc|msg\.asc|openpgp-encrypted-message\.asc)$/i.test(n) })
+            var chipped = (m.attachments || []).filter(function(n) { return !inline[n] && !/^(signature\.asc|openpgp_signature(\.asc)?|encrypted\.asc|msg\.asc|openpgp-encrypted-message\.asc|smime\.p7[sm])$/i.test(n) })
             // Files shared by a link (Google Drive, OneDrive, Dropbox, Box,
             // Nextcloud): chips of their own too, opening the link.
             var shared = cloudLinks(m)

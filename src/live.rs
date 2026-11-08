@@ -198,6 +198,10 @@ static SESSION_PASSWORDS: Mutex<Option<HashMap<String, String>>> = Mutex::new(No
 /// Stores the password in the system keychain. If there is no keychain,
 /// it is kept only until the app closes. Returns a note for the person.
 pub fn save_password(id: &str, password: &str) -> Option<String> {
+    // (Tests never touch the real keychain: memory only.)
+    #[cfg(test)]
+    let saved: Result<(), keyring::Error> = Ok(());
+    #[cfg(not(test))]
     let saved = keyring::Entry::new(KEYCHAIN_SERVICE, id).and_then(|e| e.set_password(password));
     let mut map = SESSION_PASSWORDS.lock().unwrap();
     map.get_or_insert_with(HashMap::new).insert(id.to_string(), password.to_string());
@@ -208,10 +212,14 @@ pub fn password(id: &str) -> Option<String> {
     if let Some(p) = SESSION_PASSWORDS.lock().unwrap().as_ref().and_then(|m| m.get(id)) {
         return Some(p.clone());
     }
+    #[cfg(test)]
+    return None;
+    #[cfg(not(test))]
     keyring::Entry::new(KEYCHAIN_SERVICE, id).ok()?.get_password().ok()
 }
 
 pub fn forget_password(id: &str) {
+    #[cfg(not(test))]
     if let Ok(e) = keyring::Entry::new(KEYCHAIN_SERVICE, id) {
         let _ = e.delete_credential();
     }

@@ -300,6 +300,59 @@ Popup {
                             }
                         }
                     }
+                    // S/MIME: your certificates (imported from a .p12 / .pfx), and the
+                    // ones that came with other people's signed mail.
+                    Row2 {
+                        id: smimeRow
+                        label: "S/MIME:"
+                        readonly property var info: { dlg.store.revision; return dlg.visible ? JSON.parse(dlg.store.smimeCerts()) : ({ available: false, mine: [], others: [] }) }
+                        readonly property var job: { try { return JSON.parse(dlg.store.pgpStatusJson || "{}") } catch (e) { return {} } }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { visible: !smimeRow.info.available; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; text: "Install OpenSSL to sign and encrypt with certificates." }
+                            Text { visible: smimeRow.info.available && smimeRow.info.mine.length === 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; font.pixelSize: 12
+                                   text: "No certificate of yours yet: import the .p12 / .pfx file your certificate authority gave you." }
+                            Repeater {
+                                model: smimeRow.info.mine || []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text { text: modelData.email; color: Theme.text; font.pixelSize: Theme.base }
+                                    Text { Layout.fillWidth: true; text: (modelData.name ? modelData.name + " · " : "") + "until " + modelData.ends; color: Theme.secondary; font.pixelSize: 12; elide: Text.ElideRight }
+                                    ToolButtonX { text: "Remove"; onClicked: removeConfirm.ask("Remove your certificate for " + modelData.email + "?", "Signed and encrypted mail can't be sent with it any more, and mail encrypted to it can't be read here unless you import it again.", "Remove", function() { dlg.store.smimeRemove(true, modelData.email) }) }
+                                }
+                            }
+                            RowLayout {
+                                visible: smimeRow.info.available
+                                spacing: 8
+                                ToolButtonX { text: "Import Certificate…"; tip: "Your certificate and key from a .p12 / .pfx file (asks for its password, kept in the keychain)"; onClicked: p12File.open() }
+                                BusyIndicator { visible: !!smimeRow.job.busy && smimeRow.job.op === "smime-import"; running: visible; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
+                                Text {
+                                    visible: smimeRow.job.op === "smime-import" && !smimeRow.job.busy
+                                    text: (smimeRow.job.ok ? "" : "Couldn't import it: ") + (smimeRow.job.text || "")
+                                    color: smimeRow.job.ok ? Theme.text : Theme.red; font.pixelSize: 12
+                                }
+                            }
+                            Text {
+                                visible: (smimeRow.info.others || []).length > 0
+                                text: "Others' certificates (from their signed mail; used to encrypt to them):"
+                                color: Theme.secondary; font.pixelSize: 12
+                            }
+                            Repeater {
+                                model: smimeRow.info.others || []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text { text: modelData.email; color: Theme.text; font.pixelSize: 12 }
+                                    Text { Layout.fillWidth: true; text: (modelData.name ? modelData.name + " · " : "") + "until " + modelData.ends; color: Theme.secondary; font.pixelSize: 12; elide: Text.ElideRight }
+                                    ToolButtonX { text: "Remove"; onClicked: dlg.store.smimeRemove(false, modelData.email) }
+                                }
+                            }
+                        }
+                    }
                     Row2 {
                         label: "Remote content:"
                         ColumnLayout {
@@ -443,6 +496,17 @@ Popup {
     }
     Confirm { id: publishConfirm }
     PassphraseDialog { id: passDlg }
+    Confirm { id: removeConfirm }
+    FileDialog {
+        id: p12File
+        title: "Import Your S/MIME Certificate"
+        nameFilters: ["Certificates with their key (*.p12 *.pfx)", "All files (*)"]
+        onAccepted: {
+            var f = selectedFile.toString()
+            passDlg.ask("The certificate file's password", "The password it was exported (or issued) with. Almanac keeps it in the system keychain, to sign and to read encrypted mail.", "Import", false,
+                        function(pass) { dlg.store.smimeImport(f, pass) })
+        }
+    }
     FileDialog {
         id: keyFile
         title: "Import OpenPGP Keys"
