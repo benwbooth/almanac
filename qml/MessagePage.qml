@@ -150,6 +150,41 @@ WebEngineView {
             Qt.callLater(web.render)
         }
     }
+    // Files shared by a link in a message (Google Drive, OneDrive, Dropbox,
+    // Box, Nextcloud): [{url, name, provider}], each once, at most 8.
+    function cloudLinks(m) {
+        var found = [], seen = {}
+        var provider = function(u) {
+            if (/^https:\/\/(drive|docs)\.google\.com\/(file|document|spreadsheets|presentation|drive\/folders)\b/i.test(u)) return "Google Drive"
+            if (/^https:\/\/(1drv\.ms|onedrive\.live\.com)\//i.test(u) || /^https:\/\/[^\/]+\.sharepoint\.com\/:[a-z]:\//i.test(u)) return "OneDrive"
+            if (/^https:\/\/(www\.)?dropbox\.com\/(s|scl)\//i.test(u)) return "Dropbox"
+            if (/^https:\/\/([^\/]+\.)?app\.box\.com\/s\//i.test(u)) return "Box"
+            if (/^https:\/\/[^\/]+\/(index\.php\/)?s\/[A-Za-z0-9]{15}\b/.test(u)) return "Nextcloud"
+            return ""
+        }
+        var nameOf = function(u, text) {
+            var t = String(text || "").replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").trim()
+            if (t && t.length <= 80 && !/^https?:/i.test(t)) return t
+            // (Dropbox's links end in the file's name.)
+            var last = decodeURIComponent((u.split("?")[0].split("/").pop() || ""))
+            return /\.[A-Za-z0-9]{2,5}$/.test(last) ? last : "Shared file"
+        }
+        var add = function(u, text) {
+            u = String(u).replace(/&amp;/g, "&")
+            var p = provider(u)
+            if (!p || seen[u] || found.length >= 8) return
+            seen[u] = true
+            found.push({ url: u, name: nameOf(u, text), provider: p })
+        }
+        var re = /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, mm
+        while ((mm = re.exec(m.html || "")) !== null) add(mm[1], mm[2])
+        // (Plain text: "[name](link)" as the text version writes a link, then bare links.)
+        var md = /\[([^\]\n]{1,80})\]\((https:\/\/[^)\s]+)\)/g
+        while ((mm = md.exec(m.body || "")) !== null) add(mm[2], mm[1])
+        var plain = /https:\/\/[^\s<>"')\]]+/g
+        while ((mm = plain.exec(m.body || "")) !== null) add(mm[0], "")
+        return found
+    }
     function sizeText(n) {
         if (!n) return ""
         if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + " KB"
@@ -555,6 +590,7 @@ WebEngineView {
               + '.remote{flex-wrap:wrap}.remote a{color:' + css(Theme.accent) + ';text-decoration:none;font-weight:600;white-space:nowrap}.remote a.more{font-weight:normal}'
               + '.paper{background:#fff;border-radius:8px}iframe{border:0;width:100%;height:24px;display:block;background:transparent}'
               + '.atts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.att{display:inline-flex;gap:6px;align-items:center;padding:7px 10px;border-radius:8px;background:' + css(Theme.segment) + ';color:' + css(Theme.text) + ';text-decoration:none;font-size:12px}'
+              + '.att.cloud i{font-style:normal;color:' + css(Theme.secondary) + ';margin-left:2px}'
               + '.att b{font-weight:normal}.save{color:' + css(Theme.accent) + ';text-decoration:none;font-size:11px;margin-left:4px}'
               + '.wait{color:' + css(Theme.secondary) + '}'
               + 'html,body{overscroll-behavior:none}::-webkit-scrollbar{width:12px;height:12px;background:transparent}::-webkit-scrollbar-corner{background:transparent}'
@@ -702,8 +738,13 @@ WebEngineView {
             for (var ip = 0; ip < shown.length; ip++) inline[shown[ip].name] = true
             // (An OpenPGP signature is shown as the badge in the header, not as a file.)
             var chipped = (m.attachments || []).filter(function(n) { return !inline[n] && !/^(signature\.asc|openpgp_signature(\.asc)?|encrypted\.asc|msg\.asc|openpgp-encrypted-message\.asc)$/i.test(n) })
-            if (chipped.length) {
+            // Files shared by a link (Google Drive, OneDrive, Dropbox, Box,
+            // Nextcloud): chips of their own too, opening the link.
+            var shared = cloudLinks(m)
+            if (chipped.length || shared.length) {
                 h += '<div class="atts">'
+                for (var c = 0; c < shared.length; c++)
+                    h += '<span class="att cloud"><a class="att" style="padding:0;background:none" href="' + esc(shared[c].url) + '" title="' + esc(shared[c].url) + '">☁ <b>' + esc(shared[c].name) + '</b> <i>' + esc(shared[c].provider) + '</i></a></span>'
                 for (var a = 0; a < chipped.length; a++) {
                     var n = chipped[a]
                     h += '<span class="att"><a class="att" style="padding:0;background:none" href="almanac:att/' + i + '/' + encodeURIComponent(n) + '">📎 <b>' + esc(n) + '</b></a>'
