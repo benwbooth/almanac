@@ -286,14 +286,21 @@ const THREAD_KEY: &str = "lower(CASE
 /// here is `build_conversations`'s, in the background, a little at a time.
 fn convs_ready(c: &Connection) -> Result<(), String> {
     let state: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'convs'", [], |r| r.get(0)).ok();
+    // (Triggers of the version before this one failed saves: made again.)
+    let fixed: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'threads_triggers'", [], |r| r.get(0)).ok();
+    if (state.as_deref() == Some("2") || state.as_deref() == Some("building")) && fixed.as_deref() == Some("2") {
+        return Ok(());
+    }
     if state.as_deref() == Some("2") || state.as_deref() == Some("building") {
+        c.execute_batch(&format!("BEGIN; {THREADS_TRIGGERS} INSERT OR REPLACE INTO meta(key, value) VALUES('threads_triggers', '2'); COMMIT;"))
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
     let has_tk: bool = c.prepare("SELECT tk FROM messages LIMIT 0").is_ok();
     if !has_tk {
         c.execute_batch(&format!("ALTER TABLE messages ADD COLUMN tk TEXT GENERATED ALWAYS AS ({THREAD_KEY}) VIRTUAL")).map_err(|e| e.to_string())?;
     }
-    c.execute_batch(
+    c.execute_batch(&format!(
         "BEGIN;
          -- (The first version's: an index over the messages, made in one go.)
          DROP TRIGGER IF EXISTS convs_add;
@@ -304,23 +311,33 @@ fn convs_ready(c: &Connection) -> Result<(), String> {
          CREATE TABLE IF NOT EXISTS msg_threads(id INTEGER PRIMARY KEY, folder TEXT NOT NULL, tk TEXT NOT NULL,
                                                 date INTEGER NOT NULL, read INTEGER NOT NULL);
          CREATE INDEX IF NOT EXISTS msg_threads_by_conv ON msg_threads(folder, tk, date);
+{THREADS_TRIGGERS}
+         INSERT OR REPLACE INTO meta(key, value) VALUES('threads_triggers', '2');
+         INSERT OR REPLACE INTO meta(key, value) VALUES('convs', 'building');
+         COMMIT;"
+    ))
+    .map_err(|e| e.to_string())
+}
+
+/// The triggers that keep each message's conversation (msg_threads) right.
+const THREADS_TRIGGERS: &str = "
          DROP TRIGGER IF EXISTS threads_add;
          DROP TRIGGER IF EXISTS threads_drop;
          DROP TRIGGER IF EXISTS threads_change;
+         -- (Delete, then insert: inside a trigger an outer statement's own
+         -- conflict handling would win over OR REPLACE, and saving failed.)
          CREATE TRIGGER threads_add AFTER INSERT ON messages BEGIN
-             INSERT OR REPLACE INTO msg_threads VALUES (NEW.id, NEW.folder, NEW.tk, NEW.date, NEW.read);
+             DELETE FROM msg_threads WHERE id = NEW.id;
+             INSERT INTO msg_threads VALUES (NEW.id, NEW.folder, NEW.tk, NEW.date, NEW.read);
          END;
          CREATE TRIGGER threads_drop AFTER DELETE ON messages BEGIN
              DELETE FROM msg_threads WHERE id = OLD.id;
          END;
          CREATE TRIGGER threads_change AFTER UPDATE OF folder, read, date, refs, in_reply_to, message_id ON messages BEGIN
-             INSERT OR REPLACE INTO msg_threads VALUES (NEW.id, NEW.folder, NEW.tk, NEW.date, NEW.read);
+             DELETE FROM msg_threads WHERE id = NEW.id;
+             INSERT INTO msg_threads VALUES (NEW.id, NEW.folder, NEW.tk, NEW.date, NEW.read);
          END;
-         INSERT OR REPLACE INTO meta(key, value) VALUES('convs', 'building');
-         COMMIT;",
-    )
-    .map_err(|e| e.to_string())
-}
+";
 
 /// Whether each folder's conversations are all worked out (so the list can be
 /// read a page at a time with conversations on).
