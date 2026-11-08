@@ -23,7 +23,12 @@ WheelHandler {
     property real velocity: 0
     property real friction: 3.2
     property real minimumVelocity: 30
-    property real maximumVelocity: 40000
+    property real maximumVelocity: 12000
+    // From the wheel (a free-spinning one sends notches for seconds): at most this.
+    property real maximumWheelVelocity: 6000
+    // However it's fed, a glide ends by then (ms): the list never keeps going.
+    property int longestGlide: 2500
+    property double glideStartedAt: 0
     // A swipe in progress, and its smoothed speed.
     property bool swiping: false
     property double lastPixelAt: 0
@@ -59,15 +64,24 @@ WheelHandler {
     // ("ALMANAC-SCROLL list …"), to see why a glide stopped.
     readonly property bool trace: Qt.application.arguments.indexOf("--trace-scroll") >= 0
     property var hist: []
-    function note(x) { if (!trace) return; hist.push(Date.now() % 100000 + " " + x); if (!traceTimer.running) traceTimer.start() }
+    // (The last events are kept anyway: a glide that runs long writes them to the log.)
+    property var recent: []
+    function note(x) {
+        recent.push(Date.now() % 100000 + " " + x)
+        if (recent.length > 40) recent.shift()
+        if (!trace) return
+        hist.push(Date.now() % 100000 + " " + x); if (!traceTimer.running) traceTimer.start()
+    }
     property Timer traceTimer: Timer {
         interval: 1500
         onTriggered: { if (m.hist.length) console.warn("ALMANAC-SCROLL list " + m.hist.join(" ; ")); m.hist = [] }
     }
-    function addVelocity(v) {
+    function addVelocity(v, cap) {
         if (!isFinite(v) || v === 0) return
         if (velocity * v < 0) velocity = 0
-        velocity = Math.max(-maximumVelocity, Math.min(maximumVelocity, velocity + v))
+        var most = cap || maximumVelocity
+        velocity = Math.max(-most, Math.min(most, velocity + v))
+        glideStartedAt = Date.now()
         if (!glide.running) glide.start()
     }
 
@@ -112,11 +126,14 @@ WheelHandler {
         var accel = 1 + burst * 0.5
         // Part at once (it answers straight away), the rest as glide.
         moveBy(steps * 50 * Math.min(2, accel))
-        addVelocity(steps * 70 * friction * accel)
+        addVelocity(steps * 70 * friction * accel, maximumWheelVelocity)
     }
 
     function advance(dt) {
         if (velocity === 0) { stop(); return }
+        var age = Date.now() - glideStartedAt
+        if (age > 2200 && !loggedLong) { loggedLong = true; console.warn("ALMANAC-SCROLL long glide v" + Math.round(velocity) + ": " + recent.join(" ; ")) }
+        if (age > longestGlide) { stop("too long"); return }
         dt = Math.max(0.001, Math.min(0.05, dt))
         var decay = Math.exp(-friction * dt)
         var before = flick.contentY
@@ -129,7 +146,7 @@ WheelHandler {
 
     onWheel: function(ev) {
         var phase = ev.phase
-        if (trace) note("w " + ["none", "begin", "update", "end", "momentum"][phase] + " px" + ev.pixelDelta.y + " a" + ev.angleDelta.y
+        note("w " + ["none", "begin", "update", "end", "momentum"][phase] + " px" + ev.pixelDelta.y + " a" + ev.angleDelta.y
                         + (ev.device && ev.device.type === PointerDevice.TouchPad ? " pad" : " mouse") + (glide.running ? " g" + Math.round(velocity) : ""))
         if (phase === Qt.ScrollEnd) { var was = swiping; endSwipe(); ev.accepted = was; return }
         // The system's own momentum (macOS): it has its own glide.
@@ -147,7 +164,16 @@ WheelHandler {
         ev.accepted = true
     }
 
-    property FrameAnimation glide: FrameAnimation { onTriggered: m.advance(frameTime) }
+    property bool loggedLong: false
+    property FrameAnimation glide: FrameAnimation { onTriggered: m.advance(frameTime); onRunningChanged: if (running) m.loggedLong = false }
+    // A click or touch anywhere on the list stops a glide at once (passive:
+    // the rows still get their clicks).
+    property PointHandler press: PointHandler {
+        parent: m.flick
+        target: null
+        acceptedButtons: Qt.AllButtons
+        onActiveChanged: if (active) m.stop("pressed")
+    }
     property Timer releaseTimer: Timer { interval: 60; onTriggered: m.endSwipe() }
     property Connections watch: Connections {
         target: m.flick
