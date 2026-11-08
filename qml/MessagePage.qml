@@ -544,7 +544,7 @@ WebEngineView {
               + '.pgp.bad{color:' + (Theme.dark ? '#ff8a80' : '#b3261e') + ';background:' + (Theme.dark ? 'rgba(255,138,128,.14)' : '#fde3e1') + '}'
               + '.pgp.dim{color:' + css(Theme.secondary) + ';background:' + css(Theme.segment) + '}'
               + '.chev{font-size:11px;padding:0 2px}'
-              + '.top .acts{margin-left:6px;align-self:center}'
+              + '.actrow{display:flex;justify-content:flex-end;margin-top:6px}'
               // People on To and Cc as bubbles, as in compose (click or right-click: copy, write to).
               + '.rcpt{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:3px;font-size:12px}.rcpt .lbl{color:' + css(Theme.tertiary) + ';margin-right:2px}'
               + '.chip{display:inline-block;max-width:100%;padding:1px 9px;border-radius:999px;background:' + css(Theme.segment) + ';color:' + css(Theme.text) + ';text-decoration:none;line-height:18px;overflow-wrap:anywhere;cursor:default}'
@@ -631,7 +631,6 @@ WebEngineView {
                + '<div class="top">' + (m.vip ? '★ ' : '') + '<a class="name" title="' + esc((m.fromName ? m.fromName + ' <' + m.fromEmail + '>' : m.fromEmail)) + '" href="almanac:sender/' + i + '">' + esc(name) + '</a>'
                + (boxed ? '<a class="chev" href="#" data-toggle="' + i + '" title="Close this message">▾</a>' : '')
                + '<span class="grow"></span>' + (m.flagged ? '<span style="color:' + Theme.flagColors[m.flagColor || 0] + '" title="' + Theme.flagNames[m.flagColor || 0] + ' flag">⚑</span>' : '')
-               + '<span class="acts">' + actions(i) + '</span>'
                + '</div>'
                + '<div class="when">' + esc(Theme.fmtLongDate(m.date))
                + (dec ? '<span class="pgp ' + (dec.state === "ok" ? "good" : "bad") + '" title="' + esc(dec.state === "ok" ? "Encrypted: only you (and whoever else it was sent to) can read it" : dec.detail || "") + '">🔒 Encrypted</span>' : '')
@@ -644,6 +643,9 @@ WebEngineView {
                + (m.fromName && m.fromEmail ? '<div class="addr">' + esc(m.fromEmail) + (m.folder ? ' · ' + esc(m.folder) : '') + '</div>' : '')
                + (m.html ? '<div class="fmtline"><a class="fmt" data-fmt="' + i + '" href="almanac:format/' + i + '">' + (rich ? 'Show Plain Text' : 'Show Formatted') + '</a></div>' : '')
                + '</div>'
+               // The message's buttons: a row of their own under who it went to,
+               // on the right, so they never squeeze the To and Cc lines.
+               + '<div class="actrow"><span class="acts">' + actions(i) + '</span></div>'
                + '</div></div>'
                + '<div class="rule"></div>'
             if (dec && dec.state === "locked")
