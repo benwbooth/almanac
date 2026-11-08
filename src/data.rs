@@ -3616,6 +3616,8 @@ impl Db {
                         "smtpHost": a.smtp_host, "smtpPort": a.smtp_port, "caldavUrl": a.caldav_url,
                         "carddavUrl": a.carddav_url, "lastSync": a.last_sync, "lastError": a.last_error,
                         "provider": a.provider, "clientId": a.client_id, "clientSecret": a.client_secret, "tenant": a.tenant,
+                        // Google Drive allowed at the last sign-in: "yes", "no", or "" (not known).
+                        "driveAccess": if a.provider == "google" { crate::oauth::load_extra(&format!("{}:drive", a.id)) } else { String::new() },
                         "messages": self.message_count(&src),
                         "events": self.events.iter().filter(|e| e.source == src).count(),
                         "contacts": self.contacts.iter().filter(|c| c.source == src).count(),

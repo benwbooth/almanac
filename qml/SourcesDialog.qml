@@ -185,7 +185,23 @@ Popup {
                                 Text { text: modelData.email; color: Theme.secondary; font.pixelSize: 12 }
                             }
                             ToolButtonX { icon: "refresh"; tip: "Sync now"; enabled: !store.busy; onClicked: store.refreshAll() }
+                            // Google and Microsoft accounts: their sign-in done again (to
+                            // allow new permissions, e.g. Drive, or after being signed out).
+                            ToolButtonX {
+                                visible: modelData.provider === "google" || modelData.provider === "microsoft"
+                                text: "Sign In Again"
+                                tip: "Sign in with " + (modelData.provider === "google" ? "Google" : "Microsoft") + " again (to allow new permissions, or after being signed out)"
+                                enabled: !store.busy
+                                onClicked: store.signInWith(modelData.provider, modelData.clientId, modelData.clientSecret, modelData.tenant)
+                            }
                             ToolButtonX { text: "Settings"; onClicked: dlg.editAccount(modelData) }
+                        }
+                        Text {
+                            visible: modelData.driveAccess === "no"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "Google Drive access wasn't allowed, so big attachments can't be sent as links. Press Sign In Again and tick the Google Drive box on Google's page."
+                            color: Theme.orange; font.pixelSize: 12
                         }
                         Text {
                             text: modelData.messages + " messages · " + modelData.events + " events · " + modelData.contacts + " contacts"

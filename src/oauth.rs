@@ -527,6 +527,8 @@ pub fn client_source(provider: &str) -> &'static str {
 pub struct SignIn {
     pub refresh_token: String,
     pub email: String,
+    /// The permissions granted (Google lets each be unticked on its page).
+    pub scope: String,
 }
 
 /// Runs the browser sign-in. `open_url` is called with the page to show.
@@ -573,6 +575,7 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
         // Always show the account chooser, so the account picked is the one
         // listed under Test users rather than whichever is signed in already.
         params.push(("prompt", "select_account consent".into()));
+        params.push(("include_granted_scopes", "true".into()));
     } else if provider == MICROSOFT {
         params.push(("prompt", "select_account".into()));
     }
@@ -649,7 +652,8 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
     let refresh = v.get("refresh_token").and_then(Value::as_str).ok_or("The provider gave no refresh token")?.to_string();
     let access = v.get("access_token").and_then(Value::as_str).unwrap_or("").to_string();
     let email = who_am_i(provider, &access, v.get("id_token").and_then(Value::as_str).unwrap_or(""));
-    Ok(SignIn { refresh_token: refresh, email })
+    let scope = v.get("scope").and_then(Value::as_str).unwrap_or("").to_string();
+    Ok(SignIn { refresh_token: refresh, email, scope })
 }
 
 /// The signed-in address, from the ID token or the provider's profile.

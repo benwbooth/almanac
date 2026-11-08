@@ -770,20 +770,39 @@ impl qobject::Store {
             .iter()
             .find(|a| a.provider == provider && a.email.eq_ignore_ascii_case(&si.email))
             .cloned();
+        // Google lets each permission be unticked on its page: whether Drive
+        // (for big attachments) was allowed is kept, for Accounts to say.
+        let drive_note = |id: &str| {
+            if provider == crate::oauth::GOOGLE && !si.scope.is_empty() {
+                let ok = si.scope.contains(crate::oauth::scopes(crate::oauth::GOOGLE, &crate::oauth::Resource::Drive));
+                let _ = crate::oauth::save_extra(&format!("{id}:drive"), if ok { "yes" } else { "no" });
+            }
+        };
+        let no_drive = provider == crate::oauth::GOOGLE && !si.scope.is_empty()
+            && !si.scope.contains(crate::oauth::scopes(crate::oauth::GOOGLE, &crate::oauth::Resource::Drive));
         if let Some(mut a) = existing {
             let _ = crate::live::save_password(&format!("{}:refresh", a.id), &si.refresh_token);
+            drive_note(&a.id);
             crate::oauth::forget_tokens(&a.id);
             a.client_id = cid;
             a.client_secret = secret;
             a.tenant = tenant;
             store.as_mut().db_mut().upsert_live(a.clone());
-            store.as_mut().set_status_text(QString::from(format!("Signed in again as {}. Getting mail, calendars and contacts…", si.email).as_str()));
+            store.as_mut().set_status_text(QString::from(
+                if no_drive {
+                    format!("Signed in again as {}, but Google Drive access wasn't allowed: sign in again and tick the Google Drive box on Google's page to send big attachments as links.", si.email)
+                } else {
+                    format!("Signed in again as {}. Getting mail, calendars and contacts…", si.email)
+                }
+                .as_str(),
+            ));
             store.as_mut().changed();
             store.start_jobs(vec![], vec![a]);
             return;
         }
         let id = format!("acct{}", chrono::Utc::now().timestamp_millis());
         let _ = crate::live::save_password(&format!("{id}:refresh"), &si.refresh_token);
+        drive_note(&id);
         let (imap, smtp, smtp_port) = crate::oauth::mail_servers(&provider);
         let acct = LiveAccount {
             id,
