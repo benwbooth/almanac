@@ -529,6 +529,10 @@ pub struct Settings {
     pub sort_ascending: bool,
     /// Turn Markdown typed in new messages into formatting
     pub markdown_compose: bool,
+    /// Ask before sending a message without a subject (Settings › Mail).
+    pub warn_no_subject: bool,
+    /// Ask before sending when an attachment is mentioned but none is attached.
+    pub warn_missing_attachment: bool,
     /// Underline misspelled words while writing
     pub spell_check: bool,
     /// …and grammar problems too
@@ -573,6 +577,8 @@ impl Default for Settings {
             sort_by: "date".into(),
             sort_ascending: false,
             markdown_compose: true,
+            warn_no_subject: true,
+            warn_missing_attachment: true,
             download_all_mail: true,
             mail_layout: "standard".into(),
             conversations: true,

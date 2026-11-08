@@ -177,7 +177,48 @@ Popup {
         if (draftId !== null) p.draftId = draftId
         return p
     }
-    function send(atMs) {
+    // Before sending (now, later, or with Undo Send's wait), as Apple Mail asks:
+    // no subject, or an attachment mentioned but none attached. Each can be
+    // turned off in Settings › Mail › Composing.
+    function mentionsAttachment() {
+        // Only what was written here: no quoted reply, no signature.
+        var t = plainText().replace(lastSignature || "", "")
+        var lines = t.split("\n"), own = []
+        for (var i = 0; i < lines.length; i++) {
+            var l = lines[i]
+            if (/^\s*>/.test(l)) continue
+            if (/^\s*on .+wrote:\s*$/i.test(l) || /^-{2,}\s*(original|forwarded) message/i.test(l) || /^\s*from:\s/i.test(l)) break
+            if (/^--\s*$/.test(l)) break
+            own.push(l)
+        }
+        return /\b(attach(ed|es|ing|ment|ments)?|enclos(ed|ing|ure)|see the file|the pdf|a pdf|screenshots?)\b/i.test(own.join(" "))
+    }
+    function send(atMs, checked) {
+        if (!checked) {
+            var prefs = JSON.parse(store.settings() || "{}")
+            if (prefs.warn_no_subject !== false && subjectRow.field.text.trim() === "") {
+                confirm.ask("This message has no subject.", "Send it anyway?", "Send Anyway",
+                            function() { sheet.send(atMs, "subject") },
+                            "Add Subject", function() { subjectRow.field.forceActiveFocus() })
+                return
+            }
+            if (checked !== "attachment" && prefs.warn_missing_attachment !== false && attachments.length === 0
+                    && body.text.indexOf("<img") < 0 && mentionsAttachment()) {
+                confirm.ask("Did you mean to attach a file?", "The message mentions an attachment, but nothing is attached.", "Send Anyway",
+                            function() { sheet.send(atMs, "attachment") },
+                            "Attach File…", function() { sheet.attachFiles() })
+                return
+            }
+        } else if (checked === "subject") {
+            // (Still to check: a forgotten attachment.)
+            var prefs2 = JSON.parse(store.settings() || "{}")
+            if (prefs2.warn_missing_attachment !== false && attachments.length === 0 && body.text.indexOf("<img") < 0 && mentionsAttachment()) {
+                confirm.ask("Did you mean to attach a file?", "The message mentions an attachment, but nothing is attached.", "Send Anyway",
+                            function() { sheet.send(atMs, "attachment") },
+                            "Attach File…", function() { sheet.attachFiles() })
+                return
+            }
+        }
         var p = payload()
         if (atMs) p.sendAt = atMs
         store.sendMessage(JSON.stringify(p))

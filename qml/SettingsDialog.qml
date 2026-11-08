@@ -172,6 +172,14 @@ Popup {
                         ToolButtonX { text: "Rules…"; onClicked: { dlg.close(); dlg.rulesDialog.open() } }
                     }
                     Row2 {
+                        label: "When sending:"
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            CheckX { Layout.fillWidth: true; text: "Ask when there's no subject"; checked: dlg.s.warn_no_subject !== false; onToggled: dlg.set("warn_no_subject", checked) }
+                            CheckX { Layout.fillWidth: true; text: "Ask when an attachment is mentioned but none is attached"; checked: dlg.s.warn_missing_attachment !== false; onToggled: dlg.set("warn_missing_attachment", checked) }
+                        }
+                    }
+                    Row2 {
                         label: "VIPs:"
                         Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; text: dlg.lists.vips.length ? dlg.lists.vips.join(", ") : "None. Right-click a message: Add Sender to VIPs." }
                     }
