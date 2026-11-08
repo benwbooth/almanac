@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 // Settings: General, Mail, Calendar and Contacts preferences.
 Popup {
@@ -205,6 +206,45 @@ Popup {
                     visible: dlg.tab === "privacy"
                     Layout.fillWidth: true
                     spacing: 12
+                    // OpenPGP: your keys (one per sending address), others' keys.
+                    Row2 {
+                        id: pgpRow
+                        label: "OpenPGP:"
+                        readonly property var info: { dlg.store.revision; return JSON.parse(dlg.store.pgpKeys()) }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text { visible: !pgpRow.info.gpg; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; text: "Install GnuPG to sign and encrypt mail (Gpg4win on Windows, GPG Suite on macOS)." }
+                            Repeater {
+                                model: pgpRow.info.gpg ? pgpRow.info.keys : []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Text { text: modelData.email; color: Theme.text; font.pixelSize: Theme.base }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: modelData.fingerprint ? "Key " + modelData.fingerprint.slice(-16).replace(/(.{4})/g, "$1 ").trim() : "No key"
+                                        color: Theme.secondary; font.pixelSize: 12; elide: Text.ElideRight
+                                    }
+                                    ToolButtonX { visible: !modelData.fingerprint; text: "Create Key…"; tip: "Make a key for this address (you'll be asked to choose a passphrase)"; onClicked: dlg.store.pgpCreateKey(modelData.name, modelData.email) }
+                                    ToolButtonX {
+                                        visible: !!modelData.fingerprint
+                                        text: "Publish…"
+                                        tip: "Upload your public key to keys.openpgp.org so people can find it to encrypt to you"
+                                        onClicked: publishConfirm.ask("Publish your key?", "Your public key and " + modelData.email + " are sent to keys.openpgp.org, which emails you to confirm before anyone can find it.", "Publish", function() { dlg.store.pgpPublishKey(modelData.fingerprint) })
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                visible: pgpRow.info.gpg
+                                spacing: 8
+                                ToolButtonX { text: "Import Key…"; tip: "Add keys from a file: yours, or the people you write to"; onClicked: keyFile.open() }
+                                FieldX { id: lookUpField; Layout.preferredWidth: 200; placeholderText: "someone@example.com" }
+                                ToolButtonX { text: "Look Up Key"; tip: "Find this person's key (their mail provider, then keys.openpgp.org)"; onClicked: if (lookUpField.text.indexOf("@") > 0) dlg.store.pgpLookUp(lookUpField.text) }
+                            }
+                        }
+                    }
                     Row2 {
                         label: "Remote content:"
                         ColumnLayout {
@@ -345,5 +385,12 @@ Popup {
             Item { Layout.fillWidth: true }
             ToolButtonX { text: "Done"; primary: true; onClicked: dlg.close() }
         }
+    }
+    Confirm { id: publishConfirm }
+    FileDialog {
+        id: keyFile
+        title: "Import OpenPGP Keys"
+        nameFilters: ["OpenPGP keys (*.asc *.gpg *.pgp *.key)", "All files (*)"]
+        onAccepted: dlg.store.pgpImportKeys(selectedFile.toString())
     }
 }

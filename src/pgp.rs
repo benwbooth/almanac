@@ -443,6 +443,59 @@ pub fn encrypt_to(data: &[u8], recipients: &[String], me: &str, sign_as: Option<
     Ok(String::from_utf8_lossy(&out).to_string())
 }
 
+/// Your own key for an address, if there is one: its fingerprint.
+pub fn own_key(addr: &str) -> Option<String> {
+    let gpg = gpg()?;
+    let out = Command::new(&gpg).args(["--batch", "--with-colons", "--list-secret-keys", &format!("<{addr}>")]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut usable = false;
+    for line in text.lines() {
+        let f: Vec<&str> = line.split(':').collect();
+        match f.first() {
+            Some(&"sec") => usable = !matches!(f.get(1), Some(&"r") | Some(&"e") | Some(&"d")),
+            Some(&"fpr") if usable => return f.get(9).map(|x| x.to_string()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A new key for `name <addr>` (ed25519 for signing, cv25519 for encryption,
+/// for two years); gpg-agent's pinentry asks for its passphrase.
+pub fn create_key(name: &str, addr: &str) -> Result<String, String> {
+    let uid = if name.trim().is_empty() { format!("<{addr}>") } else { format!("{} <{addr}>", name.trim()) };
+    run_gpg(&["--quick-generate-key", &uid, "ed25519", "sign,cert", "2y"], b"")?;
+    let fpr = own_key(addr).ok_or("The key was made but can't be found")?;
+    run_gpg(&["--quick-add-key", &fpr, "cv25519", "encrypt", "2y"], b"")?;
+    Ok(fpr)
+}
+
+/// Keys from a file (yours, or other people's): what gpg says it imported.
+pub fn import_keys(path: &std::path::Path) -> Result<String, String> {
+    let gpg = gpg().ok_or("GnuPG isn't installed")?;
+    let out = Command::new(&gpg).args(["--batch", "--status-fd", "1", "--import"]).arg(path).output().map_err(|e| e.to_string())?;
+    let status = String::from_utf8_lossy(&out.stdout);
+    let n = status.lines().filter(|l| l.starts_with("[GNUPG:] IMPORT_OK")).count();
+    if n == 0 {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(err.lines().rfind(|l| l.starts_with("gpg:")).unwrap_or("No keys found in that file").trim_start_matches("gpg: ").to_string());
+    }
+    Ok(format!("{n} key(s) imported"))
+}
+
+/// Your public key uploaded to keys.openpgp.org (they email the address to
+/// confirm before showing it). Only ever done when asked.
+pub fn publish(fingerprint: &str) -> Result<(), String> {
+    run_gpg(&["--keyserver", "hkps://keys.openpgp.org", "--send-keys", fingerprint], b"").map(|_| ())
+}
+
+/// Someone's key looked up (their mail provider's Web Key Directory, then
+/// keys.openpgp.org) and added to the keyring. Only when asked.
+pub fn look_up(addr: &str) -> Result<String, String> {
+    run_gpg(&["--auto-key-locate", "clear,wkd,keyserver", "--keyserver", "hkps://keys.openpgp.org", "--locate-external-keys", addr], b"")?;
+    Ok(format!("Found a key for {addr}"))
+}
+
 /// A private scratch folder for one check (removed after).
 fn tempdir() -> Option<std::path::PathBuf> {
     let d = std::env::temp_dir().join(format!("almanac-pgp-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()));
@@ -585,6 +638,26 @@ mod tests {
         // Someone without a key: not sent.
         let err = crate::live::build_message(&a, &crate::live::OutMsg { encrypt: true, to: "nokey@example.net".into(), ..base }).err().unwrap();
         assert!(err.contains("nokey@example.net"), "{err}");
+        std::env::remove_var("GNUPGHOME");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_key_is_made_for_an_address() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        if gpg().is_none() {
+            return;
+        }
+        let home = tempdir().unwrap();
+        // (No passphrase in the test: the agent's pinentry asks in the app.)
+        std::fs::write(home.join("gpg.conf"), "pinentry-mode loopback\npassphrase \n").unwrap();
+        std::fs::write(home.join("gpg-agent.conf"), "allow-loopback-pinentry\n").unwrap();
+        std::env::set_var("GNUPGHOME", &home);
+        assert_eq!(own_key("new@example.org"), None);
+        let fpr = create_key("New Person", "new@example.org").expect("made");
+        assert_eq!(own_key("new@example.org").as_deref(), Some(fpr.as_str()));
+        assert!(can_sign("new@example.org"));
+        assert!(missing_keys(&["new@example.org".into()]).is_empty(), "can encrypt to it too");
         std::env::remove_var("GNUPGHOME");
         let _ = std::fs::remove_dir_all(home);
     }

@@ -395,6 +395,19 @@ pub mod qobject {
         /// For compose's Sign / Encrypt: {"gpg", "canSign", "missing": [addresses without a key]}.
         #[qinvokable]
         fn pgp_ready(self: &Store, from: &QString, recipients: &QString) -> QString;
+        /// Settings › Privacy › OpenPGP: each sending address and its key:
+        /// [{"email", "name", "fingerprint"}], and whether GnuPG is installed.
+        #[qinvokable]
+        fn pgp_keys(self: &Store) -> QString;
+        /// In the background (the status line says how it went):
+        #[qinvokable]
+        fn pgp_create_key(self: &Store, name: &QString, email: &QString);
+        #[qinvokable]
+        fn pgp_import_keys(self: &Store, file_url: &QString);
+        #[qinvokable]
+        fn pgp_publish_key(self: &Store, fingerprint: &QString);
+        #[qinvokable]
+        fn pgp_look_up(self: &Store, email: &QString);
         #[qinvokable]
         fn test_alert(self: Pin<&mut Store>);
         /// Settings › General: a made-up new-mail notification, as real ones are.

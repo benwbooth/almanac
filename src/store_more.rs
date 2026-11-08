@@ -876,6 +876,55 @@ impl qobject::Store {
         q(&json!({"gpg": true, "canSign": !me.is_empty() && crate::pgp::can_sign(&me), "missing": crate::pgp::missing_keys(&to)}))
     }
 
+    pub(super) fn pgp_keys(&self) -> QString {
+        let _timed = crate::Timed::new("pgp_keys");
+        let keys: Vec<Value> = self
+            .db
+            .live
+            .iter()
+            .filter(|a| !a.smtp_host.is_empty() && !a.email.is_empty())
+            .map(|a| json!({"email": a.email, "name": if a.full_name.is_empty() { &a.name } else { &a.full_name }, "fingerprint": crate::pgp::own_key(&a.email).unwrap_or_default()}))
+            .collect();
+        q(&json!({"gpg": crate::pgp::available(), "keys": keys}))
+    }
+
+    /// Runs a key job in the background; its outcome goes to the status line
+    /// and the lists are read again.
+    fn pgp_job(&self, job: impl FnOnce() -> Result<String, String> + Send + 'static) {
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let text = match job() {
+                Ok(t) => t,
+                Err(e) => format!("OpenPGP: {e}"),
+            };
+            let _ = thread.queue(move |mut store| {
+                store.as_mut().set_status_text(QString::from(text.as_str()));
+                store.changed();
+            });
+        });
+    }
+
+    pub(super) fn pgp_create_key(&self, name: &QString, email: &QString) {
+        let (n, e) = (name.to_string(), email.to_string());
+        self.pgp_job(move || crate::pgp::create_key(&n, &e).map(|f| format!("Made an OpenPGP key for {e} ({})", &f[f.len().saturating_sub(16)..])));
+    }
+
+    pub(super) fn pgp_import_keys(&self, file_url: &QString) {
+        let u = file_url.to_string();
+        let path = std::path::PathBuf::from(u.strip_prefix("file://").unwrap_or(&u));
+        self.pgp_job(move || crate::pgp::import_keys(&path));
+    }
+
+    pub(super) fn pgp_publish_key(&self, fingerprint: &QString) {
+        let f = fingerprint.to_string();
+        self.pgp_job(move || crate::pgp::publish(&f).map(|_| "Sent your key to keys.openpgp.org: they'll email you to confirm before anyone can find it".to_string()));
+    }
+
+    pub(super) fn pgp_look_up(&self, email: &QString) {
+        let e = email.to_string().trim().to_string();
+        self.pgp_job(move || crate::pgp::look_up(&e));
+    }
+
     /// A made-up event's alert ("Test Event", in 5 minutes), shown as real ones
     /// are (always notified, so it can be tried with notifications off too).
     pub(super) fn test_alert(self: Pin<&mut Self>) {

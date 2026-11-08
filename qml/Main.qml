@@ -1000,6 +1000,7 @@ ApplicationWindow {
         else if (p === "empty") store.onboarded = true
         else if (p === "settings") settingsDialog.open()
         else if (p === "settings-mail") { settingsDialog.tab = "mail"; settingsDialog.open() }
+        else if (p === "settings-privacy") { settingsDialog.tab = "privacy"; settingsDialog.open() }
         else if (p === "chip-edit") Qt.callLater(function() { mailView.reply(false); Qt.callLater(function() { mailView.composer.toBox.field.editAt(0) }) })
         else if (/^picker-/.test(p)) { mailView.newMessage(); Qt.callLater(function() { mailView.composer.pickers.openPicker(p.slice(7)) }) }
         else if (p === "table") { mailView.newMessage(); Qt.callLater(function() { mailView.composer.bodyArea.forceActiveFocus(); mailView.composer.pickers.insertTable(3, 3) }) }
