@@ -95,6 +95,9 @@ pub mod qobject {
         /// The latest OpenPGP key job (Settings, compose's unlock):
         /// {"op", "email", "busy", "ok", "text"}.
         #[qproperty(QString, pgp_status_json, cxx_name = "pgpStatusJson")]
+        /// Attachments being uploaded to cloud storage, by file path:
+        /// {path: {"state": "uploading"|"done"|"error", "sent", "total", "name", "size", "url", "provider", "error"}}.
+        #[qproperty(QString, cloud_uploads_json, cxx_name = "cloudUploadsJson")]
         type Store = super::StoreRust;
 
         // mail
@@ -416,6 +419,17 @@ pub mod qobject {
         /// Whether the key for `email` can sign now without its passphrase.
         #[qinvokable]
         fn pgp_sign_ready(self: &Store, email: &QString) -> bool;
+        /// A file's size in bytes (0 if it can't be read).
+        #[qinvokable]
+        fn file_size(self: &Store, path: &QString) -> i64;
+        /// Whether attachments of `bytes` are too big to send from `account`:
+        /// {"over", "limitMb", "store" ("Google Drive", or "" for none), "mode"}.
+        #[qinvokable]
+        fn cloud_offer(self: &Store, account: &QString, bytes: i64) -> QString;
+        /// Uploads a file to the account's cloud storage and shares it by link
+        /// (in the background; progress in cloudUploadsJson).
+        #[qinvokable]
+        fn cloud_upload(self: &Store, account: &QString, path: &QString);
         #[qinvokable]
         fn pgp_import_keys(self: &Store, file_url: &QString);
         #[qinvokable]
@@ -519,6 +533,7 @@ pub struct StoreRust {
     signature_json: QString,
     decrypted_json: QString,
     pgp_status_json: QString,
+    cloud_uploads_json: QString,
     new_mail: i32,
     show_requests: i32,
     open_request: QString,
@@ -625,6 +640,7 @@ impl Default for StoreRust {
             signature_json: QString::from("{}"),
             decrypted_json: QString::from("{}"),
             pgp_status_json: QString::from("{}"),
+            cloud_uploads_json: QString::from("{}"),
             new_mail: 0,
             show_requests: 0,
             open_request: QString::default(),

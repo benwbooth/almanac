@@ -952,6 +952,62 @@ impl qobject::Store {
         self.pgp_job("unlock", &e.clone(), "Unlocking your key…", move || crate::pgp::unlock(&e, &p).map(|_| "Key unlocked".to_string()));
     }
 
+    pub(super) fn file_size(&self, path: &QString) -> i64 {
+        std::fs::metadata(path.to_string()).map(|m| m.len() as i64).unwrap_or(0)
+    }
+
+    pub(super) fn cloud_offer(&self, account: &QString, bytes: i64) -> QString {
+        let provider = self.db.live_account(&account.to_string()).map(|a| a.provider.clone()).unwrap_or_default();
+        let limit = crate::cloudfiles::mail_limit(&provider);
+        q(&json!({
+            "over": crate::cloudfiles::as_sent(bytes.max(0) as u64) > limit,
+            "limitMb": limit / 1024 / 1024,
+            "store": crate::cloudfiles::store_name(&provider),
+            "mode": self.db.settings.cloud_attachments,
+        }))
+    }
+
+    pub(super) fn cloud_upload(&self, account: &QString, path: &QString) {
+        let path = path.to_string();
+        let thread = self.qt_thread();
+        // One entry of cloudUploadsJson changed (on the window's thread).
+        fn report(thread: &cxx_qt::CxxQtThread<qobject::Store>, path: &str, entry: Value) {
+            let path = path.to_string();
+            let _ = thread.queue(move |mut store| {
+                let mut all: Value = serde_json::from_str(&store.cloud_uploads_json().to_string()).unwrap_or_else(|_| json!({}));
+                all[path.as_str()] = entry;
+                store.as_mut().set_cloud_uploads_json(QString::from(all.to_string().as_str()));
+            });
+        }
+        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let Some(a) = self.db.live_account(&account.to_string()).cloned() else {
+            report(&thread, &path, json!({"state": "error", "name": name, "size": size, "error": "Big attachments need a Google account to send from"}));
+            return;
+        };
+        report(&thread, &path, json!({"state": "uploading", "name": name, "size": size, "sent": 0, "total": size}));
+        std::thread::spawn(move || {
+            let result = (|| {
+                // (A stand-in Drive for tests needs no sign-in.)
+                let token = if std::env::var("ALMANAC_DRIVE_TEST_BASE").is_ok() { "test".to_string() } else { crate::live::token(&a, crate::oauth::Resource::Drive)? };
+                let store = crate::cloudfiles::store_for(&a.provider, token).ok_or("Big attachments need a Google account to send from")?;
+                let last = std::cell::Cell::new(std::time::Instant::now());
+                store.upload(std::path::Path::new(&path), &|sent, total| {
+                    // (The window hears about it a few times a second at most.)
+                    if sent < total && last.get().elapsed() < std::time::Duration::from_millis(250) {
+                        return;
+                    }
+                    last.set(std::time::Instant::now());
+                    report(&thread, &path, json!({"state": "uploading", "name": name, "size": size, "sent": sent, "total": total}));
+                })
+            })();
+            match result {
+                Ok(s) => report(&thread, &path, json!({"state": "done", "name": s.name, "size": s.size, "sent": s.size, "total": s.size, "url": s.url, "provider": s.provider})),
+                Err(e) => report(&thread, &path, json!({"state": "error", "name": name, "size": size, "error": e})),
+            }
+        });
+    }
+
     pub(super) fn pgp_sign_ready(&self, email: &QString) -> bool {
         crate::pgp::ready_to_sign(&email.to_string())
     }

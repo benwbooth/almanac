@@ -180,6 +180,16 @@ Popup {
                             CheckX { Layout.fillWidth: true; text: "Ask when an attachment is mentioned but none is attached"; checked: dlg.s.warn_missing_attachment !== false; onToggled: dlg.set("warn_missing_attachment", checked) }
                         }
                     }
+                    // Attachments over the mail account's limit (Gmail 25 MB, Outlook 20 MB).
+                    Row2 {
+                        label: "Big attachments:"
+                        ComboX {
+                            Layout.preferredWidth: 320
+                            model: ["Ask to send them through cloud storage", "Always send them through cloud storage", "Send them as they are"]
+                            currentIndex: Math.max(0, ["ask", "always", "never"].indexOf(dlg.s.cloud_attachments || "ask"))
+                            onActivated: dlg.set("cloud_attachments", ["ask", "always", "never"][currentIndex])
+                        }
+                    }
                     Row2 {
                         label: "VIPs:"
                         Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; text: dlg.lists.vips.length ? dlg.lists.vips.join(", ") : "None. Right-click a message: Add Sender to VIPs." }

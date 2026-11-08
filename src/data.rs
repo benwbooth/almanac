@@ -533,6 +533,9 @@ pub struct Settings {
     pub warn_no_subject: bool,
     /// Ask before sending when an attachment is mentioned but none is attached.
     pub warn_missing_attachment: bool,
+    /// Attachments too big for the mail account: "ask" to upload them to cloud
+    /// storage and send links, "always" upload them, or "never".
+    pub cloud_attachments: String,
     /// Underline misspelled words while writing
     pub spell_check: bool,
     /// …and grammar problems too
@@ -579,6 +582,7 @@ impl Default for Settings {
             markdown_compose: true,
             warn_no_subject: true,
             warn_missing_attachment: true,
+            cloud_attachments: "ask".into(),
             download_all_mail: true,
             mail_layout: "standard".into(),
             conversations: true,

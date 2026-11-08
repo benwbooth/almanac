@@ -26,6 +26,22 @@ pub trait CloudStore {
     fn upload(&self, path: &std::path::Path, progress: &dyn Fn(u64, u64)) -> Result<Shared, String>;
 }
 
+/// The cloud storage that goes with a kind of mail account ("" for none yet).
+pub fn store_name(provider: &str) -> &'static str {
+    match provider {
+        "google" => "Google Drive",
+        _ => "",
+    }
+}
+
+/// That storage, signed in with the account's token.
+pub fn store_for(provider: &str, token: String) -> Option<Box<dyn CloudStore + Send>> {
+    match provider {
+        "google" => Some(Box::new(GoogleDrive::new(token))),
+        _ => None,
+    }
+}
+
 /// The largest message each kind of mail account takes, attachments included
 /// (as sent: about a third bigger than the files themselves).
 pub fn mail_limit(provider: &str) -> u64 {

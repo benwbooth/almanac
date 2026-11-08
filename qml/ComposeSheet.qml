@@ -17,6 +17,77 @@ Popup {
     property var draftId: null
     property var senders: []
     property var attachments: []
+    // Attachments too big for the mail account go to cloud storage and are sent
+    // as links (as Apple Mail's Mail Drop does): their paths here; how each
+    // upload is going is in store.cloudUploadsJson.
+    property var cloudPaths: ({})
+    readonly property var uploads: { try { return JSON.parse(store.cloudUploadsJson || "{}") } catch (e) { return {} } }
+    function upload(path) { return cloudPaths[path] ? (uploads[path] || { state: "uploading", sent: 0, total: 1 }) : null }
+    readonly property bool uploading: { var u = uploads; for (var p in cloudPaths) if (!u[p] || u[p].state === "uploading") return true; return false }
+    readonly property string uploadError: { var u = uploads; for (var p in cloudPaths) if (u[p] && u[p].state === "error") return u[p].error || "An upload failed"; return "" }
+    function accountId() { return senders.length ? senders[fromBox.currentIndex].id : "" }
+    function sendToCloud(paths) {
+        var c = Object.assign({}, cloudPaths)
+        for (var i = 0; i < paths.length; i++) { c[paths[i]] = true; store.cloudUpload(accountId(), paths[i]) }
+        cloudPaths = c
+    }
+    function retryUpload(path) { store.cloudUpload(accountId(), path) }
+    // Too big to send by mail? Then offer (or, as set in Settings › Mail,
+    // just do) cloud storage for the biggest files until the rest fits.
+    property string askedFor: ""
+    Timer { id: sizeCheck; interval: 200; onTriggered: sheet.checkSize() }
+    onAttachmentsChanged: sizeCheck.restart()
+    function checkSize() {
+        var files = attachments.filter(function(p) { return !cloudPaths[p] })
+        var sizes = files.map(function(p) { return store.fileSize(p) })
+        var total = sizes.reduce(function(a, b) { return a + b }, 0)
+        var offer = JSON.parse(store.cloudOffer(accountId(), total))
+        if (!offer.over) return
+        var key = files.join("|")
+        if (key === askedFor) return
+        askedFor = key
+        // The biggest first, until what's left fits.
+        var order = files.map(function(p, i) { return { p: p, n: sizes[i] } }).sort(function(a, b) { return b.n - a.n })
+        var pick = [], left = total
+        for (var i = 0; i < order.length && JSON.parse(store.cloudOffer(accountId(), left)).over; i++) { pick.push(order[i].p); left -= order[i].n }
+        var mb = (total / 1048576).toFixed(1)
+        if (!offer.store) {
+            confirm.ask("These attachments are too big to send", "Together they're " + mb + " MB; this account takes up to " + offer.limitMb + " MB. Sending big files through cloud storage works with Google accounts for now.", "OK", null)
+            return
+        }
+        if (offer.mode === "never") return
+        if (offer.mode === "always") { sendToCloud(pick); return }
+        var names = pick.map(function(p) { return p.split(/[\\/]/).pop() }).join(", ")
+        confirm.ask("Send " + (pick.length === 1 ? "this file" : "these files") + " with " + offer.store + "?",
+                    "Together the attachments are " + mb + " MB, more than the " + offer.limitMb + " MB your mail account takes. " + names + (pick.length === 1 ? " goes" : " go")
+                    + " to your " + offer.store + " instead, and the message gets a link: anyone with the link can view and download it.",
+                    "Use " + offer.store, function() { sheet.sendToCloud(pick) })
+    }
+    // The message's HTML with the links' card at its end (inside its body).
+    function withCard(html) {
+        var card = cloudCard(true)
+        if (!card) return html
+        var at = html.lastIndexOf("</body>")
+        return at >= 0 ? html.slice(0, at) + card + html.slice(at) : html + card
+    }
+    // The links to the uploaded files, at the end of the message.
+    function cloudCard(html) {
+        var done = []
+        for (var p in cloudPaths) if (attachments.indexOf(p) >= 0 && uploads[p] && uploads[p].state === "done") done.push(uploads[p])
+        if (!done.length) return ""
+        var esc = function(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
+        var size = function(n) { return n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB" }
+        if (!html) return "\n\n" + done.map(function(u) { return u.name + " (" + size(u.size) + ", " + u.provider + "): " + u.url }).join("\n") + "\n"
+        var h = '<div style="margin:18px 0 6px;padding:10px 14px;border:1px solid #d5d8de;border-radius:10px;max-width:520px;font-family:-apple-system,Segoe UI,sans-serif;font-size:13px">'
+              + '<div style="color:#6b6f76;font-size:12px;margin-bottom:6px">Shared with ' + esc(done[0].provider) + '</div>'
+        for (var i = 0; i < done.length; i++)
+            h += '<div style="margin:4px 0">📎 <a href="' + esc(done[i].url) + '" style="color:#0062cc;text-decoration:none;font-weight:600">' + esc(done[i].name) + '</a> <span style="color:#6b6f76">' + size(done[i].size) + '</span></div>'
+        return h + '</div>'
+    }
+    // Send pressed while files are still uploading: sent once they're up.
+    property var sendWhenUploaded: null
+    onUploadingChanged: if (!uploading && sendWhenUploaded) { var w = sendWhenUploaded; sendWhenUploaded = null; if (uploadError === "") send(w.at, "uploaded") }
+    onUploadErrorChanged: if (uploadError !== "") sendWhenUploaded = null
     property string inReplyTo: ""
     // OpenPGP: sign with your key, encrypt to every recipient (and you).
     property bool sign: false
@@ -168,6 +239,7 @@ Popup {
         showBcc = !!m.bcc
         subjectRow.field.text = m.subject || ""
         attachments = m.attachments || []
+        cloudPaths = ({}); askedFor = ""; sendWhenUploaded = null
         forwardOf = -1
         inReplyTo = m.inReplyTo || ""
         // (A reply to an encrypted message is encrypted too, when it can be.)
@@ -192,7 +264,8 @@ Popup {
     function plainText() { return body.getText(0, body.length).replace(/\u200b/g, "").replace(/[\ufdd0\ufdd1]/g, "\n") }
     function payload() {
         var p = { to: toRow.field.text, cc: ccRow.field.text, bcc: bccRow.field.text, subject: subjectRow.field.text,
-                  body: plainText(), html: store.restoreColours(body.text.replace(/\u200b|&#8203;/g, ""), JSON.stringify(colourBack)), attachments: attachments, inReplyTo: inReplyTo,
+                  body: plainText() + cloudCard(false), html: withCard(store.restoreColours(body.text.replace(/\u200b|&#8203;/g, ""), JSON.stringify(colourBack))),
+                  attachments: attachments.filter(function(p) { return !sheet.cloudPaths[p] || !sheet.uploads[p] || sheet.uploads[p].state !== "done" }), inReplyTo: inReplyTo,
                   account: senders.length ? senders[fromBox.currentIndex].id : "", sign: sign, encrypt: encrypt }
         if (draftId !== null) p.draftId = draftId
         return p
@@ -238,6 +311,12 @@ Popup {
                             "Attach File…", function() { sheet.attachFiles() })
                 return
             }
+        }
+        // Files still going up to cloud storage: sent when they're there.
+        if (uploading) { sendWhenUploaded = { at: atMs }; return }
+        if (uploadError !== "") {
+            confirm.ask("An attachment couldn't be uploaded", uploadError, "OK", null)
+            return
         }
         // Signing needs the key unlocked: Almanac asks for its passphrase.
         if (sign && checked !== "unlocked" && !store.pgpSignReady(senderEmail())) {
@@ -557,7 +636,15 @@ Popup {
             active: sheet.active
             popupParent: pane
         }
-        // Attachments
+        // Attachments (those sent through cloud storage: a cloud, how far the
+        // upload is, then a link)
+        Text {
+            visible: sheet.sendWhenUploaded !== null
+            Layout.fillWidth: true
+            Layout.leftMargin: 12; Layout.rightMargin: 12; Layout.topMargin: 8
+            text: "Sending as soon as the uploads finish…"
+            color: Theme.secondary; font.pixelSize: 12
+        }
         Flow {
             visible: sheet.attachments.length > 0
             Layout.fillWidth: true
@@ -566,23 +653,51 @@ Popup {
             Repeater {
                 model: sheet.attachments
                 delegate: Rectangle {
+                    id: chipBox
                     required property string modelData
                     required property int index
+                    readonly property var up: sheet.upload(modelData)
+                    readonly property real done: up && up.total ? Math.min(1, up.sent / up.total) : 0
                     width: chip.implicitWidth + 16
                     height: 30
                     radius: 8
                     color: Theme.segment
+                    clip: true
+                    // How far the upload is, along the chip's foot.
+                    Rectangle {
+                        visible: !!chipBox.up && chipBox.up.state === "uploading"
+                        anchors.left: parent.left; anchors.bottom: parent.bottom
+                        height: 3; width: parent.width * chipBox.done
+                        color: Theme.accent
+                    }
                     Row {
                         id: chip
                         anchors.centerIn: parent
                         spacing: 6
-                        Icon { name: "paperclip"; width: 14; height: 14; color: Theme.secondary; anchors.verticalCenter: parent.verticalCenter }
+                        Icon { name: chipBox.up ? "cloud" : "paperclip"; width: 14; height: 14; color: chipBox.up && chipBox.up.state === "done" ? Theme.accent : Theme.secondary; anchors.verticalCenter: parent.verticalCenter }
                         Text { text: modelData.split(/[\\/]/).pop(); color: Theme.text; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                        Text {
+                            visible: !!chipBox.up
+                            anchors.verticalCenter: parent.verticalCenter
+                            font.pixelSize: 11
+                            color: chipBox.up && chipBox.up.state === "error" ? Theme.red : Theme.secondary
+                            text: !chipBox.up ? "" : chipBox.up.state === "uploading" ? Math.round(chipBox.done * 100) + "%"
+                                  : chipBox.up.state === "done" ? (chipBox.up.provider || "Link") : "Upload failed"
+                        }
+                        Text {
+                            visible: !!chipBox.up && chipBox.up.state === "error"
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Retry"; color: Theme.accent; font.pixelSize: 11
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: sheet.retryUpload(chipBox.modelData) }
+                        }
                         Icon {
                             name: "close"; width: 12; height: 12; color: Theme.secondary; anchors.verticalCenter: parent.verticalCenter
                             MouseArea { anchors.fill: parent; onClicked: { var l = sheet.attachments.slice(); l.splice(index, 1); sheet.attachments = l } }
                         }
                     }
+                    ToolTip.visible: chipHover.hovered && !!chipBox.up
+                    ToolTip.text: !chipBox.up ? "" : chipBox.up.state === "error" ? (chipBox.up.error || "") : chipBox.up.state === "done" ? "Sent as a link: anyone with it can view the file" : "Uploading to cloud storage"
+                    HoverHandler { id: chipHover }
                 }
             }
         }

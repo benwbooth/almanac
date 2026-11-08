@@ -873,6 +873,8 @@ ApplicationWindow {
         // One message by its id (--id N), for pictures and checks against a copy of real mail.
         else if (p === "message") Qt.callLater(function() { mailView.openMessageById(parseInt(store.arg("--id"))) })
         else if (p === "compose") mailView.composeNew()
+        // A new message with a file attached (--attach <path>), e.g. a big one.
+        else if (p === "compose-attach") mailView.composer.openWith({ to: "me@example.com", subject: "Big file", body: "Here it is.\n", attachments: [store.arg("--attach")] })
         else if (p === "event") calendarView.editFirst()
         else if (p === "invite") mailView.selectInvite()
         else if (p === "newsletter") mailView.selectSubject("Spring newsletter")
