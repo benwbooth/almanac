@@ -1930,6 +1930,7 @@ Item {
                     subject: mail.current ? mail.current.subject : ""
                     formatted: mail.formatted
                     darkMessages: !!mail.prefs.dark_messages
+                    readableLogos: mail.prefs.readable_logos !== false
                     loadRemoteAlways: !!mail.prefs.load_remote
                     remoteLoaded: mail.remoteLoaded
                     remoteSenders: mail.prefs.remote_senders || []

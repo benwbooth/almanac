@@ -1051,6 +1051,29 @@ impl qobject::Store {
         });
     }
 
+    pub(super) fn image_stats(&self, src: &QString) {
+        let src = src.to_string();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            static SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, serde_json::Value>>> = std::sync::Mutex::new(None);
+            let cached = SEEN.lock().ok().and_then(|c| c.as_ref().and_then(|c| c.get(&src).cloned()));
+            let v = cached.unwrap_or_else(|| {
+                let v = picture_bytes(&src).and_then(|b| picture_stats(&b)).unwrap_or_else(|| json!({"ok": false}));
+                if let Ok(mut c) = SEEN.lock() {
+                    let c = c.get_or_insert_with(Default::default);
+                    if c.len() > 500 {
+                        c.clear();
+                    }
+                    c.insert(src.clone(), v.clone());
+                }
+                v
+            });
+            let mut v = v;
+            v["src"] = json!(src);
+            let _ = thread.queue(move |mut store| store.as_mut().set_image_stats_json(QString::from(v.to_string().as_str())));
+        });
+    }
+
     pub(super) fn list_info(&self, id: i64) {
         let Some(m) = self.db.get(id) else { return };
         let live = self.db.live_message(id);
@@ -2011,6 +2034,93 @@ fn attachment_path(m: &crate::data::Message, live: Option<(LiveAccount, String, 
 }
 
 /// The whole original message (Thunderbird mailbox file or mail server).
+/// A picture's bytes: from a data: address, or (already shown in a message,
+/// so its server was allowed) fetched once more from the internet. At most 3 MB.
+fn picture_bytes(src: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    if let Some(rest) = src.strip_prefix("data:") {
+        let (head, data) = rest.split_once(',')?;
+        return if head.ends_with(";base64") {
+            base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()
+        } else {
+            Some(data.as_bytes().to_vec())
+        };
+    }
+    if !src.starts_with("https://") && !src.starts_with("http://") {
+        return None;
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(10))).build().into();
+    let resp = agent.get(src).header("User-Agent", "Mozilla/5.0").call().ok()?;
+    resp.into_body().with_config().limit(3 * 1024 * 1024).read_to_vec().ok()
+}
+
+/// How a picture looks, for making dark logos readable on a dark page: the
+/// share of see-through pixels; the middle (median) relative luminance of the
+/// others, and theirs after `invert(1) hue-rotate(180deg)` (lightness turned
+/// round, the hue kept); and whether it's one colour (black, grey, or one hue).
+pub(crate) fn picture_stats(bytes: &[u8]) -> Option<serde_json::Value> {
+    let img = cxx_qt_lib::QImage::from_data(bytes, None)?;
+    let (w, h) = (img.width(), img.height());
+    if w < 1 || h < 1 {
+        return None;
+    }
+    // About 40 000 pixels looked at, evenly.
+    let step = (((w as f64 * h as f64) / 40_000.0).sqrt().ceil() as i32).max(1);
+    let lin = |c: f64| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+    let lum = |r: f64, g: f64, b: f64| 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    let (mut total, mut clear) = (0usize, 0usize);
+    let (mut lums, mut invs) = (Vec::new(), Vec::new());
+    let mut hues = [0usize; 24];
+    let mut colourful = 0usize;
+    let mut y = 0;
+    while y < h {
+        let mut x = 0;
+        while x < w {
+            let c = img.pixel_color(x, y);
+            total += 1;
+            if (c.alpha_f() as f64) < 0.5 {
+                clear += 1;
+            } else {
+                let (r, g, b) = (c.red_f() as f64, c.green_f() as f64, c.blue_f() as f64);
+                lums.push(lum(r, g, b));
+                // invert(1), then hue-rotate(180deg) (the CSS matrix: luma kept).
+                let (ir, ig, ib) = (1.0 - r, 1.0 - g, 1.0 - b);
+                let cl = |v: f64| v.clamp(0.0, 1.0);
+                let (hr, hg, hb) = (
+                    cl(-0.574 * ir + 1.430 * ig + 0.144 * ib),
+                    cl(0.426 * ir + 0.430 * ig + 0.144 * ib),
+                    cl(0.426 * ir + 1.430 * ig - 0.856 * ib),
+                );
+                invs.push(lum(hr, hg, hb));
+                let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+                let l = (mx + mn) / 2.0;
+                let s = if mx == mn { 0.0 } else { (mx - mn) / (1.0 - (2.0 * l - 1.0).abs()).max(1e-6) };
+                if s > 0.2 && l > 0.08 && l < 0.92 {
+                    colourful += 1;
+                    let d = mx - mn;
+                    let hue = if mx == r { ((g - b) / d).rem_euclid(6.0) } else if mx == g { (b - r) / d + 2.0 } else { (r - g) / d + 4.0 } / 6.0;
+                    hues[((hue * 24.0) as usize).min(23)] += 1;
+                }
+            }
+            x += step;
+        }
+        y += step;
+    }
+    let opaque = lums.len();
+    if opaque == 0 {
+        return Some(json!({"ok": true, "transparent": 1.0, "lum": 0.0, "invLum": 1.0, "mono": true}));
+    }
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v[v.len() / 2]
+    };
+    // One colour: hardly any colourful pixels (black or grey), or nearly all
+    // of them within one stretch of hue (three of 24 steps).
+    let mono = colourful * 100 < opaque * 15
+        || (0..24).map(|i| hues[i] + hues[(i + 1) % 24] + hues[(i + 2) % 24]).max().unwrap_or(0) * 100 >= colourful * 85;
+    Some(json!({"ok": true, "transparent": clear as f64 / total as f64, "lum": median(&mut lums), "invLum": median(&mut invs), "mono": mono}))
+}
+
 /// Message `m`'s list and how to leave it: from its kept list headers, else
 /// (mail stored before they were kept) its source here or on the server,
 /// which are then kept.
@@ -2074,5 +2184,31 @@ mod notify_tests {
         eprintln!("shown, id {}", shown.id());
         std::thread::sleep(std::time::Duration::from_secs(3));
         shown.close();
+    }
+}
+
+#[cfg(test)]
+mod logo_tests {
+    use base64::Engine;
+    /// Pictures looked at for dark logos: see-through or not, how light,
+    /// one colour or several, and how light once lightened (its hue kept).
+    #[test]
+    fn pictures_are_told_apart() {
+        let png = |b: &str| base64::engine::general_purpose::STANDARD.decode(b).unwrap();
+        // A dark purple mark on a see-through picture: one colour, dark; light once turned round.
+        let mono = super::picture_stats(&png("iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDwxcbtDyAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEyKzAwOjAwIgfZvQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMiswMDowMFNaYQEAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTIrMDA6MDAET0DeAAAAS0lEQVRYw+3PsREAEBBE0aMcrShJrCStaIdMIDZurP/CjfabAXhZ2IecyvA+dVrrdXVG7zO3EayOYHUEqyNYHcHqCFZHsLrvggExE9geBCK+Qfv/AAAAAElFTkSuQmCC")).expect("read");
+        assert!(mono["transparent"].as_f64().unwrap() > 0.2, "{mono}");
+        assert!(mono["mono"].as_bool().unwrap(), "{mono}");
+        assert!(mono["lum"].as_f64().unwrap() < 0.1 && mono["invLum"].as_f64().unwrap() > 0.4, "{mono}");
+        // Blue and orange: several colours (a backdrop, never recoloured).
+        let multi = super::picture_stats(&png("iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDw0raeBkAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEzKzAwOjAwhHDSCQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMyswMDowMPUtarUAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTMrMDA6MDCiOEtqAAAAVklEQVRYw+3PsQ3AIBAEQaAK9MXRBHXQhIt70YWJICDHss874SWnDQHAl8V9sNrv06fecuyXHf+ZcvHVmZ46fQuC1RGsjmB1BKsjWB3B6ghW97tgQMwAypwIIvcLTMwAAAAASUVORK5CYII=")).expect("read");
+        assert!(!multi["mono"].as_bool().unwrap(), "{multi}");
+        // No see-through pixels: left as it is.
+        let opaque = super::picture_stats(&png("iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAIAAAADnC86AAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDw0raeBkAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEzKzAwOjAwhHDSCQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMyswMDowMPUtarUAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTMrMDA6MDCiOEtqAAAAMklEQVRYw+3NAQ0AMAgAoPtKdrKTbY3h5qAAkdVvw19ZxWKxWCwWi8VisVgsFovFR+MBnyUBgmLuQ60AAAAASUVORK5CYII=")).expect("read");
+        assert!(opaque["transparent"].as_f64().unwrap() < 0.01, "{opaque}");
+        // Not a picture.
+        assert!(super::picture_stats(b"not a picture").is_none());
+        // data: addresses read.
+        assert_eq!(super::picture_bytes("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDwxcbtDyAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEyKzAwOjAwIgfZvQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMiswMDowMFNaYQEAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTIrMDA6MDAET0DeAAAAS0lEQVRYw+3PsREAEBBE0aMcrShJrCStaIdMIDZurP/CjfabAXhZ2IecyvA+dVrrdXVG7zO3EayOYHUEqyNYHcHqCFZHsLrvggExE9geBCK+Qfv/AAAAAElFTkSuQmCC").map(|b| b.len()), Some(png("iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDwxcbtDyAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEyKzAwOjAwIgfZvQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMiswMDowMFNaYQEAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTIrMDA6MDAET0DeAAAAS0lEQVRYw+3PsREAEBBE0aMcrShJrCStaIdMIDZurP/CjfabAXhZ2IecyvA+dVrrdXVG7zO3EayOYHUEqyNYHcHqCFZHsLrvggExE9geBCK+Qfv/AAAAAElFTkSuQmCC").len()));
     }
 }

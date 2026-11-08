@@ -124,6 +124,33 @@ WebEngineView {
     property string subject: ""
     property bool formatted: true
     property bool darkMessages: true
+    // Dark logos made readable in dark mode (see logos() in the page).
+    property bool readableLogos: true
+    // A colour as [r, g, b] (0–255).
+    function rgbOf(c) { return [Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255)] }
+    // Pictures looked at (store.imageStats), by address: kept while Almanac runs.
+    property var logoStats: ({})
+    function sendLogo(src, st) { web.runJavaScript("if(window.lgApply){window.__lgStats[" + JSON.stringify(src) + "]=" + JSON.stringify(st) + ";lgApply(" + JSON.stringify(src) + ")}") }
+    Timer {
+        interval: 600; repeat: true
+        running: web.darkify && web.readableLogos && web.store !== null && web.visible
+        onTriggered: web.runJavaScript("(function(){var a=window.__lgAsk||[];window.__lgAsk=[];return a})()", function(a) {
+            for (var i = 0; i < (a || []).length; i++) {
+                var src = a[i]
+                if (web.logoStats[src]) web.sendLogo(src, web.logoStats[src])
+                else { web.logoStats[src] = { pending: true }; web.store.imageStats(src) }
+            }
+        })
+    }
+    Connections {
+        target: web.store
+        function onImageStatsJsonChanged() {
+            var st = JSON.parse(web.store.imageStatsJson || "{}")
+            if (!st.src) return
+            web.logoStats[st.src] = st
+            web.sendLogo(st.src, st)
+        }
+    }
     property bool loadRemoteAlways: false
     property var remoteLoaded: ({})
     // In a conversation: which messages were opened or closed by hand, and whose
@@ -831,6 +858,26 @@ WebEngineView {
            + 'var n=bi.split(/,(?![^(]*\\))/).length,modes=[];for(var k=0;k<n;k++)modes.push("multiply");'
            + 'el.style.setProperty("background-blend-mode",modes.join(","),"important");'
            + 'if(/rgba\\(0, 0, 0, 0\\)|transparent/.test(cs.backgroundColor))el.style.setProperty("background-color","#26262b","important")}}'
+           // Dark logos made readable (Settings › Mail): each see-through picture,
+           // once shown, is looked at by Almanac (store.imageStats); a dark one-colour
+           // logo is lightened (its hue kept), others get a light backdrop. Only
+           // where it's too dark for the background behind it (contrast under 3:1).
+           + 'var LOGOS=' + (web.readableLogos ? 'true' : 'false') + ',PANE=' + JSON.stringify(web.rgbOf(Theme.window)) + ';'
+           + 'window.__lgAsk=[];window.__lgImgs={};window.__lgStats={};'
+           + 'function lgLin(c){c/=255;return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}'
+           + 'function lgLum(r,g,b){return 0.2126*lgLin(r)+0.7152*lgLin(g)+0.0722*lgLin(b)}'
+           + 'function lgCon(a,b){var x=Math.max(a,b),y=Math.min(a,b);return (x+0.05)/(y+0.05)}'
+           + 'function lgBack(im){var d=im.ownerDocument,win=d.defaultView,el=im.parentElement;while(el){var c=win.getComputedStyle(el).backgroundColor,m=c&&c.match(/rgba?\\(([\\d.]+), ([\\d.]+), ([\\d.]+)(?:, ([\\d.]+))?\\)/);'
+           + 'if(m&&(m[4]===undefined||parseFloat(m[4])>0.5)){var r=+m[1],g=+m[2],b=+m[3];if(0.299*r+0.587*g+0.114*b>205){var Y=lgLum(r,g,b),L=Y>0.008856?116*Math.cbrt(Y)-16:903.3*Y;L=100-L;var f=(L+16)/116;return L>8?f*f*f:L/903.3}return lgLum(r,g,b)}el=el.parentElement}'
+           + 'return lgLum(PANE[0],PANE[1],PANE[2])}'
+           + 'function lgApply(src){var st=window.__lgStats[src];if(!st||!st.ok)return;(window.__lgImgs[src]||[]).forEach(function(im){if(im.__lgDone)return;im.__lgDone=1;'
+           + 'if(st.transparent<0.2)return;var bg=lgBack(im);if(lgCon(st.lum,bg)>=3)return;'
+           + 'if(st.mono&&lgCon(st.invLum,bg)>=3){im.style.setProperty("filter","invert(1) hue-rotate(180deg)","important");im.setAttribute("data-almanac-logo","light");return}'
+           + 'im.style.setProperty("background-color","#f2f2f2","important");im.style.setProperty("padding","4px","important");im.style.setProperty("border-radius","6px","important");im.setAttribute("data-almanac-logo","backdrop")})}'
+           + 'function lgOne(im){if(im.__lg||!im.complete||!im.naturalWidth||im.naturalWidth<16||im.naturalHeight<16)return;var s=im.currentSrc||im.src||"";'
+           + 'if(!/^(https?:|data:image\\/(png|gif|webp|svg))/i.test(s)||/\\.jpe?g(\\?|$)/i.test(s))return;im.__lg=1;(window.__lgImgs[s]=window.__lgImgs[s]||[]).push(im);'
+           + 'if(window.__lgStats[s])lgApply(s);else if(window.__lgAsk.indexOf(s)<0)window.__lgAsk.push(s)}'
+           + 'window.lgApply=lgApply;function logos(d){if(!DARK||!LOGOS||!d||!d.images)return;[].forEach.call(d.images,function(im){lgOne(im);if(!im.__lgL){im.__lgL=1;im.addEventListener("load",function(){lgOne(im)})}})}'
            + 'var fr=[].slice.call(document.querySelectorAll("iframe"));'
            // Opening and closing messages, and their details, right here (no reload);
            // Almanac is told so the choice stays when the page is next drawn.
@@ -870,7 +917,7 @@ WebEngineView {
            // body exists, and again as pictures come in.
            + 'fr.forEach(function(f){function go(){if(f.__raf)return;f.__raf=requestAnimationFrame(function(){f.__raf=0;fit(f)})}'
            + 'function ready(){var d;try{d=f.contentDocument}catch(e){return false}if(!d||!d.body||f.__ready===d)return !!(d&&d.body);'
-           + 'f.__ready=d;tint(d);fit(f,true);'
+           + 'f.__ready=d;tint(d);logos(d);fit(f,true);'
            // (Not a ResizeObserver on the email's body: watching bodies in other
            // frames made Chromium report changes every frame, a page busy redrawing
            // at 60 per second. A light look twice a second instead, for frames on screen.)
@@ -967,7 +1014,7 @@ WebEngineView {
             pv[m.id] = web.previewsOf(m)
             pvKey.push(m.id + ":" + pv[m.id].map(function(p) { return p.name + p.data.length + "/" + (p.pages || []).length + (p.making ? "m" : "") }).join(","))
         }
-        var key = JSON.stringify([web.messages, web.subject, web.formatted, web.darkMessages, web.darkify, web.loadRemoteAlways,
+        var key = JSON.stringify([web.messages, web.subject, web.formatted, web.darkMessages, web.darkify, web.readableLogos, web.loadRemoteAlways,
                                   web.remoteLoaded, web.remoteSenders, Theme.dark, pvKey])
         if (key === shownKey) return
         paneLog("page reloaded (" + web.messages.length + " message(s))")

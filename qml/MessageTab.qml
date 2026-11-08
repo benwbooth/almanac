@@ -91,6 +91,7 @@ Item {
             subject: t.current ? t.current.subject : ""
             formatted: t.view.formatted
             darkMessages: !!t.view.prefs.dark_messages
+            readableLogos: t.view.prefs.readable_logos !== false
             loadRemoteAlways: !!t.view.prefs.load_remote
             remoteLoaded: t.view.remoteLoaded
             remoteSenders: t.view.prefs.remote_senders || []

@@ -64,6 +64,9 @@ pub mod qobject {
         /// A message's list and how to leave it (list_info): {"id", "list",
         /// "key", "oneClick", "mailto", "https", "unsubscribed"} ("list" "": none).
         #[qproperty(QString, list_json, cxx_name = "listJson")]
+        /// A picture looked at (image_stats): {"src", "ok", "transparent",
+        /// "lum", "invLum", "mono"}.
+        #[qproperty(QString, image_stats_json, cxx_name = "imageStatsJson")]
         /// The junk filter on message `id` (junk_check): {"id", "score",
         /// "junk", "inJunk", "taught"}.
         #[qproperty(QString, junk_json, cxx_name = "junkJson")]
@@ -476,6 +479,11 @@ pub mod qobject {
         /// Teaches the filter in the background (from a Move to Junk).
         #[qinvokable]
         fn teach_junk(self: &Store, ids_json: &QString, spam: bool);
+        /// Looks at a picture shown in a message (a data: address, or one on the
+        /// internet already loaded there), in the background: how see-through it
+        /// is, how light, and whether it's one colour (answer in imageStatsJson).
+        #[qinvokable]
+        fn image_stats(self: &Store, src: &QString);
         /// Whether message `id` is from a mailing list, and how to leave it
         /// (read from its headers in the background; the answer in listJson).
         #[qinvokable]
@@ -613,6 +621,7 @@ pub struct StoreRust {
     window_json: QString,
     mail_check_done: QString,
     list_json: QString,
+    image_stats_json: QString,
     junk_json: QString,
     junk_suspects_json: QString,
     revision: i32,
@@ -743,6 +752,7 @@ impl Default for StoreRust {
             window_json: QString::from("{}"),
             mail_check_done: QString::from("{}"),
             list_json: QString::from("{}"),
+            image_stats_json: QString::from("{}"),
             junk_json: QString::from("{}"),
             junk_suspects_json: QString::from("[]"),
             onboarded: db.onboarded,

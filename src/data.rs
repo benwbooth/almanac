@@ -524,6 +524,9 @@ pub struct Settings {
     /// Dark mode: show messages on a dark background (those that set their
     /// own colours still get a light page, as in Apple Mail).
     pub dark_messages: bool,
+    /// Dark mode: dark logos on see-through pictures made readable (single-
+    /// colour ones lightened, others given a light backdrop).
+    pub readable_logos: bool,
     /// Load pictures from the internet in messages without asking.
     pub load_remote: bool,
     /// Senders (lower-case addresses) whose remote content always loads.
@@ -589,6 +592,7 @@ impl Default for Settings {
             mark_read_on_open: true,
             show_formatted: true,
             dark_messages: true,
+            readable_logos: true,
             load_remote: false,
             remote_senders: Vec::new(),
             spell_check: true,
