@@ -158,8 +158,8 @@ pub fn prepare_google(known: &str, progress: &dyn Fn(String)) -> Result<String, 
     } else {
         progress(format!("Using your existing project {project}…"));
     }
-    progress("Turning on Gmail, Calendar and Contacts for it…".into());
-    run(&gc, &["services", "enable", "gmail.googleapis.com", "calendar-json.googleapis.com", "people.googleapis.com", "--project", &project])
+    progress("Turning on Gmail, Calendar, Contacts and Drive for it…".into());
+    run(&gc, &["services", "enable", "gmail.googleapis.com", "calendar-json.googleapis.com", "people.googleapis.com", "drive.googleapis.com", "--project", &project])
         .map_err(|e| format!("Could not turn on the services: {e}"))?;
     Ok(project)
 }

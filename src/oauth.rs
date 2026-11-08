@@ -325,6 +325,9 @@ pub enum Resource {
     Mail,
     /// Calendars and contacts (Google APIs / Microsoft Graph)
     Data,
+    /// Files Almanac puts in the account's cloud storage (big attachments sent
+    /// as links): Google Drive (only files Almanac made), OneDrive.
+    Drive,
 }
 
 /// Stand-in provider used by the automated tests (address from ALMANAC_OAUTH_TEST_BASE).
@@ -356,10 +359,12 @@ fn token_url(provider: &str, tenant: &str) -> String {
 
 pub fn scopes(provider: &str, r: &Resource) -> &'static str {
     match (provider, r) {
+        (GOOGLE, Resource::Drive) => "https://www.googleapis.com/auth/drive.file",
         (GOOGLE, _) => "openid email https://mail.google.com/ https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/contacts",
         (YAHOO, _) | (AOL, _) => "openid email mail-w",
         (TEST, _) => "openid email",
         (_, Resource::Mail) => "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
+        (_, Resource::Drive) => "offline_access https://graph.microsoft.com/Files.ReadWrite",
         (_, Resource::Data) => "offline_access openid email https://graph.microsoft.com/User.Read https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/Contacts.ReadWrite",
     }
 }
@@ -545,7 +550,10 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
     let round = SIGN_IN_ROUND.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let verifier = random_string(48);
     let state = random_string(16);
-    let scope = if provider != MICROSOFT {
+    let scope = if provider == GOOGLE {
+        // (Drive too, for big attachments: only files Almanac itself puts there.)
+        format!("{} {}", scopes(GOOGLE, &Resource::Data), scopes(GOOGLE, &Resource::Drive))
+    } else if provider != MICROSOFT {
         scopes(provider, &Resource::Data).to_string()
     } else {
         // Ask for mail and calendar/contacts consent together.
@@ -703,7 +711,7 @@ pub fn refresh_with(provider: &str, client_id: &str, client_secret: &str, tenant
 
 /// A current access token for the account (refreshed when needed).
 pub fn access_token(account_id: &str, provider: &str, client_id: &str, client_secret: &str, tenant: &str, r: Resource) -> Result<String, String> {
-    let key = format!("{account_id}:{}", match r { Resource::Mail => "mail", Resource::Data => "data" });
+    let key = format!("{account_id}:{}", match r { Resource::Mail => "mail", Resource::Data => "data", Resource::Drive => "drive" });
     if let Some((tok, until)) = TOKENS.lock().unwrap().as_ref().and_then(|m| m.get(&key)).cloned() {
         if Instant::now() < until {
             return Ok(tok);
