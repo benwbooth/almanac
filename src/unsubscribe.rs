@@ -53,6 +53,23 @@ fn header(headers: &str, name: &str) -> Option<String> {
     out
 }
 
+/// The list's header lines from a message's headers (unfolded, CRLF ended),
+/// to keep: "" when it isn't from a list.
+pub fn list_headers(raw: &[u8]) -> String {
+    let end = raw.windows(4).position(|w| w == b"\r\n\r\n").or_else(|| raw.windows(2).position(|w| w == b"\n\n")).unwrap_or(raw.len());
+    let text = String::from_utf8_lossy(&raw[..end]).replace("\r\n", "\n");
+    if header(&text, "List-Unsubscribe").is_none() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for name in ["List-Id", "List-Unsubscribe", "List-Unsubscribe-Post"] {
+        if let Some(v) = header(&text, name) {
+            out.push_str(&format!("{name}: {v}\r\n"));
+        }
+    }
+    out
+}
+
 /// Reads a message's headers (the start of its source: up to the first
 /// blank line). None when it isn't from a list one can leave.
 pub fn parse(raw: &[u8], from_email: &str) -> Option<ListInfo> {
@@ -176,6 +193,12 @@ mod tests {
         assert_eq!((info.one_click, info.https.as_deref(), info.key.as_str()), (None, Some("https://shop.example/unsub?u=1"), "deals@shop.example"));
         // Not from a list.
         assert!(parse(b"From: a@b.example\r\nSubject: hi\r\n\r\n", "a@b.example").is_none());
+        assert_eq!(list_headers(b"From: a@b.example\r\nSubject: hi\r\n\r\n"), "");
+        // What's kept reads the same as the whole headers.
+        let raw = b"From: Garden Club <news@garden.example>\r\nList-Id: \"Garden Club News\" <news.garden.example>\r\nList-Unsubscribe: <mailto:leave@garden.example?subject=Remove%20me>,\r\n <https://garden.example/u/abc123>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nSubject: Spring\r\n\r\n";
+        let kept = list_headers(raw);
+        assert_eq!(kept.lines().count(), 3);
+        assert_eq!(parse(kept.as_bytes(), "news@garden.example"), parse(raw, "news@garden.example"));
     }
 
     #[test]

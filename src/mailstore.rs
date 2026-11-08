@@ -163,6 +163,10 @@ fn open_at(path: &Path) -> Result<Connection, String> {
     // in a moment (a column of the messages would mean remaking the list's index
     // or reading scattered rows of a file of gigabytes).
     c.execute_batch("CREATE TABLE IF NOT EXISTS flag_colors(id INTEGER PRIMARY KEY, color INTEGER NOT NULL)").map_err(|e| e.to_string())?;
+    // Mailing lists' headers (how to unsubscribe), kept as mail arrives.
+    c.execute_batch("CREATE TABLE IF NOT EXISTS list_heads(id INTEGER PRIMARY KEY, heads TEXT NOT NULL)").map_err(|e| e.to_string())?;
+    // (Mail stored before then wasn't looked at: its headers are read when it's opened.)
+    c.execute_batch("INSERT OR IGNORE INTO meta(key, value) SELECT 'list_heads_after', CAST(COALESCE(MAX(id), 0) AS TEXT) FROM messages").map_err(|e| e.to_string())?;
     // Mail stored before there was a search index (or by an older Almanac
     // since it was built): index all of it once.
     let built: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'search'", [], |r| r.get(0)).ok();
@@ -744,6 +748,38 @@ pub fn conv_messages(folder: &str, tkey: &str) -> Vec<Message> {
 }
 
 /// The text, formatted text and invitation of one message.
+/// A message's mailing-list headers, when kept: Some("") for mail known not
+/// to be from a list, None when not known. `synced`: the message came in by
+/// a server check (whose headers are kept as they arrive).
+pub fn list_heads(id: i64, synced: bool) -> Option<String> {
+    list_heads_at(&db_path(), id, synced)
+}
+
+fn list_heads_at(path: &Path, id: i64, synced: bool) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    with_conn(path, |c| {
+        if let Ok(h) = c.query_row("SELECT heads FROM list_heads WHERE id = ?1", params![id], |r| r.get(0)) {
+            return Ok(Some(h));
+        }
+        // Stored since the headers have been kept: not from a list.
+        let after: i64 = c.query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'list_heads_after'", [], |r| r.get(0)).unwrap_or(i64::MAX);
+        Ok(if synced && id > after { Some(String::new()) } else { None })
+    })
+    .ok()
+    .flatten()
+}
+
+/// Keeps a message's mailing-list headers (read later from its source).
+pub fn keep_list_heads(id: i64, heads: &str) {
+    let path = db_path();
+    if !path.exists() {
+        return;
+    }
+    let _ = with_conn(&path, |c| c.execute("INSERT OR REPLACE INTO list_heads(id, heads) VALUES(?1, ?2)", params![id, heads]).map_err(|e| e.to_string()));
+}
+
 pub fn text(id: i64) -> Option<(String, String, String)> {
     text_at(&db_path(), id)
 }
@@ -859,7 +895,7 @@ fn load_from(path: &Path) -> Result<Vec<Message>, String> {
 
 fn save_to(path: &Path, messages: &[Message], saved: &mut HashMap<i64, u64>) -> Result<Vec<i64>, String> {
     let now: HashMap<i64, u64> = messages.iter().map(|m| (m.id, fingerprint(m))).collect();
-    let changed: Vec<&Message> = messages.iter().filter(|m| has_text(m) || saved.get(&m.id) != now.get(&m.id)).collect();
+    let changed: Vec<&Message> = messages.iter().filter(|m| has_text(m) || !m.list_heads.is_empty() || saved.get(&m.id) != now.get(&m.id)).collect();
     let gone: Vec<i64> = saved.keys().filter(|id| !now.contains_key(id)).copied().collect();
     if changed.is_empty() && gone.is_empty() {
         return Ok(vec![]);
@@ -925,11 +961,17 @@ fn save_to(path: &Path, messages: &[Message], saved: &mut HashMap<i64, u64>) -> 
                     uncolor.execute(params![m.id]).map_err(|e| e.to_string())?;
                 }
             }
+            let mut heads = tx.prepare_cached("INSERT OR REPLACE INTO list_heads(id, heads) VALUES(?1, ?2)").map_err(|e| e.to_string())?;
+            for m in changed.iter().filter(|m| !m.list_heads.is_empty()) {
+                heads.execute(params![m.id, m.list_heads]).map_err(|e| e.to_string())?;
+            }
+            let mut unhead = tx.prepare_cached("DELETE FROM list_heads WHERE id = ?1").map_err(|e| e.to_string())?;
             let mut del = tx.prepare_cached("DELETE FROM messages WHERE id = ?1").map_err(|e| e.to_string())?;
             for id in &gone {
                 del.execute(params![id]).map_err(|e| e.to_string())?;
                 unindex.execute(params![id]).map_err(|e| e.to_string())?;
                 uncolor.execute(params![id]).map_err(|e| e.to_string())?;
+                unhead.execute(params![id]).map_err(|e| e.to_string())?;
             }
         }
         tx.commit().map_err(|e| e.to_string())
@@ -1558,6 +1600,22 @@ mod tests {
         assert!(back.iter().find(|m| m.id == 1).unwrap().read);
         assert_eq!(text_at(&path, 1).unwrap().0, "Text ünïcode", "a header change keeps the text");
         assert!(!search_at(&path, "Hello").unwrap().contains(&2), "a removed message leaves the search index");
+        // A list's headers: kept as it arrives (and dropped with it). Mail
+        // stored before they were kept isn't known; mail checked since is.
+        let mut list = Message { id: 9, folder: "live:a:mail/INBOX".into(), list_heads: "List-Unsubscribe: <https://x.example/u>\r\n".into(), ..Default::default() };
+        assert_eq!(list_heads_at(&path, 1, true).as_deref(), Some(""), "a new file: all mail checked since");
+        with_conn(&path, |c| c.execute("UPDATE meta SET value = '8' WHERE key = 'list_heads_after'", []).map_err(|e| e.to_string())).unwrap();
+        assert_eq!(list_heads_at(&path, 1, true), None, "stored before");
+        msgs.push(list.clone());
+        msgs.push(Message { id: 10, folder: "live:a:mail/INBOX".into(), ..Default::default() });
+        save_to(&path, &msgs, &mut saved).unwrap();
+        assert_eq!(list_heads_at(&path, 9, true).as_deref(), Some(list.list_heads.as_str()));
+        assert_eq!(list_heads_at(&path, 10, true).as_deref(), Some(""), "checked since: not from a list");
+        assert_eq!(list_heads_at(&path, 10, false), None, "imported: looked at when opened");
+        list.list_heads.clear();
+        msgs.retain(|m| m.id != 9 && m.id != 10);
+        save_to(&path, &msgs, &mut saved).unwrap();
+        assert_eq!(list_heads_at(&path, 9, false), None, "gone with its message");
         // Nothing changed: nothing written.
         assert!(save_to(&path, &msgs, &mut saved).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);

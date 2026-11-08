@@ -993,6 +993,7 @@ fn header_parts(uid: u32, flags: &[String], internal_date: Option<i64>, head: &[
         in_reply_to: p.in_reply_to,
         references: p.references,
         reply_to: p.reply_to,
+        list_heads: crate::unsubscribe::list_headers(head),
         uid,
         partial: true,
         ..Default::default()

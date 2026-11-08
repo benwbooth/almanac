@@ -89,6 +89,11 @@ pub struct Message {
     /// Reply-To address, when replies should go somewhere else
     #[serde(default)]
     pub reply_to: String,
+    /// List-Id, List-Unsubscribe and List-Unsubscribe-Post as received (header
+    /// lines; "" for mail not from a list, or not read yet). Kept in a table
+    /// of their own; not read back with the list.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub list_heads: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1200,6 +1205,10 @@ impl Db {
             m.body = String::new();
             m.html = String::new();
             m.invite = String::new();
+        }
+        // (Kept list headers too: read from the database when needed.)
+        for m in self.messages.iter_mut().filter(|m| !m.list_heads.is_empty()) {
+            m.list_heads = String::new();
         }
     }
 

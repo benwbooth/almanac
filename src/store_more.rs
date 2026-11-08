@@ -940,28 +940,7 @@ impl qobject::Store {
         let unsubscribed = self.db.settings.unsubscribed.clone();
         let thread = self.qt_thread();
         std::thread::spawn(move || {
-            static SEEN: std::sync::Mutex<Option<std::collections::HashMap<i64, Option<crate::unsubscribe::ListInfo>>>> = std::sync::Mutex::new(None);
-            let cached = SEEN.lock().ok().and_then(|c| c.as_ref().and_then(|c| c.get(&id).cloned()));
-            let info = match cached {
-                Some(i) => i,
-                None => {
-                    // The headers: a copy kept here, the message's own source, or the server's.
-                    let kept = crate::mailstore::attachment_dir(id).join("original.eml");
-                    let raw = std::fs::read(&kept).ok().or_else(|| {
-                        if m.raw_ref.starts_with("mbox:") {
-                            original_message(&m, None).ok()
-                        } else {
-                            live.as_ref().and_then(|(a, p, u)| crate::live::fetch_header(a, p, *u).ok())
-                        }
-                    });
-                    let i = raw.and_then(|r| crate::unsubscribe::parse(&r, &m.from_email));
-                    if let Ok(mut c) = SEEN.lock() {
-                        c.get_or_insert_with(Default::default).insert(id, i.clone());
-                    }
-                    i
-                }
-            };
-            let v = match info {
+            let v = match list_of(&m, live) {
                 Some(i) => json!({"id": id, "list": i.list, "key": i.key, "oneClick": i.one_click.is_some(), "mailto": i.mailto.is_some(), "https": i.https.is_some(), "unsubscribed": unsubscribed.contains(&i.key)}),
                 None => json!({"id": id, "list": ""}),
             };
@@ -971,17 +950,8 @@ impl qobject::Store {
 
     pub(super) fn unsubscribe(mut self: Pin<&mut Self>, id: i64) -> QString {
         let Some(m) = self.db.get(id) else { return QString::default() };
-        // (Read again from the headers: quick when they're kept.)
         let live = self.db.live_message(id);
-        let kept = crate::mailstore::attachment_dir(id).join("original.eml");
-        let raw = std::fs::read(&kept).ok().or_else(|| {
-            if m.raw_ref.starts_with("mbox:") {
-                original_message(&m, None).ok()
-            } else {
-                live.as_ref().and_then(|(a, p, u)| crate::live::fetch_header(a, p, *u).ok())
-            }
-        });
-        let Some(info) = raw.and_then(|r| crate::unsubscribe::parse(&r, &m.from_email)) else { return QString::default() };
+        let Some(info) = list_of(&m, live) else { return QString::default() };
         let note = |mut store: Pin<&mut Self>, info: &crate::unsubscribe::ListInfo| {
             if !store.db.settings.unsubscribed.iter().any(|k| *k == info.key) {
                 store.as_mut().db_mut().settings.unsubscribed.push(info.key.clone());
@@ -1924,6 +1894,30 @@ fn attachment_path(m: &crate::data::Message, live: Option<(LiveAccount, String, 
 }
 
 /// The whole original message (Thunderbird mailbox file or mail server).
+/// Message `m`'s list and how to leave it: from its kept list headers, else
+/// (mail stored before they were kept) its source here or on the server,
+/// which are then kept.
+fn list_of(m: &crate::data::Message, live: Option<(LiveAccount, String, u32)>) -> Option<crate::unsubscribe::ListInfo> {
+    let synced = m.source.starts_with("live:") && m.raw_ref.is_empty();
+    let heads = match crate::mailstore::list_heads(m.id, synced) {
+        Some(h) => h,
+        None => {
+            let kept = crate::mailstore::attachment_dir(m.id).join("original.eml");
+            let raw = std::fs::read(&kept).ok().or_else(|| {
+                if m.raw_ref.starts_with("mbox:") {
+                    original_message(m, None).ok()
+                } else {
+                    live.as_ref().and_then(|(a, p, u)| crate::live::fetch_header(a, p, *u).ok())
+                }
+            })?;
+            let h = crate::unsubscribe::list_headers(&raw);
+            crate::mailstore::keep_list_heads(m.id, &h);
+            h
+        }
+    };
+    crate::unsubscribe::parse(heads.as_bytes(), &m.from_email)
+}
+
 fn original_message(m: &crate::data::Message, live: Option<(LiveAccount, String, u32)>) -> Result<Vec<u8>, String> {
     let raw: Vec<u8> = if let Some(rest) = m.raw_ref.strip_prefix("mbox:") {
         let mut parts = rest.rsplitn(3, ':');
