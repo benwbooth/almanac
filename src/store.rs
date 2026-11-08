@@ -298,6 +298,10 @@ pub mod qobject {
         /// as a private file; returns its file:// address.
         #[qinvokable]
         fn page_file(self: &Store, slot: &QString, html: &QString) -> QString;
+        /// How many messages come before `id` in this list (by date), so the list
+        /// can load that far at once; -1 when not in it or not known.
+        #[qinvokable]
+        fn rows_before(self: &Store, selection: &QString, query: &QString, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) -> i64;
         /// Plasma on Wayland: has KWin remember the main window's place and
         /// whether it's maximised (Plasma's own window rule, added once). False elsewhere.
         #[qinvokable]
@@ -1703,6 +1707,11 @@ impl qobject::Store {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn rows_before(&self, selection: &QString, query: &QString, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) -> i64 {
+        let _timed = crate::Timed::new("rows_before");
+        self.db.rows_before(&selection.to_string(), &query.to_string(), &sort_by.to_string(), ascending, unread_only, id)
+    }
+
     fn message_page(&self, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, keep: i64, limit: i32) -> QString {
         let _timed = crate::Timed::new("message_page");
         q(&self.db.message_page(

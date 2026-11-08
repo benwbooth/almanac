@@ -1904,6 +1904,27 @@ impl Db {
     /// selection, sorted and filtered (so big mailboxes stay quick), with the
     /// totals. The row of `keep` is always included (the open message).
     #[allow(clippy::too_many_arguments)]
+    /// How many messages of a mailbox come before message `id` in the list
+    /// (by date): a row number it's at or before, even with conversations on.
+    /// -1 when it's not in that list, or can't be told (a search, another order).
+    pub fn rows_before(&self, selection: &str, query: &str, sort_by: &str, ascending: bool, unread_only: bool, id: i64) -> i64 {
+        if !self.backed || !query.trim().is_empty() || (sort_by != "date" && !sort_by.is_empty()) {
+            return -1;
+        }
+        let Some(m) = self.get(id) else { return -1 };
+        let Some((base, mut args)) = self.selection_sql(selection) else { return -1 };
+        let unread = if unread_only { " AND read = 0" } else { "" };
+        args.push(crate::mailstore::Arg::Integer(id));
+        if crate::mailstore::count(&format!("({base}){unread} AND id = ?{}", args.len()), &args) == 0 {
+            return -1;
+        }
+        args.pop();
+        args.push(crate::mailstore::Arg::Integer(m.date));
+        let n = args.len();
+        let cmp = if ascending { "<" } else { ">" };
+        crate::mailstore::count(&format!("({base}){unread} AND date {cmp} ?{n}"), &args)
+    }
+
     pub fn message_page(&self, selection: &str, query: &str, threaded: bool, sort_by: &str, ascending: bool, unread_only: bool, keep: i64, limit: usize) -> Value {
         if self.backed {
             return self.message_page_backed(selection, query, threaded, sort_by, ascending, unread_only, keep, limit);

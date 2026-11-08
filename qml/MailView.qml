@@ -212,6 +212,14 @@ Item {
             // message's id now. Stay on it.
             for (var k = 0; k < list.length && idx < 0; k++) if (list[k].ids && list[k].ids.indexOf(selectedId) >= 0) { idx = k; selectedId = list[k].id }
         }
+        if (idx < 0 && selectedId >= 0 && list.length > 0) {
+            // Still in this list, only further down than the rows read so far
+            // (Only Unread turned off, a search cleared): read that far at once
+            // and stay on it (the list comes back here with it in).
+            var before = store.rowsBefore(selection, query, sortBy, sortAscending, unreadOnly, selectedId)
+            // (Later: changing the page from inside its own change isn't seen.)
+            if (before >= list.length && list.length < page.total) { Qt.callLater(function() { mail.loadRows(before + mail.pageSize) }); return }
+        }
         if (idx < 0 && list.length > 0) {
             // Nothing selected yet, or the selected message went away: the one
             // now in its place (not the top of the list).
