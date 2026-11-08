@@ -447,14 +447,15 @@ pub fn build_conversations() {
 /// A page of a mailbox's conversations, newest first: (folder, thread key)
 /// of each, skipping `offset`. `unread_or`: only those with unread mail (or
 /// the conversation of that message, kept while it's open).
-pub fn conv_page(folders: &[String], unread_or: Option<i64>, offset: i64, limit: i64) -> Vec<(String, String)> {
+pub fn conv_page(folders: &[String], unread_or: Option<i64>, ascending: bool, offset: i64, limit: i64) -> Vec<(String, String)> {
     let path = db_path();
     if !path.exists() || folders.is_empty() {
         return Vec::new();
     }
     with_conn(&path, |c| {
         let (filter, args) = conv_filter(c, folders, unread_or);
-        let sql = format!("SELECT folder, tkey FROM convs WHERE {filter} ORDER BY latest DESC, top_id DESC LIMIT {limit} OFFSET {offset}");
+        let dir = if ascending { "ASC" } else { "DESC" };
+        let sql = format!("SELECT folder, tkey FROM convs WHERE {filter} ORDER BY latest {dir}, top_id {dir} LIMIT {limit} OFFSET {offset}");
         let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
         let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(Result::ok).collect())
@@ -482,7 +483,7 @@ pub fn conv_count(folders: &[String], unread_or: Option<i64>) -> (i64, i64) {
 
 /// Where message `id`'s conversation is in a mailbox's list (how many come
 /// before it), or None when it's not in it.
-pub fn conv_position(folders: &[String], unread_or: Option<i64>, id: i64) -> Option<i64> {
+pub fn conv_position(folders: &[String], unread_or: Option<i64>, ascending: bool, id: i64) -> Option<i64> {
     let path = db_path();
     if !path.exists() || folders.is_empty() {
         return None;
@@ -500,7 +501,11 @@ pub fn conv_position(folders: &[String], unread_or: Option<i64>, id: i64) -> Opt
         args.push(Arg::Integer(top));
         let (a, b) = (args.len() - 1, args.len());
         c.query_row(
-            &format!("SELECT COUNT(*) FROM convs WHERE {filter} AND (latest > ?{a} OR (latest = ?{a} AND top_id > ?{b}))"),
+            &if ascending {
+                format!("SELECT COUNT(*) FROM convs WHERE {filter} AND (latest < ?{a} OR (latest = ?{a} AND top_id < ?{b}))")
+            } else {
+                format!("SELECT COUNT(*) FROM convs WHERE {filter} AND (latest > ?{a} OR (latest = ?{a} AND top_id > ?{b}))")
+            },
             rusqlite::params_from_iter(args.iter()),
             |r| r.get(0),
         )
@@ -525,6 +530,116 @@ fn conv_filter(c: &Connection, folders: &[String], unread_or: Option<i64>) -> (S
         }
     }
     (filter, args)
+}
+
+/// A list's order as SQL: over messages, and over conversations (convs `c`,
+/// by their newest message).
+pub fn list_orders(sort_by: &str, ascending: bool) -> (String, String) {
+    let dir = if ascending { "ASC" } else { "DESC" };
+    let key = match sort_by {
+        "from" => "lower(CASE WHEN from_name = '' THEN from_email ELSE from_name END)",
+        "subject" => "lower(subject)",
+        "to" => "lower(to_addr)",
+        "attachments" => "(attachments <> '[]')",
+        "flags" => "flagged",
+        "unread" => "(read = 0)",
+        _ => "",
+    };
+    if key.is_empty() {
+        return (format!("date {dir}, id {dir}"), format!("c.latest {dir}, c.top_id {dir}"));
+    }
+    // (Over conversations: the newest message's key, that message looked up
+    // by its row; see filtered_convs.)
+    let conv_key = if sort_by == "unread" { "(c.unread > 0)".to_string() } else { format!("{key} /*s.k*/") };
+    (format!("{key} {dir}, date DESC, id DESC"), format!("{conv_key} {dir}, c.latest DESC, c.top_id DESC"))
+}
+
+/// The conversations with a message the filter matches (SQL over messages),
+/// with `s.k` to sort them by when the order needs it.
+fn filtered_convs(filter: &str, order: &str) -> String {
+    let join = if order.contains("/*s.k*/") { "JOIN messages ON messages.id = c.top_id" } else { "" };
+    format!(
+        "convs c {join} WHERE (c.folder, c.tkey) IN (SELECT t.folder, t.tk FROM msg_threads t WHERE t.id IN
+             (SELECT id FROM messages INDEXED BY messages_for_list WHERE {filter}))"
+    )
+}
+
+/// A page of the conversations with a message the filter matches.
+pub fn filtered_conv_page(filter: &str, args: &[Arg], order: &str, offset: i64, limit: i64) -> Vec<(String, String)> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let sql = format!("SELECT c.folder, c.tkey FROM {} ORDER BY {order} LIMIT {limit} OFFSET {offset}", filtered_convs(filter, order));
+        let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(Result::ok).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// How many conversations have a message the filter matches (and with unread mail).
+pub fn filtered_conv_count(filter: &str, args: &[Arg]) -> (i64, i64) {
+    let path = db_path();
+    if !path.exists() {
+        return (0, 0);
+    }
+    with_conn(&path, |c| {
+        let n: i64 = c
+            .query_row(&format!("SELECT COUNT(*) FROM {}", filtered_convs(filter, "")), rusqlite::params_from_iter(args.iter()), |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let u: i64 = c
+            .query_row(&format!("SELECT COUNT(*) FROM {} AND c.unread > 0", filtered_convs(filter, "")), rusqlite::params_from_iter(args.iter()), |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok((n, u))
+    })
+    .unwrap_or((0, 0))
+}
+
+/// The row of message `id`'s conversation among those the filter matches.
+pub fn filtered_conv_position(filter: &str, args: &[Arg], order: &str, id: i64) -> Option<i64> {
+    let path = db_path();
+    if !path.exists() {
+        return None;
+    }
+    with_conn(&path, |c| {
+        let (folder, tk): (String, String) = c.query_row("SELECT folder, tk FROM msg_threads WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+        let mut a = args.to_vec();
+        a.push(Arg::Text(folder));
+        a.push(Arg::Text(tk));
+        let (f, t) = (a.len() - 1, a.len());
+        c.query_row(
+            &format!(
+                "SELECT n FROM (SELECT c.folder, c.tkey, ROW_NUMBER() OVER (ORDER BY {order}) - 1 AS n FROM {}) WHERE folder = ?{f} AND tkey = ?{t}",
+                filtered_convs(filter, order)
+            ),
+            rusqlite::params_from_iter(a.iter()),
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .ok()
+}
+
+/// The row of message `id` among the messages the filter matches.
+pub fn filtered_position(filter: &str, args: &[Arg], order: &str, id: i64) -> Option<i64> {
+    let path = db_path();
+    if !path.exists() {
+        return None;
+    }
+    with_conn(&path, |c| {
+        let mut a = args.to_vec();
+        a.push(Arg::Integer(id));
+        let k = a.len();
+        c.query_row(
+            &format!("SELECT n FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY {order}) - 1 AS n FROM messages INDEXED BY messages_for_list WHERE {filter}) WHERE id = ?{k}"),
+            rusqlite::params_from_iter(a.iter()),
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .ok()
 }
 
 /// The messages of one conversation in one folder, newest first.

@@ -110,10 +110,17 @@ Item {
         winModel.clear()
         windowed = on
         if (!on) { syncRows(); return }
-        // The open message's place, so its page is read first.
-        var at = selectedId >= 0 ? store.listPosition(selection, query, threaded, sortBy, sortAscending, unreadOnly, selectedId) : -1
-        winWant = at
-        winFetch(at >= 0 ? Math.floor(at / winSize) : 0, true)
+        // The first page, and where the open message is (found in the background;
+        // its page is read when that's known).
+        winWant = -1
+        winFetch(0, true)
+        winLocate()
+    }
+    property var winLocating: -1
+    function winLocate() {
+        if (selectedId < 0 || winLocating === selectedId) return
+        winLocating = selectedId
+        store.requestPosition(winGen, selection, query, threaded, sortBy, sortAscending, unreadOnly, selectedId)
     }
     function winFetch(p, counted) {
         // (A page already asked for is asked again only for the list's length.)
@@ -136,6 +143,14 @@ Item {
         function onWindowJsonChanged() {
             var w = JSON.parse(store.windowJson || "{}")
             if (!mail.windowed || w.token !== mail.winGen) return
+            // Where the open message is: its page read, and it's gone to there.
+            if (w.locate !== undefined) {
+                mail.winLocating = -1
+                if (w.locate < 0 || w.id !== mail.selectedId) return
+                if (w.locate < mail.winTotal && mail.winRows[w.locate]) { messageList.currentIndex = w.locate; Qt.callLater(mail.revealSelected) }
+                else { mail.winWant = w.locate; mail.winFetch(Math.floor(w.locate / mail.winSize)) }
+                return
+            }
             var p = Math.floor(w.offset / mail.winSize)
             delete mail.winPending[p]
             var rows = mail.winRows
@@ -345,12 +360,8 @@ Item {
         }
         if (windowed && idx < 0 && selectedId >= 0) {
             // Not among the rows read: where it is, if it's still in the list.
-            var pos = store.listPosition(selection, query, threaded, sortBy, sortAscending, unreadOnly, selectedId)
-            if (pos >= 0) {
-                if (messageList.currentIndex !== pos) messageList.currentIndex = pos
-                if (list[pos] === undefined) winFetch(Math.floor(pos / winSize))
-                return
-            }
+            winLocate()
+            return
         }
         if (windowed && list.length > 0 && !list.some(function(r) { return r !== undefined })) return
         if (!windowed && idx < 0 && selectedId >= 0 && list.length > 0) {

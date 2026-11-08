@@ -316,6 +316,10 @@ pub mod qobject {
         /// windowJson with `token`. `counted`: with how many rows there are.
         #[qinvokable]
         fn request_window(self: Pin<&mut Store>, token: i32, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, keep: i64, offset: i32, count: i32, counted: bool);
+        /// The row of message `id` in that list, found in the background: the
+        /// answer comes in windowJson as {"token", "locate": row, "id"} (-1: not in it).
+        #[qinvokable]
+        fn request_position(self: &Store, token: i32, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, id: i64);
         /// The row of message `id` in that list, or -1.
         #[qinvokable]
         fn list_position(self: &Store, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) -> i64;
@@ -1757,6 +1761,20 @@ impl qobject::Store {
             let _ = thread.queue(move |mut store| {
                 let rows = store.db.window_rows(&plan, &groups);
                 let v = json!({"token": token, "offset": offset, "rows": rows, "total": total, "unread": unread});
+                store.as_mut().set_window_json(QString::from(v.to_string().as_str()));
+            });
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn request_position(&self, token: i32, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) {
+        let plan = self.db.window_plan(&selection.to_string(), &query.to_string(), threaded, &sort_by.to_string(), ascending, unread_only, id);
+        let msg = self.db.get(id).map(|m| (m.folder.clone(), m.date));
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let at = plan.map(|p| crate::data::position_in(&p, id, msg)).unwrap_or(-1);
+            let _ = thread.queue(move |mut store| {
+                let v = json!({"token": token, "locate": at, "id": id});
                 store.as_mut().set_window_json(QString::from(v.to_string().as_str()));
             });
         });

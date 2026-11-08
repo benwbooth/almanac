@@ -678,6 +678,11 @@ fn addresses(s: &str) -> Vec<String> {
 #[derive(Clone, Debug)]
 pub struct WindowPlan {
     pub folders: Vec<String>,
+    /// Any other list (a search, VIPs, Flagged, another order): its messages
+    /// as SQL (see `Db::list_filter`), the folders then unused.
+    pub filter: Option<(String, Vec<crate::mailstore::Arg>)>,
+    pub sort_by: String,
+    pub ascending: bool,
     pub threaded: bool,
     /// Only rows with unread mail (or the one with this message).
     pub unread_or: Option<i64>,
@@ -688,9 +693,24 @@ pub struct WindowPlan {
 /// (a conversation, or one message), and with `counted`, how many rows there
 /// are and how many have unread mail.
 pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: bool) -> (Vec<Vec<Message>>, i64, i64) {
+    if let Some((filter, args)) = &plan.filter {
+        let (msg_order, conv_order) = crate::mailstore::list_orders(&plan.sort_by, plan.ascending);
+        if plan.threaded {
+            let (total, unread) = if counted { crate::mailstore::filtered_conv_count(filter, args) } else { (-1, -1) };
+            let groups = crate::mailstore::filtered_conv_page(filter, args, &conv_order, offset as i64, count as i64)
+                .into_iter()
+                .map(|(folder, tkey)| crate::mailstore::conv_messages(&folder, &tkey))
+                .collect();
+            return (groups, total, unread);
+        }
+        let total = if counted { crate::mailstore::count(filter, args) } else { -1 };
+        let unread = if counted { crate::mailstore::count(&format!("{filter} AND read = 0"), args) } else { -1 };
+        let groups = crate::mailstore::rows(filter, args, &msg_order, count as i64, offset as i64).into_iter().map(|m| vec![m]).collect();
+        return (groups, total, unread);
+    }
     if plan.threaded {
         let (total, unread) = if counted { crate::mailstore::conv_count(&plan.folders, plan.unread_or) } else { (-1, -1) };
-        let groups = crate::mailstore::conv_page(&plan.folders, plan.unread_or, offset as i64, count as i64)
+        let groups = crate::mailstore::conv_page(&plan.folders, plan.unread_or, plan.ascending, offset as i64, count as i64)
             .into_iter()
             .map(|(folder, tkey)| crate::mailstore::conv_messages(&folder, &tkey))
             .collect();
@@ -708,8 +728,46 @@ pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: boo
         None => base,
     };
     let total = if counted { crate::mailstore::count(&filter, &args) } else { -1 };
-    let groups = crate::mailstore::rows(&filter, &args, "date DESC, id DESC", count as i64, offset as i64).into_iter().map(|m| vec![m]).collect();
+    let order = if plan.ascending { "date ASC, id ASC" } else { "date DESC, id DESC" };
+    let groups = crate::mailstore::rows(&filter, &args, order, count as i64, offset as i64).into_iter().map(|m| vec![m]).collect();
     (groups, total, unread)
+}
+
+/// The row of message `id` in a list read a page at a time (see
+/// `Db::window_plan`), or -1 when it isn't in it (on any thread). `msg`: its
+/// folder and date.
+pub fn position_in(plan: &WindowPlan, id: i64, msg: Option<(String, i64)>) -> i64 {
+    if let Some((filter, args)) = &plan.filter {
+        let (msg_order, conv_order) = crate::mailstore::list_orders(&plan.sort_by, plan.ascending);
+        return if plan.threaded {
+            crate::mailstore::filtered_conv_position(filter, args, &conv_order, id)
+        } else {
+            crate::mailstore::filtered_position(filter, args, &msg_order, id)
+        }
+        .unwrap_or(-1);
+    }
+    if plan.threaded {
+        if !crate::mailstore::conversations_ready() {
+            return -1;
+        }
+        return crate::mailstore::conv_position(&plan.folders, plan.unread_or, plan.ascending, id).unwrap_or(-1);
+    }
+    let Some((folder, date)) = msg else { return -1 };
+    if !plan.folders.contains(&folder) {
+        return -1;
+    }
+    let marks = (1..=plan.folders.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+    let mut args: Vec<crate::mailstore::Arg> = plan.folders.iter().map(|f| crate::mailstore::Arg::Text(f.clone())).collect();
+    let mut filter = format!("folder IN ({marks})");
+    if plan.unread_or.is_some() {
+        args.push(crate::mailstore::Arg::Integer(id));
+        filter = format!("{filter} AND (read = 0 OR id = ?{})", args.len());
+    }
+    args.push(crate::mailstore::Arg::Integer(date));
+    args.push(crate::mailstore::Arg::Integer(id));
+    let (a, b) = (args.len() - 1, args.len());
+    let cmp = if plan.ascending { "<" } else { ">" };
+    crate::mailstore::count(&format!("{filter} AND (date {cmp} ?{a} OR (date = ?{a} AND id {cmp} ?{b}))"), &args)
 }
 
 pub fn conversation_keys(msgs: &[Message]) -> std::collections::HashMap<i64, String> {
@@ -1185,6 +1243,32 @@ impl Db {
     /// `unread_or`, unread or that one), in the order asked for, the first
     /// `limit`: from the database, with those in memory in their place. Also
     /// whether there are more.
+    /// A list's messages as SQL over the list's columns (the mailbox or kind,
+    /// the search, only unread or the one open), or None for a smart mailbox
+    /// (its conditions are checked here, not in SQL).
+    fn list_filter(&self, selection: &str, query: &str, unread_or: Option<i64>) -> Option<(String, Vec<crate::mailstore::Arg>)> {
+        use crate::mailstore::Arg;
+        let (base, mut args) = self.selection_sql(selection)?;
+        let mut sql = format!("({base})");
+        if !query.trim().is_empty() {
+            args.push(Arg::Text(format!("%{}%", query.trim())));
+            let n = args.len();
+            let mut q = format!(" AND (subject LIKE ?{n} OR from_name LIKE ?{n} OR from_email LIKE ?{n} OR to_addr LIKE ?{n}");
+            let words = crate::mailstore::match_expr(query);
+            if !words.is_empty() {
+                args.push(Arg::Text(words));
+                q.push_str(&format!(" OR id IN (SELECT rowid FROM search WHERE search MATCH ?{})", args.len()));
+            }
+            q.push(')');
+            sql.push_str(&q);
+        }
+        if let Some(k) = unread_or {
+            args.push(Arg::Integer(k));
+            sql.push_str(&format!(" AND (read = 0 OR id = ?{})", args.len()));
+        }
+        Some((sql, args))
+    }
+
     fn query_messages(&self, selection: &str, query: &str, unread_or: Option<i64>, sort_by: &str, ascending: bool, limit: usize) -> (Vec<Message>, bool) {
         use crate::mailstore::Arg;
         let kinds = self.folder_kinds();
@@ -1963,15 +2047,22 @@ impl Db {
     /// it can't be (a search, another order, a smart mailbox).
     #[allow(clippy::too_many_arguments)]
     pub fn window_plan(&self, selection: &str, query: &str, threaded: bool, sort_by: &str, ascending: bool, unread_only: bool, keep: i64) -> Option<WindowPlan> {
-        if ascending {
+        if !self.backed {
             return None;
         }
-        let folders = self.window_folders(selection, query, sort_by)?;
         // (Conversations not all worked out yet, the first time: read as before meanwhile.)
         if threaded && !crate::mailstore::conversations_ready() {
             return None;
         }
-        Some(WindowPlan { folders, threaded, unread_or: unread_only.then_some(keep), show_folder: selection.starts_with("kind:") && self.accounts.len() > 1 })
+        let show_folder = selection.starts_with("kind:") && self.accounts.len() > 1;
+        let unread_or = unread_only.then_some(keep);
+        let sort = if sort_by.is_empty() { "date".to_string() } else { sort_by.to_string() };
+        if let Some(folders) = self.window_folders(selection, query, sort_by) {
+            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, threaded, unread_or, show_folder });
+        }
+        // Anything else SQL can say (not a smart mailbox's conditions).
+        let filter = self.list_filter(selection, query, unread_or)?;
+        Some(WindowPlan { folders: Vec::new(), filter: Some(filter), sort_by: sort, ascending, threaded, unread_or, show_folder })
     }
 
     /// The list's rows from what `fetch_window` read.
@@ -2006,32 +2097,8 @@ impl Db {
     /// -1 when it isn't in it or the list can't be read a page at a time.
     #[allow(clippy::too_many_arguments)]
     pub fn list_position(&self, selection: &str, query: &str, threaded: bool, sort_by: &str, ascending: bool, unread_only: bool, id: i64) -> i64 {
-        if ascending {
-            return -1;
-        }
-        let Some(folders) = self.window_folders(selection, query, sort_by) else { return -1 };
-        let unread_or = unread_only.then_some(id);
-        if threaded {
-            if !crate::mailstore::conversations_ready() {
-                return -1;
-            }
-            return crate::mailstore::conv_position(&folders, unread_or, id).unwrap_or(-1);
-        }
-        let Some(m) = self.get(id) else { return -1 };
-        if !folders.contains(&m.folder) {
-            return -1;
-        }
-        let marks = (1..=folders.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
-        let mut args: Vec<crate::mailstore::Arg> = folders.iter().map(|f| crate::mailstore::Arg::Text(f.clone())).collect();
-        let mut filter = format!("folder IN ({marks})");
-        if unread_only {
-            args.push(crate::mailstore::Arg::Integer(id));
-            filter = format!("{filter} AND (read = 0 OR id = ?{})", args.len());
-        }
-        args.push(crate::mailstore::Arg::Integer(m.date));
-        args.push(crate::mailstore::Arg::Integer(id));
-        let (a, b) = (args.len() - 1, args.len());
-        crate::mailstore::count(&format!("{filter} AND (date > ?{a} OR (date = ?{a} AND id > ?{b}))"), &args)
+        let Some(plan) = self.window_plan(selection, query, threaded, sort_by, ascending, unread_only, id) else { return -1 };
+        position_in(&plan, id, self.get(id).map(|m| (m.folder.clone(), m.date)))
     }
 
     /// How many messages of a mailbox come before message `id` in the list
@@ -4790,21 +4857,36 @@ mod window_timings {
         let mut db = super::Db::load();
         db.backed = true;
         eprintln!("load (with the one-time grouping): {:?} backed={} folders={}", t.elapsed(), db.backed, db.folders.len());
-        for threaded in [true, false] {
-            let t = std::time::Instant::now();
-            let first = db.list_window("kind:inbox", "", threaded, "date", false, false, 0, 0, 100).unwrap();
-            let total = first["total"].as_i64().unwrap();
-            eprintln!("threaded={threaded}: total {total}, first page {:?}", t.elapsed());
-            for at in [total / 2, total - 50] {
+        let cases: [(&str, &str, &str, bool); 6] = [
+            ("kind:inbox", "", "date", false),
+            ("kind:inbox", "invoice", "date", false),
+            ("kind:inbox", "", "subject", false),
+            ("kind:inbox", "", "date", true),
+            ("kind:flagged", "", "date", false),
+            ("kind:vip", "", "date", false),
+        ];
+        for (sel, q, sort, asc) in cases {
+            for threaded in [true, false] {
                 let t = std::time::Instant::now();
-                let w = db.list_window("kind:inbox", "", threaded, "date", false, false, 0, at as usize, 100).unwrap();
+                let Some(first) = db.list_window(sel, q, threaded, sort, asc, false, 0, 0, 100) else {
+                    eprintln!("{sel} q={q:?} sort={sort} asc={asc} threaded={threaded}: not paged");
+                    continue;
+                };
+                let total = first["total"].as_i64().unwrap();
+                let first_t = t.elapsed();
+                let at = (total / 2).max(0) as usize;
+                let t = std::time::Instant::now();
+                let w = db.list_window(sel, q, threaded, sort, asc, false, 0, at, 100).unwrap();
+                let mid_t = t.elapsed();
                 let rows = w["rows"].as_array().unwrap();
-                eprintln!("  page at {at}: {} rows in {:?}", rows.len(), t.elapsed());
-                if let Some(id) = rows.first().and_then(|r| r["id"].as_i64()) {
-                    let t = std::time::Instant::now();
-                    let p = db.list_position("kind:inbox", "", threaded, "date", false, false, id);
-                    eprintln!("  position of its first row: {p} (expected {at}) in {:?}", t.elapsed());
-                }
+                let (pos, pos_t) = match rows.first().and_then(|r| r["id"].as_i64()) {
+                    Some(id) => {
+                        let t = std::time::Instant::now();
+                        (db.list_position(sel, q, threaded, sort, asc, false, id), t.elapsed())
+                    }
+                    None => (-1, std::time::Duration::ZERO),
+                };
+                eprintln!("{sel} q={q:?} sort={sort} asc={asc} threaded={threaded}: total {total}, first {first_t:?}, middle {mid_t:?}, position {pos} (expected {at}) {pos_t:?}");
             }
         }
     }
