@@ -330,6 +330,9 @@ Item {
     signal panesChanged()
     function notePanes() {
         if (!visible || width <= 0) return
+        // (Just started: the window may not have its real size yet, and panes
+        // squeezed meanwhile mustn't be kept as the sizes chosen.)
+        if (Date.now() < panesSettleUntil) return
         var p = Object.assign({}, paneSizes)
         if (sidebarShown && sidebarPane.width > 60) p.sideW = sidebarPane.width
         if (!classic && listPane.width > 120) p.listW = listPane.width
@@ -352,11 +355,10 @@ Item {
         paneSizes = { sideW: s.sideW, listW: s.listW, listH: s.listH }
         foldedAccounts = s.folded || {}
         sidebarShown = s.sidebar !== false
-        // (Kept within the window: a pane never comes back too big to leave room.)
-        var W = (mail.Window.window ? mail.Window.window.width : 0) || 1280, H = (mail.Window.window ? mail.Window.window.height : 0) || 800
-        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, W * 0.4)
-        if (s.listW > 120) listPane.SplitView.preferredWidth = Math.min(s.listW, Math.max(220, W - Math.min(s.sideW || 0, W * 0.4) - 320))
-        if (s.listH > 80) listPane.SplitView.preferredHeight = Math.min(s.listH, Math.max(120, H - 220))
+        // The sizes put back, and again as the window gets its real size (on
+        // Wayland the desktop sizes it a moment after it opens).
+        panesSettleUntil = Date.now() + 3000
+        applyPanes()
         if (s.selection) { selection = s.selection; selectionName = s.selectionName || selectionName }
         if (s.threaded !== undefined) threaded = s.threaded
         if (s.unreadOnly !== undefined) unreadOnly = s.unreadOnly
@@ -371,6 +373,21 @@ Item {
                 Qt.callLater(function() { messageList.contentY = y })
             })
         }
+    }
+    property double panesSettleUntil: 0
+    // The saved pane sizes, kept within the window (a pane never comes back too
+    // big to leave room for the message).
+    function applyPanes() {
+        var s = paneSizes
+        var W = (mail.Window.window ? mail.Window.window.width : 0) || 1280, H = (mail.Window.window ? mail.Window.window.height : 0) || 800
+        if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, W * 0.4)
+        if (s.listW > 120) listPane.SplitView.preferredWidth = Math.min(s.listW, Math.max(220, W - Math.min(s.sideW || 0, W * 0.4) - 320))
+        if (s.listH > 80) listPane.SplitView.preferredHeight = Math.min(s.listH, Math.max(120, H - 220))
+    }
+    Connections {
+        target: mail.Window.window
+        function onWidthChanged() { if (Date.now() < mail.panesSettleUntil) mail.applyPanes() }
+        function onHeightChanged() { if (Date.now() < mail.panesSettleUntil) mail.applyPanes() }
     }
     // "standard" (list beside the message) or "classic" (list above the message, compact rows)
     readonly property bool classic: prefs.mail_layout === "classic"
