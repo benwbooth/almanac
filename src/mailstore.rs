@@ -265,6 +265,9 @@ fn open_at(path: &Path) -> Result<Connection, String> {
         .map_err(|e| e.to_string())?;
     }
     convs_ready(&c)?;
+    // Each folder's messages by date in the small table too: pages of a long
+    // list without conversations read from there (a few ms anywhere in it).
+    let _ = c.execute_batch("CREATE INDEX IF NOT EXISTS msg_threads_by_date ON msg_threads(folder, date, id)");
     Ok(c)
 }
 
@@ -640,6 +643,83 @@ pub fn filtered_position(filter: &str, args: &[Arg], order: &str, id: i64) -> Op
         .map_err(|e| e.to_string())
     })
     .ok()
+}
+
+/// A page of a mailbox's messages by date, from the small table (ids, in order),
+/// and how many there are (with `counted`). `unread_or`: only unread (or that one).
+pub fn date_page(folders: &[String], unread_or: Option<i64>, ascending: bool, offset: i64, limit: i64, counted: bool) -> (Vec<i64>, i64) {
+    let path = db_path();
+    if !path.exists() || folders.is_empty() {
+        return (Vec::new(), 0);
+    }
+    with_conn(&path, |c| {
+        let mut args: Vec<Arg> = folders.iter().map(|f| Arg::Text(f.clone())).collect();
+        let marks = (1..=folders.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+        let mut filter = format!("folder IN ({marks})");
+        if let Some(k) = unread_or {
+            args.push(Arg::Integer(k));
+            filter = format!("{filter} AND (read = 0 OR id = ?{})", args.len());
+        }
+        let dir = if ascending { "ASC" } else { "DESC" };
+        let sql = format!("SELECT id FROM msg_threads INDEXED BY msg_threads_by_date WHERE {filter} ORDER BY date {dir}, id {dir} LIMIT {limit} OFFSET {offset}");
+        let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let ids: Vec<i64> = st.query_map(rusqlite::params_from_iter(args.iter()), |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+        drop(st);
+        let total = if counted {
+            c.query_row(&format!("SELECT COUNT(*) FROM msg_threads INDEXED BY msg_threads_by_date WHERE {filter}"), rusqlite::params_from_iter(args.iter()), |r| r.get(0))
+                .map_err(|e| e.to_string())?
+        } else {
+            -1
+        };
+        Ok((ids, total))
+    })
+    .unwrap_or((Vec::new(), 0))
+}
+
+/// Messages by id, in the order given.
+pub fn by_ids(ids: &[i64]) -> Vec<Message> {
+    let path = db_path();
+    if !path.exists() || ids.is_empty() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let marks = (1..=ids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT {ROW_COLS} FROM messages WHERE id IN ({marks})");
+        let mut st = c.prepare(&sql).map_err(|e| e.to_string())?;
+        let found = st.query_map(rusqlite::params_from_iter(ids.iter()), row_message).map_err(|e| e.to_string())?;
+        let mut list: Vec<Message> = found.filter_map(Result::ok).collect();
+        drop(st);
+        colors_of(c, &mut list);
+        let at: std::collections::HashMap<i64, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        list.sort_by_key(|m| at.get(&m.id).copied().unwrap_or(usize::MAX));
+        Ok(list)
+    })
+    .unwrap_or_default()
+}
+
+/// The ids of the messages `filter` matches, in `order`.
+pub fn row_ids(filter: &str, args: &[Arg], order: &str) -> Vec<i64> {
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    with_conn(&path, |c| {
+        let sql = format!("SELECT id FROM messages INDEXED BY messages_for_list WHERE {filter} ORDER BY {order}");
+        let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| r.get(0)).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(Result::ok).collect())
+    })
+    .unwrap_or_default()
+}
+
+/// Message `id`'s conversation (folder, thread key).
+pub fn conv_of(id: i64) -> Option<(String, String)> {
+    let path = db_path();
+    if !path.exists() {
+        return None;
+    }
+    with_conn(&path, |c| c.query_row("SELECT folder, tk FROM msg_threads WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string()))
+        .ok()
 }
 
 /// The messages of one conversation in one folder, newest first.

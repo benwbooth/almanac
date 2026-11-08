@@ -683,6 +683,9 @@ pub struct WindowPlan {
     pub filter: Option<(String, Vec<crate::mailstore::Arg>)>,
     pub sort_by: String,
     pub ascending: bool,
+    /// The mail's generation (Db::generation): a list worked out whole is kept
+    /// until the mail changes.
+    pub generation: u64,
     pub threaded: bool,
     /// Only rows with unread mail (or the one with this message).
     pub unread_or: Option<i64>,
@@ -693,19 +696,11 @@ pub struct WindowPlan {
 /// (a conversation, or one message), and with `counted`, how many rows there
 /// are and how many have unread mail.
 pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: bool) -> (Vec<Vec<Message>>, i64, i64) {
-    if let Some((filter, args)) = &plan.filter {
-        let (msg_order, conv_order) = crate::mailstore::list_orders(&plan.sort_by, plan.ascending);
-        if plan.threaded {
-            let (total, unread) = if counted { crate::mailstore::filtered_conv_count(filter, args) } else { (-1, -1) };
-            let groups = crate::mailstore::filtered_conv_page(filter, args, &conv_order, offset as i64, count as i64)
-                .into_iter()
-                .map(|(folder, tkey)| crate::mailstore::conv_messages(&folder, &tkey))
-                .collect();
-            return (groups, total, unread);
-        }
-        let total = if counted { crate::mailstore::count(filter, args) } else { -1 };
-        let unread = if counted { crate::mailstore::count(&format!("{filter} AND read = 0"), args) } else { -1 };
-        let groups = crate::mailstore::rows(filter, args, &msg_order, count as i64, offset as i64).into_iter().map(|m| vec![m]).collect();
+    if plan.filter.is_some() {
+        let whole = whole_list(plan);
+        let end = (offset + count).min(whole.rows.len());
+        let groups = whole.rows.get(offset..end).unwrap_or(&[]).iter().map(|r| r.messages()).collect();
+        let (total, unread) = if counted { (whole.rows.len() as i64, whole.unread) } else { (-1, -1) };
         return (groups, total, unread);
     }
     if plan.threaded {
@@ -714,6 +709,13 @@ pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: boo
             .into_iter()
             .map(|(folder, tkey)| crate::mailstore::conv_messages(&folder, &tkey))
             .collect();
+        return (groups, total, unread);
+    }
+    // (From the small table once it's ready: a few ms anywhere in the list.)
+    if crate::mailstore::conversations_ready() {
+        let (ids, total) = crate::mailstore::date_page(&plan.folders, plan.unread_or, plan.ascending, offset as i64, count as i64, counted);
+        let unread = if counted { crate::mailstore::date_page(&plan.folders, Some(-1), false, 0, 0, true).1 } else { -1 };
+        let groups = crate::mailstore::by_ids(&ids).into_iter().map(|m| vec![m]).collect();
         return (groups, total, unread);
     }
     let marks = (1..=plan.folders.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
@@ -733,18 +735,77 @@ pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: boo
     (groups, total, unread)
 }
 
+/// One row of a list worked out whole: a message, or a conversation (folder, thread key).
+#[derive(Clone, Debug)]
+pub enum ListItem {
+    Message(i64),
+    Conversation(String, String),
+}
+
+impl ListItem {
+    fn messages(&self) -> Vec<Message> {
+        match self {
+            ListItem::Message(id) => crate::mailstore::by_id(*id).into_iter().collect(),
+            ListItem::Conversation(f, t) => crate::mailstore::conv_messages(f, t),
+        }
+    }
+}
+
+/// A list (a search, VIPs, another order…) worked out whole, once: its rows in
+/// order and how many have unread mail. Kept until the mail changes or another
+/// list is asked for, so each page after the first is only its rows' reading.
+pub struct WholeList {
+    pub rows: Vec<ListItem>,
+    pub unread: i64,
+}
+
+fn whole_list(plan: &WindowPlan) -> std::sync::Arc<WholeList> {
+    use std::sync::{Arc, Mutex};
+    static CACHE: Mutex<Option<(String, Arc<WholeList>)>> = Mutex::new(None);
+    let Some((filter, args)) = &plan.filter else { return Arc::new(WholeList { rows: Vec::new(), unread: 0 }) };
+    let key = format!("{}|{}|{:?}|{}|{}|{}", plan.threaded, filter, args, plan.sort_by, plan.ascending, plan.generation);
+    // (Worked out under the lock: two pages asked for at once wait for one reading.)
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, w)) = cache.as_ref() {
+        if *k == key {
+            return w.clone();
+        }
+    }
+    let _t = crate::Timed::new("working out a list whole");
+    let (msg_order, conv_order) = crate::mailstore::list_orders(&plan.sort_by, plan.ascending);
+    let whole = if plan.threaded {
+        let rows = crate::mailstore::filtered_conv_page(filter, args, &conv_order, 0, i64::MAX)
+            .into_iter()
+            .map(|(f, t)| ListItem::Conversation(f, t))
+            .collect();
+        let (_, unread) = crate::mailstore::filtered_conv_count(filter, args);
+        WholeList { rows, unread }
+    } else {
+        let rows = crate::mailstore::row_ids(filter, args, &msg_order).into_iter().map(ListItem::Message).collect();
+        let unread = crate::mailstore::count(&format!("{filter} AND read = 0"), args);
+        WholeList { rows, unread }
+    };
+    let whole = Arc::new(whole);
+    *cache = Some((key, whole.clone()));
+    whole
+}
+
 /// The row of message `id` in a list read a page at a time (see
 /// `Db::window_plan`), or -1 when it isn't in it (on any thread). `msg`: its
 /// folder and date.
 pub fn position_in(plan: &WindowPlan, id: i64, msg: Option<(String, i64)>) -> i64 {
-    if let Some((filter, args)) = &plan.filter {
-        let (msg_order, conv_order) = crate::mailstore::list_orders(&plan.sort_by, plan.ascending);
-        return if plan.threaded {
-            crate::mailstore::filtered_conv_position(filter, args, &conv_order, id)
-        } else {
-            crate::mailstore::filtered_position(filter, args, &msg_order, id)
-        }
-        .unwrap_or(-1);
+    if plan.filter.is_some() {
+        let whole = whole_list(plan);
+        let conv = if plan.threaded { crate::mailstore::conv_of(id) } else { None };
+        return whole
+            .rows
+            .iter()
+            .position(|r| match r {
+                ListItem::Message(m) => *m == id,
+                ListItem::Conversation(f, t) => conv.as_ref().is_some_and(|(cf, ct)| cf == f && ct == t),
+            })
+            .map(|p| p as i64)
+            .unwrap_or(-1);
     }
     if plan.threaded {
         if !crate::mailstore::conversations_ready() {
@@ -2058,11 +2119,11 @@ impl Db {
         let unread_or = unread_only.then_some(keep);
         let sort = if sort_by.is_empty() { "date".to_string() } else { sort_by.to_string() };
         if let Some(folders) = self.window_folders(selection, query, sort_by) {
-            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, threaded, unread_or, show_folder });
+            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder });
         }
         // Anything else SQL can say (not a smart mailbox's conditions).
         let filter = self.list_filter(selection, query, unread_or)?;
-        Some(WindowPlan { folders: Vec::new(), filter: Some(filter), sort_by: sort, ascending, threaded, unread_or, show_folder })
+        Some(WindowPlan { folders: Vec::new(), filter: Some(filter), sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder })
     }
 
     /// The list's rows from what `fetch_window` read.
