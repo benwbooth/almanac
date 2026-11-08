@@ -92,6 +92,9 @@ pub mod qobject {
         /// The latest decryption: {"id", "state", "body", "html", "attachments", "signature", "detail"}
         /// (in memory only: never saved).
         #[qproperty(QString, decrypted_json, cxx_name = "decryptedJson")]
+        /// The latest OpenPGP key job (Settings, compose's unlock):
+        /// {"op", "email", "busy", "ok", "text"}.
+        #[qproperty(QString, pgp_status_json, cxx_name = "pgpStatusJson")]
         type Store = super::StoreRust;
 
         // mail
@@ -391,7 +394,8 @@ pub mod qobject {
         /// Decrypts an encrypted message (in the background; the result comes
         /// in decryptedJson, never saved). Only for messages that look encrypted.
         #[qinvokable]
-        fn decrypt_message(self: &Store, id: i64);
+        /// `passphrase`: "" to use one gpg-agent remembers (state "locked" when needed).
+        fn decrypt_message(self: &Store, id: i64, passphrase: &QString);
         /// For compose's Sign / Encrypt: {"gpg", "canSign", "missing": [addresses without a key]}.
         #[qinvokable]
         fn pgp_ready(self: &Store, from: &QString, recipients: &QString) -> QString;
@@ -399,9 +403,15 @@ pub mod qobject {
         /// [{"email", "name", "fingerprint"}], and whether GnuPG is installed.
         #[qinvokable]
         fn pgp_keys(self: &Store) -> QString;
-        /// In the background (the status line says how it went):
+        /// In the background (pgpStatusJson and the status line say how it went):
         #[qinvokable]
-        fn pgp_create_key(self: &Store, name: &QString, email: &QString);
+        fn pgp_create_key(self: &Store, name: &QString, email: &QString, passphrase: &QString);
+        /// Unlocks the key for `email` (gpg-agent remembers the passphrase a while).
+        #[qinvokable]
+        fn pgp_unlock(self: &Store, email: &QString, passphrase: &QString);
+        /// Whether the key for `email` can sign now without its passphrase.
+        #[qinvokable]
+        fn pgp_sign_ready(self: &Store, email: &QString) -> bool;
         #[qinvokable]
         fn pgp_import_keys(self: &Store, file_url: &QString);
         #[qinvokable]
@@ -504,6 +514,7 @@ pub struct StoreRust {
     alerts_json: QString,
     signature_json: QString,
     decrypted_json: QString,
+    pgp_status_json: QString,
     new_mail: i32,
     show_requests: i32,
     open_request: QString,
@@ -609,6 +620,7 @@ impl Default for StoreRust {
             alerts_json: QString::from("[]"),
             signature_json: QString::from("{}"),
             decrypted_json: QString::from("{}"),
+            pgp_status_json: QString::from("{}"),
             new_mail: 0,
             show_requests: 0,
             open_request: QString::default(),

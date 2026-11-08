@@ -71,6 +71,7 @@ dependencies = [
  "imap-proto",
  "keyring",
  "lettre",
+ "libc",
  "nom 7.1.3",
  "notify-rust",
  "pulldown-cmark",

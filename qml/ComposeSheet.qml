@@ -239,10 +239,39 @@ Popup {
                 return
             }
         }
+        // Signing needs the key unlocked: Almanac asks for its passphrase.
+        if (sign && checked !== "unlocked" && !store.pgpSignReady(senderEmail())) {
+            unlockThenSend(atMs, "")
+            return
+        }
         var p = payload()
         if (atMs) p.sendAt = atMs
         store.sendMessage(JSON.stringify(p))
         finish()
+    }
+    function senderEmail() {
+        var l = senders.length ? senders[fromBox.currentIndex].label : ""
+        var m = /<([^>]+)>\s*$/.exec(l)
+        return m ? m[1] : l
+    }
+    // Waiting for the key to unlock, then sending.
+    property var afterUnlock: null
+    function unlockThenSend(atMs, err) {
+        var em = senderEmail()
+        passDlg.ask("Unlock your key", "Signing needs the passphrase of your key for " + em + ".", "Unlock", false,
+                    function(pass) { sheet.afterUnlock = { at: atMs }; store.pgpUnlock(em, pass) }, err)
+    }
+    Connections {
+        target: store
+        function onPgpStatusJsonChanged() {
+            if (!sheet.afterUnlock) return
+            var j = JSON.parse(store.pgpStatusJson || "{}")
+            if (j.op !== "unlock" || j.busy) return
+            var at = sheet.afterUnlock.at
+            sheet.afterUnlock = null
+            if (j.ok) sheet.send(at, "unlocked")
+            else sheet.unlockThenSend(at, j.text)
+        }
     }
     property bool showBcc: false
 
@@ -275,6 +304,7 @@ Popup {
     // Its questions and pickers appear over the writing area, wherever it is
     // (the sheet, its own window, or under a message).
     Confirm { id: confirm; parent: pane }
+    PassphraseDialog { id: passDlg; parent: pane }
     // Drafts save themselves while you write (as in Apple Mail): every half
     // minute, when something changed. Each save replaces the previous copy.
     property string savedSnapshot: ""

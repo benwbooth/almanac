@@ -211,6 +211,9 @@ Popup {
                         id: pgpRow
                         label: "OpenPGP:"
                         readonly property var info: { dlg.store.revision; return JSON.parse(dlg.store.pgpKeys()) }
+                        // How the latest key job (create, import, publish, look up) is going.
+                        readonly property var job: { try { return JSON.parse(dlg.store.pgpStatusJson || "{}") } catch (e) { return {} } }
+                        readonly property bool busy: !!job.busy && job.op !== "unlock"
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
@@ -227,13 +230,27 @@ Popup {
                                         text: modelData.fingerprint ? "Key " + modelData.fingerprint.slice(-16).replace(/(.{4})/g, "$1 ").trim() : "No key"
                                         color: Theme.secondary; font.pixelSize: 12; elide: Text.ElideRight
                                     }
-                                    ToolButtonX { visible: !modelData.fingerprint; text: "Create Key…"; tip: "Make a key for this address (you'll be asked to choose a passphrase)"; onClicked: dlg.store.pgpCreateKey(modelData.name, modelData.email) }
+                                    ToolButtonX { visible: !modelData.fingerprint; text: "Create Key…"; tip: "Make a key for this address (you'll be asked to choose a passphrase)"; enabled: !pgpRow.busy
+                                        onClicked: { var who = modelData; passDlg.ask("Choose a passphrase for your key", "It protects the key for " + who.email + ". Almanac asks for it when you sign or read encrypted mail, then remembers it for a few minutes.", "Create Key", true, function(p) { dlg.store.pgpCreateKey(who.name, who.email, p) }) } }
                                     ToolButtonX {
                                         visible: !!modelData.fingerprint
                                         text: "Publish…"
                                         tip: "Upload your public key to keys.openpgp.org so people can find it to encrypt to you"
                                         onClicked: publishConfirm.ask("Publish your key?", "Your public key and " + modelData.email + " are sent to keys.openpgp.org, which emails you to confirm before anyone can find it.", "Publish", function() { dlg.store.pgpPublishKey(modelData.fingerprint) })
                                     }
+                                }
+                            }
+                            RowLayout {
+                                visible: !!pgpRow.job.op && pgpRow.job.op !== "unlock"
+                                Layout.fillWidth: true
+                                spacing: 8
+                                BusyIndicator { visible: pgpRow.busy; running: pgpRow.busy; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
+                                Text {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 12
+                                    color: pgpRow.busy ? Theme.secondary : (pgpRow.job.ok ? Theme.text : Theme.red)
+                                    text: (pgpRow.job.ok || pgpRow.busy ? "" : "Couldn't do that: ") + (pgpRow.job.text || "")
                                 }
                             }
                             RowLayout {
@@ -387,6 +404,7 @@ Popup {
         }
     }
     Confirm { id: publishConfirm }
+    PassphraseDialog { id: passDlg }
     FileDialog {
         id: keyFile
         title: "Import OpenPGP Keys"

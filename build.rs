@@ -90,6 +90,7 @@ fn main() {
             cxx_qt_build::QmlFile::from("qml/TimeField.qml"),
             cxx_qt_build::QmlFile::from("qml/FieldX.qml"),
             cxx_qt_build::QmlFile::from("qml/Confirm.qml"),
+            cxx_qt_build::QmlFile::from("qml/PassphraseDialog.qml"),
             cxx_qt_build::QmlFile::from("qml/WindowControls.qml"),
             cxx_qt_build::QmlFile::from("qml/ResizeEdges.qml"),
             cxx_qt_build::QmlFile::from("qml/MessagePage.qml"),

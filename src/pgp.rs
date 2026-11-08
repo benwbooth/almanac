@@ -280,45 +280,36 @@ pub fn looks_encrypted(attachments: &[String], body: &str, html: &str) -> bool {
     }) || body.contains("-----BEGIN PGP MESSAGE-----") || html.contains("-----BEGIN PGP MESSAGE-----")
 }
 
-/// Decrypts an encrypted message with the person's keys (gpg-agent asks for
-/// the passphrase with its pinentry). None: not an encrypted message.
-pub fn decrypt(raw: &[u8]) -> Option<Decrypted> {
+/// Decrypts an encrypted message with the person's keys (with `passphrase`,
+/// or one gpg-agent remembers; state "locked" when it's needed). None: not an
+/// encrypted message.
+pub fn decrypt(raw: &[u8], passphrase: Option<&str>) -> Option<Decrypted> {
     let k = kind(raw)?;
     if !matches!(k, Kind::Encrypted | Kind::InlineEncrypted) {
         return None;
     }
     let fail = |d: &str| Some(Decrypted { state: "error".into(), detail: d.into(), ..Default::default() });
-    let Some(gpg) = gpg() else { return fail("GnuPG isn't installed") };
+    if gpg().is_none() {
+        return fail("GnuPG isn't installed");
+    }
     let text = String::from_utf8_lossy(raw).to_string();
     let start = text.find("-----BEGIN PGP MESSAGE-----")?;
     let end = text[start..].find("-----END PGP MESSAGE-----").map(|e| start + e + "-----END PGP MESSAGE-----".len())?;
-    let mut child = match Command::new(&gpg)
-        .args(["--batch", "--no-tty", "--status-fd", "2", "--decrypt"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return fail(&e.to_string()),
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(text[start..end].as_bytes());
-    }
-    let out = match child.wait_with_output() {
+    let out = match gpg_secret(&["--decrypt"], text[start..end].as_bytes(), passphrase) {
         Ok(o) => o,
-        Err(e) => return fail(&e.to_string()),
+        Err(e) => return fail(&e),
     };
     let status = String::from_utf8_lossy(&out.stderr).to_string();
     if !status.contains("[GNUPG:] DECRYPTION_OKAY") {
-        let why = if status.contains("NO_SECKEY") {
-            "This message was encrypted for a key you don't have"
-        } else if status.contains("BAD_PASSPHRASE") || status.contains("MISSING_PASSPHRASE") {
-            "The passphrase wasn't given"
-        } else {
-            "It couldn't be decrypted"
-        };
-        return fail(why);
+        let why = secret_failure(&status, passphrase.is_some());
+        if why == NEED_PASSPHRASE || why == BAD_PASSPHRASE {
+            // (The page asks for it.)
+            return Some(Decrypted { state: "locked".into(), detail: why, ..Default::default() });
+        }
+        if status.contains("NO_SECKEY") {
+            return fail("This message was encrypted for a key you don't have");
+        }
+        return fail("It couldn't be decrypted");
     }
     let signature = (status.contains("GOODSIG") || status.contains("BADSIG") || status.contains("ERRSIG") || status.contains("EXPKEYSIG"))
         .then(|| from_status(&status));
@@ -420,10 +411,100 @@ fn run_gpg(args: &[&str], input: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
+/// What comes back when the key's passphrase is needed (not given, and not
+/// remembered by gpg-agent), and when the one given is wrong.
+pub const NEED_PASSPHRASE: &str = "Your key's passphrase is needed";
+pub const BAD_PASSPHRASE: &str = "That passphrase isn't right";
+
+/// gpg run for something that uses your secret key. GnuPG's own passphrase
+/// prompt (pinentry) isn't relied on: many systems have none, or only one for
+/// terminals, and then nothing happens. Almanac asks itself and hands the
+/// passphrase over a pipe of its own ("loopback"); without one, a passphrase
+/// gpg-agent remembers is used, or NEED_PASSPHRASE comes back.
+fn gpg_secret(args: &[&str], input: &[u8], passphrase: Option<&str>) -> Result<std::process::Output, String> {
+    let gpg = gpg().ok_or("GnuPG isn't installed")?;
+    let mut cmd = Command::new(&gpg);
+    cmd.args(["--batch", "--no-tty", "--status-fd", "2"]);
+    let mut stdin_first: Option<Vec<u8>> = None;
+    #[cfg(unix)]
+    let mut pass_pipe = None;
+    #[cfg(unix)]
+    {
+        cmd.args(["--pinentry-mode", "loopback"]);
+        if let Some(p) = passphrase {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::process::CommandExt;
+            let (r, mut w) = std::io::pipe().map_err(|e| e.to_string())?;
+            // (Small enough to sit in the pipe until gpg reads it.)
+            w.write_all(p.as_bytes()).and_then(|_| w.write_all(b"\n")).map_err(|e| e.to_string())?;
+            drop(w);
+            let fd = r.as_raw_fd();
+            cmd.args(["--passphrase-fd", "3"]);
+            // SAFETY: only async-signal-safe calls between fork and exec.
+            unsafe {
+                cmd.pre_exec(move || {
+                    if fd != 3 && libc::dup2(fd, 3) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            pass_pipe = Some(r);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // (Windows' GnuPG has its own prompt; a passphrase goes in first when
+        // there's nothing else to send.)
+        if let Some(p) = passphrase {
+            if input.is_empty() {
+                cmd.args(["--pinentry-mode", "loopback", "--passphrase-fd", "0"]);
+                stdin_first = Some(format!("{p}\n").into_bytes());
+            }
+        }
+    }
+    let mut child = cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    drop(pass_pipe);
+    let mut stdin = child.stdin.take().ok_or("gpg")?;
+    let data = stdin_first.take().unwrap_or_else(|| input.to_vec());
+    // (Written alongside reading, so a big message can't stall both sides.)
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&data);
+    });
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let _ = writer.join();
+    Ok(out)
+}
+
+/// Why a secret-key operation failed, from gpg's status lines and messages.
+fn secret_failure(stderr: &str, given: bool) -> String {
+    if (stderr.contains("[GNUPG:] BAD_PASSPHRASE") || stderr.contains("Bad passphrase")) && given {
+        return BAD_PASSPHRASE.into();
+    }
+    if stderr.contains("[GNUPG:] BAD_PASSPHRASE") || stderr.contains("[GNUPG:] MISSING_PASSPHRASE") || stderr.contains("[GNUPG:] NEED_PASSPHRASE")
+        || stderr.contains("No pinentry") || stderr.contains("can't get input")
+    {
+        return if given { BAD_PASSPHRASE.into() } else { NEED_PASSPHRASE.into() };
+    }
+    stderr.lines().rfind(|l| l.starts_with("gpg:")).unwrap_or("gpg failed").trim_start_matches("gpg: ").to_string()
+}
+
+fn run_gpg_secret(args: &[&str], input: &[u8], passphrase: Option<&str>) -> Result<Vec<u8>, String> {
+    let out = gpg_secret(args, input, passphrase)?;
+    if !out.status.success() {
+        return Err(secret_failure(&String::from_utf8_lossy(&out.stderr), passphrase.is_some()));
+    }
+    Ok(out.stdout)
+}
+
 /// A detached, armored signature over `data` with the key for `signer`
 /// (gpg-agent asks for its passphrase).
 pub fn sign_detached(data: &[u8], signer: &str) -> Result<String, String> {
-    let out = run_gpg(&["--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", &format!("<{signer}>")], data)?;
+    let out = run_gpg_secret(&["--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", &format!("<{signer}>")], data, None)?;
     Ok(String::from_utf8_lossy(&out).to_string())
 }
 
@@ -439,7 +520,7 @@ pub fn encrypt_to(data: &[u8], recipients: &[String], me: &str, sign_as: Option<
         args.push(format!("<{r}>"));
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = run_gpg(&refs, data)?;
+    let out = if sign_as.is_some() { run_gpg_secret(&refs, data, None)? } else { run_gpg(&refs, data)? };
     Ok(String::from_utf8_lossy(&out).to_string())
 }
 
@@ -461,13 +542,28 @@ pub fn own_key(addr: &str) -> Option<String> {
 }
 
 /// A new key for `name <addr>` (ed25519 for signing, cv25519 for encryption,
-/// for two years); gpg-agent's pinentry asks for its passphrase.
-pub fn create_key(name: &str, addr: &str) -> Result<String, String> {
-    let uid = if name.trim().is_empty() { format!("<{addr}>") } else { format!("{} <{addr}>", name.trim()) };
-    run_gpg(&["--quick-generate-key", &uid, "ed25519", "sign,cert", "2y"], b"")?;
+/// for two years), protected by `passphrase` (asked for by Almanac).
+pub fn create_key(name: &str, addr: &str, passphrase: &str) -> Result<String, String> {
+    // (An account named by its address gets just the address.)
+    let uid = if name.trim().is_empty() || name.contains('@') { format!("<{addr}>") } else { format!("{} <{addr}>", name.trim()) };
+    run_gpg_secret(&["--quick-generate-key", &uid, "ed25519", "sign,cert", "2y"], b"", Some(passphrase))?;
     let fpr = own_key(addr).ok_or("The key was made but can't be found")?;
-    run_gpg(&["--quick-add-key", &fpr, "cv25519", "encrypt", "2y"], b"")?;
+    run_gpg_secret(&["--quick-add-key", &fpr, "cv25519", "encrypt", "2y"], b"", Some(passphrase))?;
+    // (Unlocked right away, so the first signed message doesn't ask again.)
+    let _ = unlock(addr, passphrase);
     Ok(fpr)
+}
+
+/// Unlocks the signing key for `addr` with its passphrase: gpg-agent then
+/// remembers it for a while (10 minutes since last use, by default).
+pub fn unlock(addr: &str, passphrase: &str) -> Result<(), String> {
+    run_gpg_secret(&["--armor", "--detach-sign", "--local-user", &format!("<{addr}>")], b"almanac", Some(passphrase)).map(|_| ())
+}
+
+/// Whether the key for `addr` can sign right now without asking (its
+/// passphrase is remembered, or it has none).
+pub fn ready_to_sign(addr: &str) -> bool {
+    run_gpg_secret(&["--armor", "--detach-sign", "--local-user", &format!("<{addr}>")], b"almanac", None).is_ok()
 }
 
 /// Keys from a file (yours, or other people's): what gpg says it imported.
@@ -586,13 +682,13 @@ mod tests {
              --B\r\nContent-Type: application/octet-stream; name=\"encrypted.asc\"\r\n\r\n{armored}\r\n--B--\r\n"
         );
         std::env::set_var("GNUPGHOME", &home);
-        let d = decrypt(raw.as_bytes()).expect("an encrypted message");
+        let d = decrypt(raw.as_bytes(), None).expect("an encrypted message");
         assert_eq!(d.state, "ok", "{d:?}");
         assert!(d.body.contains("The secret plan."), "{d:?}");
         // Someone else's keyring: can't.
         let other = test_home().unwrap();
         std::env::set_var("GNUPGHOME", &other);
-        let d = decrypt(raw.as_bytes()).unwrap();
+        let d = decrypt(raw.as_bytes(), None).unwrap();
         assert_eq!(d.state, "error");
         std::env::remove_var("GNUPGHOME");
         let _ = std::fs::remove_dir_all(home);
@@ -628,12 +724,12 @@ mod tests {
         let enc = crate::live::build_message(&a, &crate::live::OutMsg { encrypt: true, ..base.clone() }).expect("encrypted");
         let raw = enc.formatted();
         assert!(!String::from_utf8_lossy(&raw).contains("Meet at noon"), "nothing readable");
-        let d = decrypt(&raw).expect("an encrypted message");
+        let d = decrypt(&raw, None).expect("an encrypted message");
         assert_eq!(d.state, "ok", "{d:?}");
         assert!(d.body.contains("Meet at noon."), "{d:?}");
         // Both: decrypted, and the signature inside checks out.
         let both = crate::live::build_message(&a, &crate::live::OutMsg { sign: true, encrypt: true, ..base.clone() }).expect("both");
-        let d = decrypt(&both.formatted()).unwrap();
+        let d = decrypt(&both.formatted(), None).unwrap();
         assert_eq!(d.signature.map(|s| s.state).as_deref(), Some("good"));
         // Someone without a key: not sent.
         let err = crate::live::build_message(&a, &crate::live::OutMsg { encrypt: true, to: "nokey@example.net".into(), ..base }).err().unwrap();
@@ -649,15 +745,33 @@ mod tests {
             return;
         }
         let home = tempdir().unwrap();
-        // (No passphrase in the test: the agent's pinentry asks in the app.)
-        std::fs::write(home.join("gpg.conf"), "pinentry-mode loopback\npassphrase \n").unwrap();
-        std::fs::write(home.join("gpg-agent.conf"), "allow-loopback-pinentry\n").unwrap();
+        // (No gpg.conf or pinentry: Almanac hands over the passphrase itself.)
         std::env::set_var("GNUPGHOME", &home);
         assert_eq!(own_key("new@example.org"), None);
-        let fpr = create_key("New Person", "new@example.org").expect("made");
+        let fpr = create_key("New Person", "new@example.org", "correct horse").expect("made");
         assert_eq!(own_key("new@example.org").as_deref(), Some(fpr.as_str()));
         assert!(can_sign("new@example.org"));
         assert!(missing_keys(&["new@example.org".into()]).is_empty(), "can encrypt to it too");
+        assert!(ready_to_sign("new@example.org"), "unlocked right after it's made");
+        // Once gpg-agent forgets the passphrase, it's asked for (and never hangs).
+        let _ = Command::new("gpgconf").args(["--kill", "gpg-agent"]).status();
+        assert!(!ready_to_sign("new@example.org"));
+        assert_eq!(sign_detached(b"hi", "new@example.org").unwrap_err(), NEED_PASSPHRASE);
+        assert_eq!(unlock("new@example.org", "wrong").unwrap_err(), BAD_PASSPHRASE);
+        unlock("new@example.org", "correct horse").expect("unlocked");
+        assert!(sign_detached(b"hi", "new@example.org").is_ok(), "remembered after unlocking");
+        // Mail encrypted to the key: locked until the passphrase is given.
+        let enc = encrypt_to(b"Content-Type: text/plain\r\n\r\nsecret words", &[], "new@example.org", None).unwrap();
+        let raw = format!("Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=b\r\n\r\n--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n--b\r\nContent-Type: application/octet-stream\r\n\r\n{enc}\r\n--b--\r\n");
+        let _ = Command::new("gpgconf").args(["--kill", "gpg-agent"]).status();
+        let d = decrypt(raw.as_bytes(), None).unwrap();
+        assert_eq!((d.state.as_str(), d.detail.as_str()), ("locked", NEED_PASSPHRASE));
+        let d = decrypt(raw.as_bytes(), Some("nope")).unwrap();
+        assert_eq!((d.state.as_str(), d.detail.as_str()), ("locked", BAD_PASSPHRASE));
+        let d = decrypt(raw.as_bytes(), Some("correct horse")).unwrap();
+        assert_eq!(d.state, "ok");
+        assert!(d.body.contains("secret words"), "{:?}", d.body);
+        let _ = Command::new("gpgconf").args(["--kill", "gpg-agent"]).status();
         std::env::remove_var("GNUPGHOME");
         let _ = std::fs::remove_dir_all(home);
     }

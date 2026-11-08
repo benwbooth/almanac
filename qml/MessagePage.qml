@@ -70,7 +70,8 @@ WebEngineView {
         if (p[2] === "open") web.expandedState[m.id] = on
         else if (p[2] === "details") web.detailsState[m.id] = on
         else if (p[2] === "fmt") web.formatState[m.id] = on
-        else if (p[2] === "decrypt") { delete web.decs[m.id]; if (web.store) web.store.decryptMessage(m.id) }
+        else if (p[2] === "decrypt") { delete web.decs[m.id]; if (web.store) web.store.decryptMessage(m.id, "") }
+        else if (p[2] === "unlock") web.askPassphrase(m.id, web.decs[m.id] && web.decs[m.id].detail === "That passphrase isn't right" ? web.decs[m.id].detail : "")
         else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
     }
     onLoadingChanged: function(info) {
@@ -135,6 +136,12 @@ WebEngineView {
     property var sigs: ({})
     // Encrypted messages, decrypted (by id; in memory only, never saved).
     property var decs: ({})
+    // An encrypted message's key passphrase, asked for here (not by GnuPG).
+    PassphraseDialog { id: passDlg }
+    function askPassphrase(id, err) {
+        passDlg.ask("Unlock your key", "This message is encrypted to your key. Its passphrase is remembered for a few minutes.", "Unlock", false,
+                    function(pass) { delete web.decs[id]; web.decs[id] = null; if (web.store) web.store.decryptMessage(id, pass) }, err)
+    }
     Connections {
         target: web.store
         function onDecryptedJsonChanged() {
@@ -610,6 +617,8 @@ WebEngineView {
                + '</div>'
                + '</div></div>'
                + '<div class="rule"></div>'
+            if (dec && dec.state === "locked")
+                h += '<div class="remote"><span class="grow">🔒 ' + (dec.detail === "That passphrase isn't right" ? esc(dec.detail) : 'This message is encrypted: your key\'s passphrase is needed to read it') + '</span><a href="#" data-unlock="' + i + '">Unlock…</a></div>'
             if (dec && dec.state === "error")
                 h += '<div class="remote"><span class="grow">🔒 ' + esc(dec.detail || "It couldn't be decrypted") + '</span><a href="#" data-redecrypt="' + i + '">Try Again</a></div>'
             if (m.partial && !m.html && !m.body) {
@@ -714,6 +723,7 @@ WebEngineView {
            + 'f.setAttribute("data-alt",cur);f.setAttribute("data-alt-paper",w.classList.contains("paper")?"1":"0");w.classList.toggle("paper",ap);'
            + 'var toRich=fm.textContent==="Show Formatted";fm.textContent=toRich?"Show Plain Text":"Show Formatted";me.classList.toggle("plain",!toRich);'
            + 'f.__ready=null;f.srcdoc=alt;tell("fmt",me.getAttribute("data-i"),toRich);return}'
+           + 'var ul=e.target.closest("[data-unlock]");if(ul){e.preventDefault();tell("unlock",ul.getAttribute("data-unlock"),1);return}'
            + 'var rd=e.target.closest("[data-redecrypt]");if(rd){e.preventDefault();tell("decrypt",rd.getAttribute("data-redecrypt"),1);return}'
            + 'var d=e.target.closest("[data-det]");if(d){e.preventDefault();var m=d.closest(".msg");var on=m.classList.toggle("det-on");d.textContent=on?"Hide Details":"Details";tell("details",m.getAttribute("data-i"),on);return}'
            + 'var a=e.target.closest("[data-all]");if(a){e.preventDefault();var open=a.getAttribute("data-all")==="1",changed=[];'
@@ -852,7 +862,7 @@ WebEngineView {
         if (web.store) for (var si = 0; si < web.messages.length; si++) {
             var sm = web.messages[si]
             if (web.sigs[sm.id] === undefined) { web.sigs[sm.id] = null; web.store.checkSignature(sm.id) }
-            if (web.decs[sm.id] === undefined) { web.decs[sm.id] = null; web.store.decryptMessage(sm.id) }
+            if (web.decs[sm.id] === undefined) { web.decs[sm.id] = null; web.store.decryptMessage(sm.id, "") }
         }
         web.previews = pv
         var doc = page()

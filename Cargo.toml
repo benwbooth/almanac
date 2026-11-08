@@ -49,6 +49,10 @@ rustls-native-certs = "0.8"
 # (the IMAP library's own TLS connector, to open its connections with time limits)
 rustls-connector = "0.19"
 # KDE Plasma on Wayland: asking KWin to put the window back where it was
+# (Handing gpg the key's passphrase over a pipe of its own.)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"
 

@@ -835,7 +835,8 @@ impl qobject::Store {
 
     /// Decrypts an encrypted message off the window's thread (gpg-agent asks
     /// for the passphrase); the text goes to the page only, never to disk.
-    pub(super) fn decrypt_message(&self, id: i64) {
+    pub(super) fn decrypt_message(&self, id: i64, passphrase: &QString) {
+        let pass = passphrase.to_string();
         let Some(m) = self.db.get(id) else { return };
         let (body, html, _) = self.db.text_of(id);
         if !crate::pgp::looks_encrypted(&m.attachments, &body, &html) {
@@ -854,7 +855,7 @@ impl qobject::Store {
                 }),
             };
             let mut result = match raw {
-                Ok(raw) => match crate::pgp::decrypt(&raw) {
+                Ok(raw) => match crate::pgp::decrypt(&raw, (!pass.is_empty()).then_some(pass.as_str())) {
                     Some(d) => serde_json::to_value(d).unwrap_or_default(),
                     None => return,
                 },
@@ -888,41 +889,58 @@ impl qobject::Store {
         q(&json!({"gpg": crate::pgp::available(), "keys": keys}))
     }
 
-    /// Runs a key job in the background; its outcome goes to the status line
-    /// and the lists are read again.
-    fn pgp_job(&self, job: impl FnOnce() -> Result<String, String> + Send + 'static) {
+    /// Runs a key job in the background; while it runs and when it's done,
+    /// pgpStatusJson says so (and the status line), and the lists are read again.
+    fn pgp_job(&self, op: &str, email: &str, busy_text: &str, job: impl FnOnce() -> Result<String, String> + Send + 'static) {
         let thread = self.qt_thread();
+        let (op, email) = (op.to_string(), email.to_string());
+        let busy = json!({"op": op, "email": email, "busy": true, "ok": false, "text": busy_text}).to_string();
+        let _ = thread.queue(move |mut store| store.as_mut().set_pgp_status_json(QString::from(busy.as_str())));
         std::thread::spawn(move || {
-            let text = match job() {
-                Ok(t) => t,
-                Err(e) => format!("OpenPGP: {e}"),
+            let (ok, text) = match job() {
+                Ok(t) => (true, t),
+                Err(e) => (false, e),
             };
+            let status = json!({"op": op, "email": email, "busy": false, "ok": ok, "text": text}).to_string();
+            let line = if ok { text } else { format!("OpenPGP: {text}") };
             let _ = thread.queue(move |mut store| {
-                store.as_mut().set_status_text(QString::from(text.as_str()));
+                store.as_mut().set_pgp_status_json(QString::from(status.as_str()));
+                store.as_mut().set_status_text(QString::from(line.as_str()));
                 store.changed();
             });
         });
     }
 
-    pub(super) fn pgp_create_key(&self, name: &QString, email: &QString) {
-        let (n, e) = (name.to_string(), email.to_string());
-        self.pgp_job(move || crate::pgp::create_key(&n, &e).map(|f| format!("Made an OpenPGP key for {e} ({})", &f[f.len().saturating_sub(16)..])));
+    pub(super) fn pgp_create_key(&self, name: &QString, email: &QString, passphrase: &QString) {
+        let (n, e, p) = (name.to_string(), email.to_string(), passphrase.to_string());
+        self.pgp_job("create", &e.clone(), "Creating your key…", move || {
+            crate::pgp::create_key(&n, &e, &p).map(|f| format!("Made a key for {e}: {}", f[f.len().saturating_sub(16)..].as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).to_string()).collect::<Vec<_>>().join(" ")))
+        });
+    }
+
+    pub(super) fn pgp_unlock(&self, email: &QString, passphrase: &QString) {
+        let (e, p) = (email.to_string(), passphrase.to_string());
+        self.pgp_job("unlock", &e.clone(), "Unlocking your key…", move || crate::pgp::unlock(&e, &p).map(|_| "Key unlocked".to_string()));
+    }
+
+    pub(super) fn pgp_sign_ready(&self, email: &QString) -> bool {
+        crate::pgp::ready_to_sign(&email.to_string())
     }
 
     pub(super) fn pgp_import_keys(&self, file_url: &QString) {
         let u = file_url.to_string();
         let path = std::path::PathBuf::from(u.strip_prefix("file://").unwrap_or(&u));
-        self.pgp_job(move || crate::pgp::import_keys(&path));
+        self.pgp_job("import", "", "Importing…", move || crate::pgp::import_keys(&path));
     }
 
     pub(super) fn pgp_publish_key(&self, fingerprint: &QString) {
         let f = fingerprint.to_string();
-        self.pgp_job(move || crate::pgp::publish(&f).map(|_| "Sent your key to keys.openpgp.org: they'll email you to confirm before anyone can find it".to_string()));
+        self.pgp_job("publish", "", "Sending your key to keys.openpgp.org…", move || crate::pgp::publish(&f).map(|_| "Sent your key to keys.openpgp.org: they'll email you to confirm before anyone can find it".to_string()));
     }
 
     pub(super) fn pgp_look_up(&self, email: &QString) {
         let e = email.to_string().trim().to_string();
-        self.pgp_job(move || crate::pgp::look_up(&e));
+        self.pgp_job("lookup", &e.clone(), "Looking up a key…", move || crate::pgp::look_up(&e));
     }
 
     /// A made-up event's alert ("Test Event", in 5 minutes), shown as real ones
