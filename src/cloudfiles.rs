@@ -16,6 +16,8 @@ pub struct Shared {
     pub url: String,
     /// "Google Drive", "OneDrive", …
     pub provider: String,
+    /// The service's own id for it (to remove it again).
+    pub id: String,
 }
 
 /// A cloud storage service that can take a file and share it by link.
@@ -24,6 +26,8 @@ pub trait CloudStore {
     /// Uploads `path` (in pieces that can be resumed), reporting (sent, total)
     /// as it goes, then shares it with anyone who has the link.
     fn upload(&self, path: &std::path::Path, progress: &dyn Fn(u64, u64)) -> Result<Shared, String>;
+    /// Removes a file it uploaded.
+    fn delete(&self, id: &str) -> Result<(), String>;
 }
 
 /// The cloud storage that goes with a kind of mail account ("" for none yet).
@@ -191,7 +195,11 @@ impl CloudStore for GoogleDrive {
         self.json("POST", &format!("{}/drive/v3/files/{id}/permissions", self.base), Some(json!({"type": "anyone", "role": "reader"})))?;
         let v = self.json("GET", &format!("{}/drive/v3/files/{id}?fields=webViewLink", self.base), None)?;
         let url = v.get("webViewLink").and_then(Value::as_str).ok_or("Google Drive gave no link")?.to_string();
-        Ok(Shared { name, size, url, provider: self.name().into() })
+        Ok(Shared { name, size, url, provider: self.name().into(), id })
+    }
+
+    fn delete(&self, id: &str) -> Result<(), String> {
+        self.json("DELETE", &format!("{}/drive/v3/files/{id}", self.base), None).map(|_| ())
     }
 }
 
@@ -274,7 +282,7 @@ mod tests {
         let drive = GoogleDrive { token: "t".into(), base };
         let steps = std::sync::Mutex::new(Vec::new());
         let shared = drive.upload(&path, &|sent, total| steps.lock().unwrap().push((sent, total))).expect("uploaded");
-        assert_eq!(shared, Shared { name: "big video.mp4".into(), size: (CHUNK * 2 + 1000) as u64, url: "https://drive.google.com/file/d/F1/view".into(), provider: "Google Drive".into() });
+        assert_eq!(shared, Shared { name: "big video.mp4".into(), size: (CHUNK * 2 + 1000) as u64, url: "https://drive.google.com/file/d/F1/view".into(), provider: "Google Drive".into(), id: "F1".into() });
         let log = seen.lock().unwrap().clone();
         let puts: Vec<&String> = log.iter().filter(|l| l.starts_with("PUT /session/1")).collect();
         assert_eq!(puts.len(), 3, "three pieces: {log:?}");
@@ -283,6 +291,41 @@ mod tests {
         let s = steps.lock().unwrap();
         assert_eq!(s.last(), Some(&((CHUNK * 2 + 1000) as u64, (CHUNK * 2 + 1000) as u64)), "progress to the end");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Against the real Google Drive of the first Google account in
+    /// ALMANAC_REAL_DATA: the token's permissions, a 30 MB upload, the link
+    /// opening for anyone, and the file removed again.
+    #[test]
+    #[ignore]
+    fn drive_for_real() {
+        let Some(dir) = std::env::var_os("ALMANAC_REAL_DATA").map(std::path::PathBuf::from) else { return };
+        let db: crate::data::Db = serde_json::from_str(&std::fs::read_to_string(dir.join("data.json")).unwrap()).unwrap();
+        let a = db.live.iter().find(|a| a.provider == "google").expect("a Google account").clone();
+        let token = crate::live::token(&a, crate::oauth::Resource::Drive).expect("token");
+        let mut info = agent().get(format!("https://oauth2.googleapis.com/tokeninfo?access_token={token}")).call().expect("tokeninfo");
+        let info: Value = serde_json::from_str(&info.body_mut().read_to_string().unwrap()).unwrap();
+        let scopes = info["scope"].as_str().unwrap_or("").to_string();
+        eprintln!("scopes: {scopes}");
+        assert!(scopes.contains("https://www.googleapis.com/auth/drive.file"), "no drive.file in {scopes}");
+        let tmp = std::env::temp_dir().join(format!("almanac-real-drive-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("almanac-drive-test.bin");
+        let mut bytes = vec![0u8; 30 * 1024 * 1024];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let drive = GoogleDrive::new(token);
+        let t = std::time::Instant::now();
+        let shared = drive.upload(&path, &|sent, total| eprintln!("  {sent}/{total} at {:?}", t.elapsed()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let shared = shared.expect("uploaded");
+        eprintln!("uploaded {} ({} bytes) in {:?}: {}", shared.name, shared.size, t.elapsed(), shared.url);
+        // Anyone with the link: the page opens without signing in (no redirect to a sign-in page).
+        let status = agent().get(&shared.url).call().map(|r| r.status().as_u16()).map_err(|e| e.to_string());
+        eprintln!("anonymous GET: {status:?}");
+        drive.delete(&shared.id).expect("deleted");
+        eprintln!("deleted {}", shared.id);
+        assert_eq!(status, Ok::<u16, String>(200), "the link should open for anyone");
     }
 
     #[test]
