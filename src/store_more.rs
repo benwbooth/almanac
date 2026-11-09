@@ -2232,7 +2232,14 @@ fn list_of(m: &crate::data::Message, live: Option<(LiveAccount, String, u32)>, b
             h
         }
     };
-    crate::unsubscribe::parse(heads.as_bytes(), &m.from_email).or_else(|| crate::unsubscribe::from_body(html, body, &m.from_name, &m.from_email))
+    let named = |mut i: crate::unsubscribe::ListInfo| {
+        // A List-Id with no name (Google's are long hashes): the sender's name.
+        if i.list == i.key && !m.from_name.trim().is_empty() {
+            i.list = m.from_name.trim().to_string();
+        }
+        i
+    };
+    crate::unsubscribe::parse(heads.as_bytes(), &m.from_email).map(named).or_else(|| crate::unsubscribe::from_body(html, body, &m.from_name, &m.from_email))
 }
 
 fn original_message(m: &crate::data::Message, live: Option<(LiveAccount, String, u32)>) -> Result<Vec<u8>, String> {
