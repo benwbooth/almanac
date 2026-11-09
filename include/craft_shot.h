@@ -108,6 +108,15 @@ inline void craftCreateApp(const QString& plugins, const QString& session)
         ? qEnvironmentVariable("FLATPAK_ID") : QStringLiteral("almanac"));
     if (!plugins.isEmpty())
         QCoreApplication::addLibraryPath(plugins);
+    // Text drawn by the system's font rasterizer (FreeType with the desktop's
+    // fontconfig hinting, antialiasing and subpixel settings), like other
+    // desktop apps, rather than Qt Quick's own scalable distance-field glyphs,
+    // which ignore hinting and look softer. ALMANAC_TEXT_RENDER=qt (or curve)
+    // brings back Qt's own.
+    const QString render = qEnvironmentVariable("ALMANAC_TEXT_RENDER").toLower();
+    QQuickWindow::setTextRenderType(render == QLatin1String("qt") ? QQuickWindow::QtTextRendering
+        : render == QLatin1String("curve") ? QQuickWindow::CurveTextRendering
+        : QQuickWindow::NativeTextRendering);
 }
 
 inline int craftExec() { return QApplication::exec(); }
