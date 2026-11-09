@@ -143,7 +143,7 @@ Publishing a GitHub release runs `.github/workflows/release.yml`. It builds the 
 and portable zip, the macOS disk images, the AppImage and the Flatpak bundle, and attaches them to
 the release. It then publishes the website and Flatpak repository on GitHub Pages
 (`.github/workflows/pages.yml`, from `docs/`). It also updates the Homebrew cask in
-`benwbooth/homebrew-tap` when the `HOMEBREW_TAP_TOKEN` secret is set. Packaging files live in
+`benwbooth/homebrew-tap` when the `HOMEBREW_TAP_DEPLOY_KEY` secret is set. Packaging files live in
 `packaging/`; after changing `icons/almanac.svg`, run `scripts/make-icons.py` to remake the `.ico`
 and `.icns`. You can run the workflow by hand from the Actions tab to try the builds without
 publishing anything.

@@ -9,7 +9,9 @@
 # the builds, keeping the files as workflow artifacts.
 #
 # Optional repository secrets:
-#   HOMEBREW_TAP_TOKEN        a token that can push to benwbooth/homebrew-tap;
+#   HOMEBREW_TAP_DEPLOY_KEY   private SSH key of a write deploy key on
+#                             benwbooth/homebrew-tap (or HOMEBREW_TAP_TOKEN,
+#                             a token that can push there);
 #                             without it the Homebrew step is skipped
 #   FLATPAK_GPG_PRIVATE_KEY   an ASCII-armoured GPG key to sign the Flatpak
 #                             repo; without it the repo is unsigned
@@ -361,6 +363,7 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -375,11 +378,18 @@ jobs:
           # pages.yml serves the Flatpak repo from that tarball next to the site.
           gh workflow run pages.yml --ref "${{ github.event.repository.default_branch }}"
       - name: Homebrew cask
-        if: env.TAP_TOKEN != ''
+        if: env.TAP_KEY != '' || env.TAP_TOKEN != ''
         run: |
           arm=$(sha256sum "dist/Almanac-$VERSION-macos-arm64.dmg" | cut -d' ' -f1)
           intel=$(sha256sum "dist/Almanac-$VERSION-macos-x86_64.dmg" | cut -d' ' -f1)
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" tap
+          if [ -n "$TAP_KEY" ]; then
+            install -m600 /dev/null "$RUNNER_TEMP/tap_key"
+            printf '%s\n' "$TAP_KEY" > "$RUNNER_TEMP/tap_key"
+            export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+            git clone "git@github.com:${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" tap
+          else
+            git clone "https://x-access-token:${TAP_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" tap
+          fi
           mkdir -p tap/Casks
           sed -e "s/@VERSION@/$VERSION/g" -e "s/@TAG@/$TAG/g" \
               -e "s/@SHA_ARM@/$arm/g" -e "s/@SHA_INTEL@/$intel/g" \
