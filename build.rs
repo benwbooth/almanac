@@ -107,7 +107,13 @@ fn main() {
             cxx_qt_build::QmlFile::from("qml/Momentum.qml"),
         ]),
     )
+    // Headers come from include/ only. The default (the whole crate folder)
+    // makes the folder itself a rebuild trigger, so anything created at the
+    // top level (the dev shell's .qt-env link, an editor's temp file) reran
+    // this script — about 23s — on every build.
+    .crate_include_root(None)
     .include_dir("include");
+    println!("cargo::rerun-if-changed=include");
     // Windows: the app icon inside almanac.exe (Explorer, the taskbar, shortcuts).
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
