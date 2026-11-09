@@ -293,17 +293,22 @@ WebEngineView {
             web.applyLists()
         }
     }
+    // Which list: beside who it went to (the banner keeps only the button).
+    function listVia(c) {
+        if (!c || !c.list) return ""
+        return '· Sent from ' + esc(c.list)
+    }
     function listBanner(i, c) {
         if (!c || !c.list) return ""
         if (c.unsubscribed)
-            return '<span class="grow">Sent from ' + esc(c.list) + ' · <b>Unsubscribed</b></span>'
-        return '<span class="grow">Sent from ' + esc(c.list) + '</span>'
+            return '<span class="grow"><b>Unsubscribed</b> from this mailing list</span>'
+        return '<span class="grow">This message is from a mailing list.</span>'
              + '<a href="almanac:act/' + i + '/unsubscribe" title="' + (c.oneClick ? "Leave this list (asks first)" : c.mailto ? "Leave this list by email (asks first)" : "Opens the list\'s page for leaving it") + '">Unsubscribe</a>'
     }
     function applyLists() {
         for (var i = 0; i < web.messages.length; i++) {
             var c = web.lists[web.messages[i].id]
-            if (c) web.runJavaScript("(function(){var e=document.getElementById('list-" + i + "');if(e)e.innerHTML=" + JSON.stringify(web.listBanner(i, c)) + "})()")
+            if (c) web.runJavaScript("(function(){var e=document.getElementById('list-" + i + "');if(e)e.innerHTML=" + JSON.stringify(web.listBanner(i, c)) + ";e=document.getElementById('via-" + i + "');if(e)e.innerHTML=" + JSON.stringify(web.listVia(c)) + "})()")
             var j = web.junks[web.messages[i].id]
             if (j) web.runJavaScript("(function(){var e=document.getElementById('junk-" + i + "');if(e)e.innerHTML=" + JSON.stringify(web.junkBanner(i, j)) + "})()")
         }
@@ -660,7 +665,7 @@ WebEngineView {
               + '.row .rd{flex:none;color:' + css(Theme.secondary) + ';font-size:11.5px}'
               + '.row .snip{margin-top:2px;font-size:12px;color:' + css(Theme.text) + ';line-height:1.4;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere}'
               + '.sum{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px;display:flex;gap:6px;min-width:0}'
-              + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}'
+              + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}.sum .via{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sum .via:empty{display:none}'
               + '.msg:not(.det-on) .details{display:none}.msg.plain .remote{display:none}'
               + '.pgp{font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;margin-left:8px;white-space:nowrap;cursor:default}'
               + '.pgp.good{color:' + (Theme.dark ? '#7ee2a0' : '#0d7a33') + ';background:' + (Theme.dark ? 'rgba(126,226,160,.14)' : '#e3f6e9') + '}'
@@ -761,7 +766,7 @@ WebEngineView {
                + '<div class="when">' + esc(Theme.fmtLongDate(m.date))
                + (dec ? '<span class="pgp ' + (dec.state === "ok" ? "good" : "bad") + '" title="' + esc(dec.state === "ok" ? "Encrypted: only you (and whoever else it was sent to) can read it" : dec.detail || "") + '">🔒 Encrypted</span>' : '')
                + '<span id="pgp-' + i + '">' + sigBadge(web.sigs[m.id]) + '</span></div>'
-               + '<div class="sum"><span class="who2">' + esc(toLine) + '</span><a class="det" href="#" data-det="' + i + '">Details</a></div>'
+               + '<div class="sum"><span class="who2">' + esc(toLine) + '</span><span class="via" id="via-' + i + '">' + listVia(web.lists[m.id]) + '</span><a class="det" href="#" data-det="' + i + '">Details</a></div>'
                + '<div class="details">'
                // To and Cc each on a line of their own, wrapped so every address can be read.
                + (m.to ? '<div class="rcpt"><span class="lbl">To:</span>' + chips(i, m.to) + '</div>' : '')
