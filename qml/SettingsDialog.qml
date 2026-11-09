@@ -151,6 +151,7 @@ Popup {
                             CheckX { Layout.fillWidth: true; text: "Show messages as formatted by the sender"; checked: !!dlg.s.show_formatted; onToggled: dlg.set("show_formatted", checked) }
                             CheckX { Layout.fillWidth: true; text: "Use dark backgrounds for messages (in dark mode)"; checked: !!dlg.s.dark_messages; onToggled: dlg.set("dark_messages", checked) }
                             CheckX { Layout.fillWidth: true; Layout.leftMargin: 24; enabled: !!dlg.s.dark_messages; text: "Make dark logos readable in dark mode"; checked: dlg.s.readable_logos !== false; onToggled: dlg.set("readable_logos", checked) }
+                            CheckX { Layout.fillWidth: true; text: "Write new messages as plain text (no formatting)"; checked: !!dlg.s.plain_compose; onToggled: dlg.set("plain_compose", checked) }
                             CheckX { Layout.fillWidth: true; text: "Turn Markdown into formatting as I type (**bold**, # heading, - list…)"; checked: dlg.s.markdown_compose !== false; onToggled: dlg.set("markdown_compose", checked) }
                             CheckX { Layout.fillWidth: true; text: "Check spelling while typing"; checked: dlg.s.spell_check !== false; onToggled: dlg.set("spell_check", checked) }
                             CheckX { Layout.fillWidth: true; enabled: dlg.s.spell_check !== false; text: "Check grammar with spelling"; checked: dlg.s.grammar_check !== false; onToggled: dlg.set("grammar_check", checked) }

@@ -203,6 +203,15 @@ Popup {
     property alias lints: editor.lints
     property alias ignored: editor.ignored
     property alias colourBack: editor.colourBack
+    // Sent as plain text (text/plain only) rather than formatted.
+    property alias plain: editor.plain
+    // Plain Text on: the formatting goes, so it asks first.
+    function setPlain(on) {
+        if (!on) { plain = false; return }
+        if (plainText().replace(lastSignature || "", "").replace(/--\s*$/m, "").trim() === "") { editor.makePlain(); return }
+        confirm.ask("Make this message plain text?", "Fonts, colours, pictures and other formatting will be removed. Quoted text keeps its \u201c>\u201d marks.", "Make Plain Text",
+                    function() { editor.makePlain() })
+    }
     function esc(t) { return editor.esc(t) }
     function inlineMarkdown() { editor.inlineMarkdown() }
     function blockMarkdown() { return editor.blockMarkdown() }
@@ -238,6 +247,10 @@ Popup {
         if (inline) leaveInline()
         var prefs = JSON.parse(store.settings())
         markdown = prefs.markdown_compose !== false
+        // Plain text: as Settings says for new messages, replies and forwards;
+        // a draft (or a message taken back with Undo Send) as it was saved.
+        var wantPlain = m.plain !== undefined ? !!m.plain : (m.draftId !== undefined || m.html !== undefined) ? !m.html : !!prefs.plain_compose
+        plain = false
         spellOn = prefs.spell_check !== false
         grammarOn = prefs.grammar_check !== false
         lints = []; ignored = []
@@ -269,6 +282,7 @@ Popup {
         else { colourBack = {}; body.text = (sig ? "<br><br>-- <br>" + escapeHtml(sig) : "") + escapeHtml(m.body || "") }
         if (host) toInline(host)
         else open()
+        if (wantPlain) editor.makePlain()
         savedSnapshot = snapshot()
         if (toRow.field.text === "") toRow.field.forceActiveFocus()
         else { body.forceActiveFocus(); body.cursorPosition = 0 }
@@ -277,7 +291,7 @@ Popup {
     function plainText() { return body.getText(0, body.length).replace(/\u200b/g, "").replace(/[\ufdd0\ufdd1]/g, "\n") }
     function payload() {
         var p = { to: toRow.field.text, cc: ccRow.field.text, bcc: bccRow.field.text, subject: subjectRow.field.text,
-                  body: plainText() + cloudCard(false), html: withCard(store.restoreColours(body.text.replace(/\u200b|&#8203;/g, ""), JSON.stringify(colourBack))),
+                  body: plainText() + cloudCard(false), html: plain ? "" : withCard(store.restoreColours(body.text.replace(/\u200b|&#8203;/g, ""), JSON.stringify(colourBack))),
                   attachments: attachments.filter(function(p) { return !sheet.cloudPaths[p] || !sheet.uploads[p] || sheet.uploads[p].state !== "done" }), inReplyTo: inReplyTo,
                   account: senders.length ? senders[fromBox.currentIndex].id : "", sign: sign, encrypt: encrypt,
                   secure: useSmime ? "smime" : "pgp" }
@@ -659,6 +673,8 @@ Popup {
             store: sheet.store
             active: sheet.active
             popupParent: pane
+            canPlain: true
+            onFormatRequested: function(p) { sheet.setPlain(p) }
         }
         // Attachments (those sent through cloud storage: a cloud, how far the
         // upload is, then a link)

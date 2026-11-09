@@ -25,6 +25,12 @@ ColumnLayout {
     // Markdown typed in the message turns into formatting as you go
     // (Settings › Mail, or the "Md" button).
     property bool markdown: true
+    // Plain text (a message sent as text/plain): no formatting bar, no
+    // Markdown, pastes as plain text. Offered only where canPlain is set.
+    property bool plain: false
+    property bool canPlain: false
+    // The Plain Text button: what was asked for (the writer decides).
+    signal formatRequested(bool plain)
 
     property bool converting: false
     // The text as plain text (tables, code blocks among them, have marks of
@@ -46,7 +52,7 @@ ColumnLayout {
     }
     // **bold**, *italic*, ~~strike~~, `code`, [text](link): when the closing mark is typed.
     function inlineMarkdown() {
-        if (!markdown || converting || codeHere()) return
+        if (!markdown || plain || converting || codeHere()) return
         var pos = body.cursorPosition
         var lb = lineBeforeCursor(), start = lb[0], line = lb[1].replace(/\u00a0/g, " "), m
         converting = true
@@ -81,7 +87,7 @@ ColumnLayout {
         if (converting) return false
         // In a code block: ``` alone on a line leaves it (Enter is a new line of code otherwise).
         if (codeHere()) return leaveCodeBlock()
-        if (!markdown) return false
+        if (!markdown || plain) return false
         var pos = body.cursorPosition
         var lb = lineBeforeCursor(), start = lb[0], line = lb[1], m
         var html = ""
@@ -214,7 +220,7 @@ ColumnLayout {
     }
     // Pasting text written in Markdown: as formatting (and code blocks).
     function pasteMarkdown() {
-        if (!markdown) return false
+        if (!markdown || plain) return false
         plainPaste.text = ""
         plainPaste.paste()
         var html = plainPaste.text ? store.markdownHtml(plainPaste.text, Theme.dark) : ""
@@ -389,6 +395,35 @@ ColumnLayout {
         body.insert(pos, html)
     }
     TextEdit { id: plainPaste; visible: false; textFormat: TextEdit.PlainText }
+    // The text as it would go in a plain-text message: quoted paragraphs
+    // with "> " (one per level) in front of each of their lines.
+    function quotedPlainText() {
+        var s = body.getText(0, body.length), out = [], start = 0, inTable = false
+        for (var i = 0; i <= s.length; i++) {
+            var c = i < s.length ? s.charCodeAt(i) : 0x2029
+            if (c !== 0x2029 && c !== 0xfdd0 && c !== 0xfdd1) continue
+            var q = inTable ? 0 : quoteLevelAt(start)
+            if (c === 0xfdd0) inTable = true
+            else if (c === 0xfdd1) inTable = false
+            var para = s.slice(start, i).replace(/\u200b/g, "").replace(/\u00a0/g, " ")
+            var mark = q > 0 ? new Array(q + 1).join(">") + " " : ""
+            para.split(/\u2028|\n/).forEach(function(l) { out.push(mark ? (l === "" ? mark.trim() : mark + l) : l) })
+            start = i + 1
+        }
+        return out.join("\n")
+    }
+    // To plain text: the formatting goes, quotes become "> " lines.
+    function makePlain() {
+        var t = quotedPlainText()
+        converting = true
+        codeCursor = null
+        colourBack = {}
+        // (Spaces kept as typed: plain text may line things up with them.)
+        body.text = "<p style=\"white-space:pre-wrap\">" + esc(t).replace(/\n/g, "<br>") + "</p>"
+        converting = false
+        plain = true
+        body.cursorPosition = 0
+    }
     P.Menu {
         id: spellMenu
         property var lint: null
@@ -499,16 +534,16 @@ ColumnLayout {
     }
     function setSize(px) { var f = body.cursorSelection.font; f.pixelSize = px; body.cursorSelection.font = f }
 
-    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active; sequence: "Ctrl+B"; onActivated: sheet.toggleFont("bold") }
-    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active; sequence: "Ctrl+K"; onActivated: linkPrompt.open() }
-    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active; sequence: "Ctrl+'"; onActivated: sheet.quoteMore() }
-    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active; sequence: "Ctrl+Alt+'"; onActivated: sheet.quoteLess() }
-    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && body.activeFocus; sequences: ["Ctrl++", "Ctrl+="]; onActivated: sheet.resize(2) }
-    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && body.activeFocus; sequence: "Ctrl+-"; onActivated: sheet.resize(-2) }
+    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && !sheet.plain; sequence: "Ctrl+B"; onActivated: sheet.toggleFont("bold") }
+    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && !sheet.plain; sequence: "Ctrl+K"; onActivated: linkPrompt.open() }
+    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && !sheet.plain; sequence: "Ctrl+'"; onActivated: sheet.quoteMore() }
+    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && !sheet.plain; sequence: "Ctrl+Alt+'"; onActivated: sheet.quoteLess() }
+    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && !sheet.plain && body.activeFocus; sequences: ["Ctrl++", "Ctrl+="]; onActivated: sheet.resize(2) }
+    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && !sheet.plain && body.activeFocus; sequence: "Ctrl+-"; onActivated: sheet.resize(-2) }
     Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && body.activeFocus; sequence: "Ctrl+Shift+V"; onActivated: sheet.pastePlain(false) }
     Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && body.activeFocus; sequence: "Ctrl+Alt+Shift+V"; onActivated: sheet.pastePlain(true) }
-    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active; sequence: "Ctrl+I"; onActivated: sheet.toggleFont("italic") }
-    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active; sequence: "Ctrl+U"; onActivated: sheet.toggleFont("underline") }
+    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && !sheet.plain; sequence: "Ctrl+I"; onActivated: sheet.toggleFont("italic") }
+    Shortcut { context: Qt.ApplicationShortcut; enabled: sheet.active && !sheet.plain; sequence: "Ctrl+U"; onActivated: sheet.toggleFont("underline") }
 
     component FmtButton: ToolButtonX { implicitWidth: 30 }
     component FmtSep: Item { width: 9; height: 30; Rectangle { anchors.centerIn: parent; width: 1; height: 20; color: Theme.border } }
@@ -530,6 +565,7 @@ ColumnLayout {
         Layout.preferredHeight: implicitHeight
         spacing: 2
         Row {
+            visible: !sheet.plain
             spacing: 2
             FmtButton { text: "B"; tip: "Bold (Ctrl+B)"; checked: body.cursorSelection.font.bold; onClicked: sheet.toggleFont("bold") }
             FmtButton { text: "I"; tip: "Italic (Ctrl+I)"; checked: body.cursorSelection.font.italic; onClicked: sheet.toggleFont("italic") }
@@ -539,11 +575,13 @@ ColumnLayout {
         }
         // Font, size, colour and tables.
         Row {
+            visible: !sheet.plain
             spacing: 2
             FormatPickers { id: fmtPickers; target: body; anchors.verticalCenter: parent.verticalCenter }
             FmtSep {}
         }
         Row {
+            visible: !sheet.plain
             spacing: 2
             FmtButton { icon: "alignLeft"; tip: "Align Left"; onClicked: body.cursorSelection.alignment = Qt.AlignLeft }
             FmtButton { icon: "alignCenter"; tip: "Center"; onClicked: body.cursorSelection.alignment = Qt.AlignHCenter }
@@ -552,12 +590,14 @@ ColumnLayout {
             FmtSep {}
         }
         Row {
+            visible: !sheet.plain
             spacing: 2
             FmtButton { icon: "link"; tip: "Add Link (Ctrl+K)"; onClicked: linkPrompt.open() }
             FmtButton { icon: "quote"; tip: "Increase Quote Level (Ctrl+')"; onClicked: sheet.quoteMore() }
             FmtSep {}
         }
         Row {
+            visible: !sheet.plain
             spacing: 2
             FmtButton { icon: "listBullet"; tip: "Bulleted List"; onClicked: sheet.makeList("ul") }
             FmtButton { icon: "listNumber"; tip: "Numbered List"; onClicked: sheet.makeList("ol") }
@@ -590,7 +630,18 @@ ColumnLayout {
                                : "Check spelling and grammar as you type"
             onClicked: sheet.setSpelling(!sheet.spellOn)
         }
+        // Plain text (in messages): on to send the message as plain text.
         FmtButton {
+            visible: sheet.canPlain
+            implicitWidth: 72
+            text: "Plain Text"
+            checked: sheet.plain
+            tip: sheet.plain ? "Sent as plain text. Click to allow formatting again."
+                             : "Send as plain text: no fonts, colours, pictures or other formatting"
+            onClicked: sheet.formatRequested(!sheet.plain)
+        }
+        FmtButton {
+            visible: !sheet.plain
             implicitWidth: 38
             text: "Md"
             checked: sheet.markdown
@@ -623,7 +674,11 @@ ColumnLayout {
             }
             onCursorPositionChanged: codeSpot.restart()
             // Markdown pasted: as formatting.
-            Keys.onPressed: function(ev) { if (ev.matches(StandardKey.Paste) && sheet.pasteMarkdown()) ev.accepted = true }
+            Keys.onPressed: function(ev) {
+                if (!ev.matches(StandardKey.Paste)) return
+                if (sheet.plain) { sheet.pastePlain(false); ev.accepted = true }
+                else if (sheet.pasteMarkdown()) ev.accepted = true
+            }
             // The underlines (they move with the text; hidden while it's being changed).
             Repeater {
                 model: sheet.lintsFresh ? sheet.lints : []

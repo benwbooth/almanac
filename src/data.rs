@@ -569,6 +569,8 @@ pub struct Settings {
     pub sort_ascending: bool,
     /// Turn Markdown typed in new messages into formatting
     pub markdown_compose: bool,
+    /// Write new messages as plain text (text/plain only, no formatting)
+    pub plain_compose: bool,
     /// Ask before sending a message without a subject (Settings › Mail).
     pub warn_no_subject: bool,
     /// Ask before sending when an attachment is mentioned but none is attached.
@@ -633,6 +635,7 @@ impl Default for Settings {
             sort_by: "date".into(),
             sort_ascending: false,
             markdown_compose: true,
+            plain_compose: false,
             warn_no_subject: true,
             warn_missing_attachment: true,
             cloud_attachments: "ask".into(),
