@@ -280,13 +280,15 @@ WebEngineView {
             return '<span class="grow">This looks like junk mail.</span><a href="almanac:act/' + i + '/movejunk">Move to Junk</a><a class="more" href="almanac:act/' + i + '/notjunk" title="The junk filter learns from it">Not Junk</a>'
         return ""
     }
-    // Mailing lists (List-Unsubscribe): message id → listJson's answer.
+    // Mailing lists (List-Unsubscribe, else an unsubscribe link in the text): message id → listJson's answer.
     property var lists: ({})
     Connections {
         target: web.store
         function onListJsonChanged() {
             var c = JSON.parse(web.store.listJson || "{}")
             if (c.id === undefined) return
+            // Its text wasn't here yet: looked at again once the page is.
+            if (c.pending) { delete web.lists[c.id]; return }
             web.lists[c.id] = c
             web.applyLists()
         }

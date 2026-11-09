@@ -104,6 +104,79 @@ pub fn parse(raw: &[u8], from_email: &str) -> Option<ListInfo> {
     Some(info)
 }
 
+/// The message's own unsubscribe link, for mail that leaves out the
+/// List-Unsubscribe header (Steam, for one, puts its "Unsubscribe" only in
+/// the text): a link reading "unsubscribe" or "opt out", or one whose address
+/// says so, else a "click here" just after the word. The last one wins (it's
+/// in the footer). Only web pages, which are opened, never visited by us.
+pub fn body_link(html: &str, text: &str) -> Option<String> {
+    use std::sync::OnceLock;
+    static A: OnceLock<regex::Regex> = OnceLock::new();
+    static TAG: OnceLock<regex::Regex> = OnceLock::new();
+    static URL: OnceLock<regex::Regex> = OnceLock::new();
+    let a = A.get_or_init(|| regex::Regex::new(r#"(?is)<a\s[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>(.*?)</a\s*>"#).unwrap());
+    let tag = TAG.get_or_init(|| regex::Regex::new(r"(?s)<[^>]*>").unwrap());
+    let url = URL.get_or_init(|| regex::Regex::new(r#"(?i)https?://[^\s<>"')\]]+"#).unwrap());
+    let words = |s: &str| -> String {
+        let s = tag.replace_all(s, " ");
+        let s = s.replace("&nbsp;", " ").replace("&#160;", " ").to_lowercase();
+        s.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    let says = |s: &str| {
+        let s = s.replace(['-', '_'], " ");
+        s.contains("unsubscribe") || s.contains("opt out") || s.contains("optout")
+    };
+    let web = |h: &str| {
+        let h = h.trim().replace("&amp;", "&").replace("&#38;", "&");
+        let l = h.to_ascii_lowercase();
+        (l.starts_with("https://") || l.starts_with("http://")).then_some(h)
+    };
+    let mut found: Option<String> = None;
+    let mut last_end = 0;
+    for c in a.captures_iter(html) {
+        let whole = c.get(0).unwrap();
+        let href = c.get(1).or(c.get(2)).or(c.get(3)).map(|m| m.as_str()).unwrap_or("");
+        let label = words(c.get(4).map(|m| m.as_str()).unwrap_or(""));
+        let Some(h) = web(href) else {
+            last_end = whole.end();
+            continue;
+        };
+        let before = words(&html[last_end.max(html.floor_char_boundary(whole.start().saturating_sub(400)))..whole.start()]);
+        let tail: String = before.chars().rev().take(80).collect::<Vec<_>>().into_iter().rev().collect();
+        let here = matches!(label.as_str(), "here" | "click here" | "this link" | "here." | "click here.");
+        if says(&label) || says(&h.to_ascii_lowercase().split('?').next().unwrap_or("").to_string()) || (here && says(&tail)) {
+            found = Some(h);
+        }
+        last_end = whole.end();
+    }
+    if found.is_some() {
+        return found;
+    }
+    // Plain text: an address after the word (or one that says so).
+    for m in url.find_iter(text) {
+        let u = m.as_str().trim_end_matches(['.', ',', ';']);
+        let near = text[text.floor_char_boundary(m.start().saturating_sub(120))..m.start()].to_lowercase();
+        if says(&u.to_ascii_lowercase().split('?').next().unwrap_or("").to_string()) || says(&near) {
+            found = Some(u.to_string());
+        }
+    }
+    found
+}
+
+/// A message's list from its own unsubscribe link (no List-Unsubscribe
+/// header): the sender is what's remembered as unsubscribed.
+pub fn from_body(html: &str, text: &str, from_name: &str, from_email: &str) -> Option<ListInfo> {
+    let link = body_link(html, text)?;
+    let email = from_email.trim().to_lowercase();
+    Some(ListInfo {
+        list: if from_name.trim().is_empty() { from_email.to_string() } else { from_name.trim().to_string() },
+        key: email,
+        one_click: None,
+        mailto: None,
+        https: Some(link),
+    })
+}
+
 /// RFC 8058: POSTs "List-Unsubscribe=One-Click" to the list's https address
 /// (no cookies, no following the person's browser session).
 pub fn one_click(url: &str) -> Result<(), String> {
@@ -236,4 +309,24 @@ mod tests {
         assert_eq!(body, "List-Unsubscribe=One-Click");
         assert!(!cookie, "no cookies");
     }
+
+    #[test]
+    fn links_in_the_text() {
+        // Steam's footer: no header, an "Unsubscribe" link (a span inside).
+        let html = r#"<p>Hi</p><a href="https://store.example/app/1">Game</a> <strong><a href="https://store.example/account/notificationsettings?token=ab&amp;snr=1_620" class="link-u"><span>Unsubscribe</span></a> | <a href="https://store.example/account/notificationsettings?token=ab">Update My Preferences</a></strong>"#;
+        assert_eq!(body_link(html, "").as_deref(), Some("https://store.example/account/notificationsettings?token=ab&snr=1_620"));
+        // The address says so.
+        assert_eq!(body_link(r#"<a href='https://x.example/unsubscribe/42'>Manage</a>"#, "").as_deref(), Some("https://x.example/unsubscribe/42"));
+        // "Click here" after the word.
+        assert_eq!(body_link(r#"To unsubscribe from these emails, <a href="https://x.example/p?t=1">click here</a>."#, "").as_deref(), Some("https://x.example/p?t=1"));
+        // A "click here" elsewhere isn't one; mailto links aren't either.
+        assert_eq!(body_link(r#"See the sale, <a href="https://x.example/sale">click here</a>. <a href="mailto:a@x.example">Unsubscribe</a>"#, ""), None);
+        // Plain text.
+        assert_eq!(body_link("", "Bye.\nUnsubscribe: https://x.example/u?id=9.\n").as_deref(), Some("https://x.example/u?id=9"));
+        assert_eq!(body_link("", "Read more at https://x.example/news"), None);
+        let info = from_body(html, "", "Steam", "NoReply@steampowered.com").unwrap();
+        assert_eq!((info.list.as_str(), info.key.as_str(), info.one_click.is_none(), info.mailto.is_none()), ("Steam", "noreply@steampowered.com", true, true));
+        assert!(info.can_unsubscribe());
+    }
+
 }

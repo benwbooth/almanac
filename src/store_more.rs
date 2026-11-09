@@ -1119,12 +1119,15 @@ impl qobject::Store {
     pub(super) fn list_info(&self, id: i64) {
         let Some(m) = self.db.get(id) else { return };
         let live = self.db.live_message(id);
+        let (body, html, _) = self.db.text_of(id);
         let unsubscribed = self.db.settings.unsubscribed.clone();
         let thread = self.qt_thread();
         std::thread::spawn(move || {
-            let v = match list_of(&m, live) {
+            // (No text here yet: asked again once it's in.)
+            let pending = body.is_empty() && html.is_empty();
+            let v = match list_of(&m, live, &body, &html) {
                 Some(i) => json!({"id": id, "list": i.list, "key": i.key, "oneClick": i.one_click.is_some(), "mailto": i.mailto.is_some(), "https": i.https.is_some(), "unsubscribed": unsubscribed.contains(&i.key)}),
-                None => json!({"id": id, "list": ""}),
+                None => json!({"id": id, "list": "", "pending": pending}),
             };
             let _ = thread.queue(move |mut store| store.as_mut().set_list_json(QString::from(v.to_string().as_str())));
         });
@@ -1133,7 +1136,8 @@ impl qobject::Store {
     pub(super) fn unsubscribe(mut self: Pin<&mut Self>, id: i64) -> QString {
         let Some(m) = self.db.get(id) else { return QString::default() };
         let live = self.db.live_message(id);
-        let Some(info) = list_of(&m, live) else { return QString::default() };
+        let (body, html, _) = self.db.text_of(id);
+        let Some(info) = list_of(&m, live, &body, &html) else { return QString::default() };
         let note = |mut store: Pin<&mut Self>, info: &crate::unsubscribe::ListInfo| {
             if !store.db.settings.unsubscribed.iter().any(|k| *k == info.key) {
                 store.as_mut().db_mut().settings.unsubscribed.push(info.key.clone());
@@ -2208,8 +2212,9 @@ pub(crate) fn picture_stats(bytes: &[u8]) -> Option<serde_json::Value> {
 
 /// Message `m`'s list and how to leave it: from its kept list headers, else
 /// (mail stored before they were kept) its source here or on the server,
-/// which are then kept.
-fn list_of(m: &crate::data::Message, live: Option<(LiveAccount, String, u32)>) -> Option<crate::unsubscribe::ListInfo> {
+/// which are then kept. Without the List-Unsubscribe header: the unsubscribe
+/// link in its text (`body`, `html`), if it has one.
+fn list_of(m: &crate::data::Message, live: Option<(LiveAccount, String, u32)>, body: &str, html: &str) -> Option<crate::unsubscribe::ListInfo> {
     let synced = m.source.starts_with("live:") && m.raw_ref.is_empty();
     let heads = match crate::mailstore::list_heads(m.id, synced) {
         Some(h) => h,
@@ -2227,7 +2232,7 @@ fn list_of(m: &crate::data::Message, live: Option<(LiveAccount, String, u32)>) -
             h
         }
     };
-    crate::unsubscribe::parse(heads.as_bytes(), &m.from_email)
+    crate::unsubscribe::parse(heads.as_bytes(), &m.from_email).or_else(|| crate::unsubscribe::from_body(html, body, &m.from_name, &m.from_email))
 }
 
 fn original_message(m: &crate::data::Message, live: Option<(LiveAccount, String, u32)>) -> Result<Vec<u8>, String> {
