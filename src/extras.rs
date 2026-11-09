@@ -609,18 +609,35 @@ pub fn alert_when(start: chrono::NaiveDateTime, now: chrono::NaiveDateTime, all_
         return if day.is_empty() { "Today".to_string() } else { day };
     }
     let time = start.format("%H:%M");
-    if !day.is_empty() {
-        return format!("{day} at {time}");
-    }
     let left = (start - now).num_minutes().max(0);
     if left == 0 {
-        format!("Now ({time})")
-    } else if left < 60 {
-        format!("At {time} (in {left} min)")
-    } else {
-        let (h, m) = (left / 60, left % 60);
-        if m == 0 { format!("At {time} (in {h} h)") } else { format!("At {time} (in {h} h {m} min)") }
+        return format!("Now ({time})");
     }
+    let at = if day.is_empty() { format!("At {time}") } else { format!("{day} at {time}") };
+    format!("{at} (in {})", span(left))
+}
+
+/// A wait in minutes as its two largest parts: "45 min", "2 h 5 min",
+/// "1 day 3 h", "2 weeks 1 day", "1 month 2 weeks" (a month is 30 days).
+pub fn span(minutes: i64) -> String {
+    let units: [(i64, &str, &str); 5] =
+        [(30 * 1440, "month", "months"), (7 * 1440, "week", "weeks"), (1440, "day", "days"), (60, "h", "h"), (1, "min", "min")];
+    let mut rest = minutes.max(0);
+    let mut parts = Vec::new();
+    for (size, one, many) in units {
+        let n = rest / size;
+        if n > 0 {
+            parts.push(format!("{n} {}", if n == 1 { one } else { many }));
+            rest -= n * size;
+        } else if !parts.is_empty() {
+            // Only next to each other: "1 day 5 min" would read oddly.
+            break;
+        }
+        if parts.len() == 2 {
+            break;
+        }
+    }
+    if parts.is_empty() { "0 min".into() } else { parts.join(" ") }
 }
 
 #[cfg(test)]
@@ -631,14 +648,21 @@ mod tests {
     fn alert_says_which_day() {
         let dt = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").unwrap();
         let now = dt("2026-11-09T08:15");
-        assert_eq!(alert_when(dt("2026-11-10T08:15"), now, false), "Tomorrow at 08:15");
+        assert_eq!(alert_when(dt("2026-11-10T08:15"), now, false), "Tomorrow at 08:15 (in 1 day)");
+        assert_eq!(alert_when(dt("2026-11-10T08:14"), now, false), "Tomorrow at 08:14 (in 23 h 59 min)");
+        assert_eq!(span(1439), "23 h 59 min");
+        assert_eq!(span(1440 + 180), "1 day 3 h");
+        assert_eq!(span(1440 + 5), "1 day");
+        assert_eq!(span(15 * 1440), "2 weeks 1 day");
+        assert_eq!(span(45 * 1440), "1 month 2 weeks");
+        assert_eq!(span(45), "45 min");
         assert_eq!(alert_when(dt("2026-11-09T08:45"), now, false), "At 08:45 (in 30 min)");
         assert_eq!(alert_when(dt("2026-11-09T10:15"), now, false), "At 10:15 (in 2 h)");
         assert_eq!(alert_when(dt("2026-11-09T08:15"), now, false), "Now (08:15)");
         assert_eq!(alert_when(dt("2026-11-11T00:00"), now, true), "Wednesday");
         assert_eq!(alert_when(dt("2026-11-10T00:00"), dt("2026-11-09T22:00"), true), "Tomorrow");
         assert_eq!(alert_when(dt("2026-11-09T00:00"), now, true), "Today");
-        assert_eq!(alert_when(dt("2026-11-20T09:00"), now, false), "Fri 20 Nov at 09:00");
+        assert_eq!(alert_when(dt("2026-11-20T09:00"), now, false), "Fri 20 Nov at 09:00 (in 1 week 4 days)");
     }
 
     #[test]
