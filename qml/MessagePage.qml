@@ -293,7 +293,7 @@ WebEngineView {
             web.applyLists()
         }
     }
-    // Mailing lists: an Unsubscribe link of its own, right under the message's buttons.
+    // Mailing lists: an Unsubscribe link of its own, right under the message's buttons, lined up with To: (past the 40px picture and its 12px gap).
     function listBanner(i, c) {
         if (!c || !c.list) return ""
         if (c.unsubscribed) return '<span>Unsubscribed</span>'
@@ -659,7 +659,7 @@ WebEngineView {
               + '.row .rd{flex:none;color:' + css(Theme.secondary) + ';font-size:11.5px}'
               + '.row .snip{margin-top:2px;font-size:12px;color:' + css(Theme.text) + ';line-height:1.4;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere}'
               + '.sum{color:' + css(Theme.secondary) + ';font-size:12px;margin-top:1px;display:flex;gap:6px;min-width:0}'
-              + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}.unsub{text-align:center;font-size:12px;margin-top:6px;color:' + css(Theme.secondary) + '}.unsub:empty{display:none}.unsub a{color:' + css(Theme.accent) + ';text-decoration:none;font-weight:600}'
+              + '.sum .who2{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.det{flex:none;font-size:11px}.unsub{text-align:left;padding-left:52px;font-size:12px;margin-top:6px;color:' + css(Theme.secondary) + '}.unsub:empty{display:none}.unsub a{color:' + css(Theme.accent) + ';text-decoration:none;font-weight:600}'
               + '.msg:not(.det-on) .details{display:none}.msg.plain .remote{display:none}'
               + '.pgp{font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;margin-left:8px;white-space:nowrap;cursor:default}'
               + '.pgp.good{color:' + (Theme.dark ? '#7ee2a0' : '#0d7a33') + ';background:' + (Theme.dark ? 'rgba(126,226,160,.14)' : '#e3f6e9') + '}'
