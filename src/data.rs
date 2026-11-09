@@ -3417,6 +3417,10 @@ impl Db {
             lc(email).starts_with(&p) || lc(name).starts_with(&p) || lc(name).split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&p))
         };
         let mine: std::collections::HashSet<String> = self.accounts.iter().map(|a| a.email.to_ascii_lowercase()).collect();
+        // Your name as set on the account ("Your name (shown on mail you send)").
+        let my_name = |email: &str| {
+            self.live.iter().find(|a| a.email.eq_ignore_ascii_case(email) && !a.full_name.trim().is_empty()).map(|a| a.full_name.trim().to_string())
+        };
         self.with_people(|people| {
             let when: std::collections::HashMap<String, (i64, i64)> =
                 people.iter().map(|x| (x.email.to_ascii_lowercase(), (x.last_written, x.last))).collect();
@@ -3435,19 +3439,21 @@ impl Db {
             }
             for x in people {
                 let key = x.email.to_ascii_lowercase();
-                if matches(&x.name, &x.email) && taken.insert(key.clone()) {
+                let name = if mine.contains(&key) { my_name(&x.email).unwrap_or_else(|| x.name.clone()) } else { x.name.clone() };
+                if matches(&name, &x.email) && taken.insert(key.clone()) {
                     // Your own addresses are in nearly every message you get, so
                     // they rank only by when you wrote to yourself.
                     let seen = if mine.contains(&key) { 0 } else { x.last };
-                    found.push((x.last_written, seen, x.name.clone(), x.email.clone()));
+                    found.push((x.last_written, seen, name, x.email.clone()));
                 }
             }
             // Your own addresses, even when the mail never mentions them.
             for a in &self.accounts {
                 let key = a.email.to_ascii_lowercase();
                 // (An account's name is a label like "Gmail", not yours.)
-                if key.contains('@') && matches("", &a.email) && taken.insert(key) {
-                    found.push((0, 0, String::new(), a.email.clone()));
+                let name = my_name(&a.email).unwrap_or_default();
+                if key.contains('@') && matches(&name, &a.email) && taken.insert(key) {
+                    found.push((0, 0, name, a.email.clone()));
                 }
             }
             found.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.to_lowercase().cmp(&b.2.to_lowercase())));
@@ -4584,6 +4590,11 @@ mod suggestion_tests {
         let v = db.email_suggestions("be");
         let emails: Vec<&str> = v.as_array().unwrap().iter().map(|x| x["email"].as_str().unwrap()).collect();
         assert_eq!(emails, vec!["beth@y.org", "ben@x.com"]);
+        assert_eq!(v[1]["name"], "", "no name known yet");
+        db.live.push(crate::live::LiveAccount { email: "Ben@x.com".into(), name: "Gmail".into(), full_name: "Ben Booth".into(), ..Default::default() });
+        let v = db.email_suggestions("booth");
+        assert_eq!(v[0]["email"], "ben@x.com", "found by the name set on the account");
+        assert_eq!(v[0]["name"], "Ben Booth");
     }
 }
 

@@ -141,6 +141,8 @@ QtObject {
     }
     function initials(name) {
         if (!name) return "?"
+        // A bare address: the first letter of it ("benwbooth@gmail.com" is B, not BC).
+        if (name.indexOf("@") > 0 && name.indexOf(" ") < 0) return name.charAt(0).toUpperCase()
         var parts = name.replace(/["'<>()\[\]@.,_-]/g, " ").trim().split(/\s+/)
         if (parts.length === 0 || parts[0] === "") return name.charAt(0).toUpperCase()
         var s = parts[0].charAt(0)
