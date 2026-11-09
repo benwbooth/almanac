@@ -580,13 +580,7 @@ impl Db {
                 // Due within the last 10 minutes and not shown before.
                 if at <= now && at > now - Duration::minutes(10) && !self.fired_alerts.contains(&key) {
                     self.fired_alerts.push(key);
-                    let when = if ev.all_day {
-                        "today".to_string()
-                    } else if mins == 0 {
-                        format!("now ({})", start.format("%H:%M"))
-                    } else {
-                        format!("at {} (in {} min)", start.format("%H:%M"), (start - now).num_minutes().max(0))
-                    };
+                    let when = alert_when(start, now, ev.all_day);
                     let place = if ev.location.is_empty() { String::new() } else { format!(" · {}", ev.location) };
                     out.push((ev.title.clone(), format!("{when}{place}"), id, fmt_dt(start)));
                 }
@@ -600,9 +594,52 @@ impl Db {
     }
 }
 
+/// An alert's "when" text, saying which day the event is on when it isn't
+/// today (a reminder set a day or more ahead): "Tomorrow at 08:15",
+/// "Wed 11 Nov", "at 14:00 (in 30 min)", "Today".
+pub fn alert_when(start: chrono::NaiveDateTime, now: chrono::NaiveDateTime, all_day: bool) -> String {
+    let days = (start.date() - now.date()).num_days();
+    let day = match days {
+        ..=0 => String::new(),
+        1 => "Tomorrow".to_string(),
+        2..=6 => start.format("%A").to_string(),
+        _ => start.format("%a %-d %b").to_string(),
+    };
+    if all_day {
+        return if day.is_empty() { "Today".to_string() } else { day };
+    }
+    let time = start.format("%H:%M");
+    if !day.is_empty() {
+        return format!("{day} at {time}");
+    }
+    let left = (start - now).num_minutes().max(0);
+    if left == 0 {
+        format!("Now ({time})")
+    } else if left < 60 {
+        format!("At {time} (in {left} min)")
+    } else {
+        let (h, m) = (left / 60, left % 60);
+        if m == 0 { format!("At {time} (in {h} h)") } else { format!("At {time} (in {h} h {m} min)") }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alert_says_which_day() {
+        let dt = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").unwrap();
+        let now = dt("2026-11-09T08:15");
+        assert_eq!(alert_when(dt("2026-11-10T08:15"), now, false), "Tomorrow at 08:15");
+        assert_eq!(alert_when(dt("2026-11-09T08:45"), now, false), "At 08:45 (in 30 min)");
+        assert_eq!(alert_when(dt("2026-11-09T10:15"), now, false), "At 10:15 (in 2 h)");
+        assert_eq!(alert_when(dt("2026-11-09T08:15"), now, false), "Now (08:15)");
+        assert_eq!(alert_when(dt("2026-11-11T00:00"), now, true), "Wednesday");
+        assert_eq!(alert_when(dt("2026-11-10T00:00"), dt("2026-11-09T22:00"), true), "Tomorrow");
+        assert_eq!(alert_when(dt("2026-11-09T00:00"), now, true), "Today");
+        assert_eq!(alert_when(dt("2026-11-20T09:00"), now, false), "Fri 20 Nov at 09:00");
+    }
 
     #[test]
     fn rule_moves_and_flags_new_mail() {
