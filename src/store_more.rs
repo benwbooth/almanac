@@ -353,8 +353,10 @@ impl qobject::Store {
                 "delete" => self.db.live_folder_of_kind(id, "trash").map(MailOp::Move),
                 _ => None,
             };
-            if let Some(op) = op {
-                self.as_mut().push_mail(Some(t), op);
+            match op {
+                Some(op @ (MailOp::Flagged(_) | MailOp::Seen(_))) => self.as_mut().push_flags(id, Some(t), op),
+                Some(op) => self.as_mut().push_mail(Some(t), op),
+                None => {}
             }
         }
     }

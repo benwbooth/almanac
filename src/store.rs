@@ -1032,6 +1032,26 @@ impl qobject::Store {
         self.background(move || crate::live::mail_op(&acct, &path, uid, op), |_, _| {});
     }
 
+    /// A read/flag change of message `id` to the server, kept safe from syncs
+    /// already under way (which still have the old flags) until it's there.
+    pub(crate) fn push_flags(mut self: Pin<&mut Self>, id: i64, target: Option<(crate::live::LiveAccount, String, u32)>, op: crate::live::MailOp) {
+        let _timed = crate::Timed::new("push_flags");
+        let Some((acct, path, uid)) = target else { return };
+        if uid == 0 {
+            return;
+        }
+        let Some(generation) = self.as_mut().db_mut().guard_flags(id) else { return };
+        self.background(
+            move || Ok(crate::live::mail_op(&acct, &path, uid, op)),
+            move |mut store, r: Result<(), String>| {
+                store.as_mut().db_mut().flag_pushed(generation);
+                if let Err(e) = r {
+                    store.as_mut().set_status_text(QString::from(e.as_str()));
+                }
+            },
+        );
+    }
+
     // ---------------------------------------------------------------- mail
 
     fn mail_sidebar(&self) -> QString {
@@ -1087,7 +1107,7 @@ impl qobject::Store {
             .collect();
         for id in ids {
             let target = self.db.live_message(id);
-            self.as_mut().push_mail(target, crate::live::MailOp::Seen(true));
+            self.as_mut().push_flags(id, target, crate::live::MailOp::Seen(true));
         }
         self.as_mut().db_mut().mark_all_read(&sel);
         self.changed();
@@ -1240,7 +1260,7 @@ impl qobject::Store {
         let _timed = crate::Timed::new("set_read");
         if self.as_mut().db_mut().set_read(id, read) {
             let target = self.db.live_message(id);
-            self.as_mut().push_mail(target, crate::live::MailOp::Seen(read));
+            self.as_mut().push_flags(id, target, crate::live::MailOp::Seen(read));
             self.changed();
         }
     }
@@ -1250,7 +1270,7 @@ impl qobject::Store {
         self.as_mut().db_mut().toggle_flag(id);
         let on = self.db.get(id).map(|m| m.flagged).unwrap_or(false);
         let target = self.db.live_message(id);
-        self.as_mut().push_mail(target, crate::live::MailOp::Flagged(on));
+        self.as_mut().push_flags(id, target, crate::live::MailOp::Flagged(on));
         self.changed();
     }
 
@@ -1258,7 +1278,7 @@ impl qobject::Store {
         let color = if color < 0 { None } else { Some(color.min(6) as u8) };
         self.as_mut().db_mut().set_flag(id, color);
         let target = self.db.live_message(id);
-        self.as_mut().push_mail(target, crate::live::MailOp::FlagColor(color));
+        self.as_mut().push_flags(id, target, crate::live::MailOp::FlagColor(color));
         self.changed();
     }
 

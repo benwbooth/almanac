@@ -243,8 +243,12 @@ pub struct SourceSettings {
 
 /// What changed in a mail account since the last sync (live accounts):
 /// new messages, read/flag changes, and messages gone from the server.
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct MailDelta {
+    /// When the sync began asking the server (made with the delta, before any
+    /// flags are read): read/flag changes made here and sent to the server
+    /// after this aren't in it, so they win over what it says.
+    pub started: std::time::Instant,
     pub new: Vec<Message>,
     /// (folder, uid, read, flagged) for messages already here
     /// (folder, uid, read, flagged, flag colour; NO_COLOR: as it was)
@@ -254,6 +258,25 @@ pub struct MailDelta {
     /// Mailboxes read through, as they were (see `FolderMark`)
     pub marks: Vec<(String, FolderMark)>,
 }
+
+impl Default for MailDelta {
+    fn default() -> Self {
+        MailDelta { started: std::time::Instant::now(), new: Vec::new(), flags: Vec::new(), gone: Vec::new(), marks: Vec::new() }
+    }
+}
+
+/// A read/flag change made here that's on its way to the server (see
+/// `Db::flag_guards`): `pushed` is when the server took it (None: not yet).
+#[derive(Clone, Debug)]
+pub struct FlagGuard {
+    pub generation: u64,
+    pub changed: std::time::Instant,
+    pub pushed: Option<std::time::Instant>,
+}
+
+/// How long a change the server never confirmed (no answer at all) keeps
+/// winning over what a sync says.
+const FLAG_GUARD_MAX: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// A mailbox as the server described it at the last full look (UIDVALIDITY,
 /// UIDNEXT, message count and CONDSTORE's HIGHESTMODSEQ). When none of them
@@ -325,6 +348,15 @@ pub struct Db {
     /// Each live mailbox at the last check (by folder id)
     #[serde(default)]
     pub folder_marks: std::collections::HashMap<String, FolderMark>,
+    /// Read/flag changes made here, by (source, folder, uid), until a sync
+    /// that began after the server took them: one that began before (the
+    /// usual case for a check already running when a message is opened)
+    /// still has the old flags and would otherwise undo them, so a message
+    /// opened would go back to unread until opened again.
+    #[serde(skip)]
+    pub flag_guards: std::collections::HashMap<(String, String, u32), FlagGuard>,
+    #[serde(skip)]
+    pub flag_guard_generation: u64,
     #[serde(default)]
     pub rules: Vec<crate::extras::MailRule>,
     #[serde(default)]
@@ -2513,7 +2545,8 @@ impl Db {
             index.insert((m.folder.clone(), m.uid), i);
         }
         let mut elsewhere = Vec::new();
-        for (folder, uid, read, flagged, color) in delta.flags {
+        let flags = self.unguarded_flags(src, delta.started, delta.flags);
+        for (folder, uid, read, flagged, color) in flags {
             if let Some(&i) = index.get(&(folder.clone(), uid)) {
                 self.messages[i].read = read;
                 self.messages[i].flagged = flagged;
@@ -2642,6 +2675,46 @@ impl Db {
         if self.msg_mut(id).is_some() {
             self.messages.retain(|m| m.id != id);
         }
+    }
+
+    /// Notes that message `id`'s read/flag state was changed here and is being
+    /// sent to the server: syncs that began before the server took it leave it
+    /// alone. Returns the change's number for `flag_pushed`.
+    pub fn guard_flags(&mut self, id: i64) -> Option<u64> {
+        let m = self.get(id)?;
+        if m.uid == 0 {
+            return None;
+        }
+        let key = (m.source.clone(), m.folder.clone(), m.uid);
+        self.flag_guard_generation += 1;
+        let generation = self.flag_guard_generation;
+        self.flag_guards.insert(key, FlagGuard { generation, changed: std::time::Instant::now(), pushed: None });
+        Some(generation)
+    }
+
+    /// The server has answered change `generation` (taken or refused): syncs
+    /// that begin from now on see what it has.
+    pub fn flag_pushed(&mut self, generation: u64) {
+        let now = std::time::Instant::now();
+        for g in self.flag_guards.values_mut().filter(|g| g.generation == generation) {
+            g.pushed = Some(now);
+        }
+    }
+
+    /// A sync's read/flag rows without those for messages changed here that
+    /// the sync (begun at `started`) can't have seen yet. Guards such a sync
+    /// is past are dropped.
+    fn unguarded_flags(&mut self, src: &str, started: std::time::Instant, rows: Vec<(String, u32, bool, bool, u8)>) -> Vec<(String, u32, bool, bool, u8)> {
+        let stale = |g: &FlagGuard| match g.pushed {
+            Some(p) => p <= started,
+            None => g.changed.elapsed() > FLAG_GUARD_MAX,
+        };
+        self.flag_guards.retain(|k, g| k.0 != src || !stale(g));
+        if self.flag_guards.is_empty() {
+            return rows;
+        }
+        let guards = &self.flag_guards;
+        rows.into_iter().filter(|(folder, uid, ..)| !guards.contains_key(&(src.to_string(), folder.clone(), *uid))).collect()
     }
 
     pub fn set_read(&mut self, id: i64, read: bool) -> bool {
@@ -3489,7 +3562,8 @@ impl Db {
                     index.insert((m.folder.clone(), m.uid), i);
                 }
                 let mut elsewhere = Vec::new();
-                for (folder, uid, read, flagged, color) in delta.flags {
+                let flags = self.unguarded_flags(&src, delta.started, delta.flags);
+                for (folder, uid, read, flagged, color) in flags {
                     if let Some(&i) = index.get(&(folder.clone(), uid)) {
                         self.messages[i].read = read;
                         self.messages[i].flagged = flagged;
@@ -4313,6 +4387,32 @@ mod delta_tests {
     }
 
     #[test]
+    fn a_sync_begun_before_a_message_was_opened_does_not_mark_it_unread_again() {
+        let mut db = Db::empty();
+        db.apply_import(delta_import(MailDelta { new: (1..=2).map(msg).collect(), ..Default::default() }));
+        let id1 = db.messages.iter().find(|m| m.uid == 1).unwrap().id;
+        let unread = |uid: u32| vec![("live:a:mail/INBOX".to_string(), uid, false, false, NO_COLOR)];
+        // A check starts, then the message is opened (marked read, sent to the server).
+        let running = MailDelta { flags: [unread(1), unread(2)].concat(), ..Default::default() };
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(db.set_read(id1, true));
+        let g = db.guard_flags(id1).unwrap();
+        // The check finishes with the flags from before: the message stays read.
+        db.apply_import(delta_import(running.clone()));
+        assert!(db.get(id1).unwrap().read, "still read while the change is on its way");
+        // The server takes it; a check that began before that still can't undo it.
+        db.flag_pushed(g);
+        db.apply_import(delta_import(running));
+        assert!(db.get(id1).unwrap().read, "still read: that check began before the server had it");
+        // A check begun after the server took it is the truth again (here:
+        // marked unread on another device).
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.apply_import(delta_import(MailDelta { flags: unread(1), ..Default::default() }));
+        assert!(!db.get(id1).unwrap().read, "later server changes still come through");
+        assert!(db.flag_guards.is_empty());
+    }
+
+    #[test]
     fn syncing_changes_keeps_what_is_here() {
         let mut db = Db::empty();
         let first = db.apply_import(delta_import(MailDelta { new: (1..=3).map(msg).collect(), ..Default::default() }));
@@ -4331,6 +4431,7 @@ mod delta_tests {
             flags: vec![("live:a:mail/INBOX".into(), 2, true, true, 4), ("live:a:mail/INBOX".into(), 3, false, false, NO_COLOR)],
             gone: vec![("live:a:mail/INBOX".into(), 1)],
             marks: vec![("live:a:mail/INBOX".into(), FolderMark { validity: 1, uid_next: 5, exists: 3, modseq: 77 })],
+            ..Default::default()
         }));
         assert_eq!(new.len(), 1, "only the new message counts as new");
         assert_eq!(db.folder_marks.get("live:a:mail/INBOX").map(|m| m.modseq), Some(77), "the mailbox's counters are kept");
