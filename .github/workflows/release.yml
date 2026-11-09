@@ -2,6 +2,8 @@
 # and Intel) with a Homebrew cask, an AppImage, and a Flatpak bundle and repo.
 #
 # Runs when a GitHub release is published, and attaches every file to it.
+# Pushing a tag like v1.2.3 also cuts the release (with generated notes) and
+# then builds it the same way.
 # It can also be started by hand (Actions > Release > Run workflow) to try the
 # builds; that run keeps the files as workflow artifacts and publishes nothing.
 #
@@ -15,6 +17,8 @@ name: Release
 on:
   release:
     types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -35,24 +39,39 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
+      skip: ${{ steps.v.outputs.skip }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - id: v
         shell: bash
         run: |
+          skip=false
           if [ "${{ github.event_name }}" = release ]; then
             tag='${{ github.event.release.tag_name }}'
             version="${tag#v}"
+          elif [ "${{ github.event_name }}" = push ]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              # Made on GitHub with this tag: its own release run builds it.
+              skip=true
+            else
+              gh release create "$tag" --verify-tag --title "Almanac $version" --generate-notes
+            fi
           else
             tag=""
             version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-dev.${{ github.run_number }}"
           fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Building Almanac $version"
 
   windows:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -123,6 +142,7 @@ jobs:
 
   macos:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -180,6 +200,7 @@ jobs:
 
   appimage:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     # The oldest supported Ubuntu, so the AppImage runs on older systems too.
     runs-on: ubuntu-22.04
     env:
@@ -244,6 +265,7 @@ jobs:
 
   flatpak:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -321,7 +343,7 @@ jobs:
 
   publish:
     # Attaches everything to the release and updates the Homebrew cask.
-    if: github.event_name == 'release'
+    if: needs.version.outputs.tag != ''
     needs: [version, windows, macos, appimage, flatpak]
     runs-on: ubuntu-latest
     env:
