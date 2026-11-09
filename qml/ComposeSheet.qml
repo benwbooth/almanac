@@ -771,7 +771,7 @@ Popup {
             if (!it || !target) return
             var t = target
             var parts = t.text.split(",")
-            parts[parts.length - 1] = (parts.length > 1 ? " " : "") + it.name + " <" + it.email + ">"
+            parts[parts.length - 1] = (parts.length > 1 ? " " : "") + (it.name ? it.name + " <" + it.email + ">" : it.email)
             t.text = parts.join(",") + ", "
             items = []
             t.forceActiveFocus()

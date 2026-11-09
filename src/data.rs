@@ -3435,8 +3435,19 @@ impl Db {
             }
             for x in people {
                 let key = x.email.to_ascii_lowercase();
-                if !mine.contains(&key) && matches(&x.name, &x.email) && taken.insert(key) {
-                    found.push((x.last_written, x.last, x.name.clone(), x.email.clone()));
+                if matches(&x.name, &x.email) && taken.insert(key.clone()) {
+                    // Your own addresses are in nearly every message you get, so
+                    // they rank only by when you wrote to yourself.
+                    let seen = if mine.contains(&key) { 0 } else { x.last };
+                    found.push((x.last_written, seen, x.name.clone(), x.email.clone()));
+                }
+            }
+            // Your own addresses, even when the mail never mentions them.
+            for a in &self.accounts {
+                let key = a.email.to_ascii_lowercase();
+                // (An account's name is a label like "Gmail", not yours.)
+                if key.contains('@') && matches("", &a.email) && taken.insert(key) {
+                    found.push((0, 0, String::new(), a.email.clone()));
                 }
             }
             found.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.to_lowercase().cmp(&b.2.to_lowercase())));
@@ -4550,7 +4561,29 @@ mod suggestion_tests {
         let emails: Vec<&str> = v.as_array().unwrap().iter().map(|x| x["email"].as_str().unwrap()).collect();
         assert_eq!(emails, vec!["jenny@school.edu", "jeff@band.org"], "people written to most first");
         assert_eq!(db.email_suggestions("kuma")[0]["name"], "Jeffrey Kumagai", "matches a word of the name");
-        assert!(db.email_suggestions("me@").as_array().unwrap().is_empty(), "not my own address");
+        let mine = db.email_suggestions("me@");
+        let mine: Vec<&str> = mine.as_array().unwrap().iter().map(|x| x["email"].as_str().unwrap()).collect();
+        assert_eq!(mine, vec!["me@x.com"], "my own address too");
+    }
+
+    #[test]
+    fn my_own_address_doesnt_crowd_out_others() {
+        let mut db = Db::empty();
+        db.apply_import(Imported {
+            source: "live:a".into(),
+            accounts: vec![Account { id: "live:a:mail".into(), name: "Gmail".into(), email: "ben@x.com".into(), source: "live:a".into() }],
+            folders: vec![Folder { id: "f/in".into(), account: "live:a:mail".into(), name: "Inbox".into(), kind: "inbox".into(), path: "INBOX".into() }],
+            server_truth: true,
+            ..Default::default()
+        });
+        let now = chrono::Utc::now().timestamp();
+        db.add_messages(vec![
+            Message { folder: "f/in".into(), source: "live:a".into(), uid: 1, from_name: "Beth".into(), from_email: "beth@y.org".into(), to: "ben@x.com".into(), date: now - 86_400 * 30, ..Default::default() },
+            Message { folder: "f/in".into(), source: "live:a".into(), uid: 2, from_name: "Shop".into(), from_email: "shop@z.com".into(), to: "ben@x.com".into(), date: now, ..Default::default() },
+        ]);
+        let v = db.email_suggestions("be");
+        let emails: Vec<&str> = v.as_array().unwrap().iter().map(|x| x["email"].as_str().unwrap()).collect();
+        assert_eq!(emails, vec!["beth@y.org", "ben@x.com"]);
     }
 }
 
