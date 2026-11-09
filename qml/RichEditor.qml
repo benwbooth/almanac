@@ -661,6 +661,8 @@ ColumnLayout {
             textFormat: TextEdit.RichText
             wrapMode: TextEdit.Wrap
             font.pixelSize: Theme.base + 1
+            // Plain text in a fixed-width font (as it's often read), so lined-up text stays lined up.
+            font.family: sheet.plain ? "monospace" : Qt.application.font.family
             color: Theme.text
             selectByMouse: true
             persistentSelection: true
