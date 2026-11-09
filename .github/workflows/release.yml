@@ -4,8 +4,9 @@
 # Runs when a GitHub release is published, and attaches every file to it.
 # Pushing a tag like v1.2.3 also cuts the release (with generated notes) and
 # then builds it the same way.
-# It can also be started by hand (Actions > Release > Run workflow) to try the
-# builds; that run keeps the files as workflow artifacts and publishes nothing.
+# It can also be started by hand (Actions > Release > Run workflow): with a
+# release tag it cuts that release and builds it; without one it only tries
+# the builds, keeping the files as workflow artifacts.
 #
 # Optional repository secrets:
 #   HOMEBREW_TAP_TOKEN        a token that can push to benwbooth/homebrew-tap;
@@ -20,6 +21,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Cut a release with this new tag (e.g. v1.2.3) from the chosen branch; leave empty to only try the builds'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -51,6 +57,10 @@ jobs:
           if [ "${{ github.event_name }}" = release ]; then
             tag='${{ github.event.release.tag_name }}'
             version="${tag#v}"
+          elif [ -n "${{ inputs.release_tag }}" ]; then
+            tag='${{ inputs.release_tag }}'
+            version="${tag#v}"
+            gh release create "$tag" --target "$GITHUB_SHA" --title "Almanac $version" --generate-notes
           elif [ "${{ github.event_name }}" = push ]; then
             tag="${GITHUB_REF_NAME}"
             version="${tag#v}"
