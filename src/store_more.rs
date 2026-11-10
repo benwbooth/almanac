@@ -254,8 +254,12 @@ impl qobject::Store {
             return;
         };
         let sent_path = self.db.live_kind_path(&account, "sent").map(|(_, p)| p);
-        let m = crate::live::OutMsg::from_json(&o.payload);
-        let payload = o.payload.clone();
+        let mut m = crate::live::OutMsg::from_json(&o.payload);
+        // A Message-ID of its own: the copy kept in Sent until the server's
+        // arrives is known by it, and goes then.
+        m.message_id = super::new_message_id();
+        let mut payload = o.payload.clone();
+        payload["messageId"] = Value::String(m.message_id.clone());
         self.background(
             move || Ok(crate::live::send_msg(&acct, &m, sent_path.as_deref())),
             move |mut store, r: Result<(), String>| {

@@ -4103,6 +4103,14 @@ impl Db {
             cc: s("cc"),
             subject: s("subject"),
             body: s("body"),
+            // As it was written (formatted), so Send Again opens it that way.
+            html: s("html"),
+            attachments: v
+                .get("attachments")
+                .and_then(Value::as_array)
+                .map(|l| l.iter().filter_map(Value::as_str).filter_map(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned())).collect())
+                .unwrap_or_default(),
+            message_id: s("messageId"),
             date: Local::now().timestamp(),
             read: true,
             source: a.source(),
