@@ -28,7 +28,7 @@ impl ListInfo {
 }
 
 /// A header's value (unfolded), by name.
-fn header(headers: &str, name: &str) -> Option<String> {
+pub(crate) fn header(headers: &str, name: &str) -> Option<String> {
     let mut out: Option<String> = None;
     for line in headers.lines() {
         if line.is_empty() {

@@ -102,6 +102,7 @@ Window {
     Shortcut { sequence: "Ctrl+R"; enabled: w.current !== null; onActivated: w.act(w.current, "reply") }
     Shortcut { sequence: "Ctrl+Shift+R"; enabled: w.current !== null; onActivated: w.act(w.current, "replyAll") }
     Shortcut { sequence: "Ctrl+Shift+F"; enabled: w.current !== null; onActivated: w.act(w.current, "forward") }
+    Shortcut { sequence: "Ctrl+Shift+D"; autoRepeat: false; enabled: w.current !== null; onActivated: w.act(w.current, "sendAgain") }
     Shortcut { sequence: "Ctrl+Shift+A"; enabled: w.current !== null; onActivated: w.moveAll("archive") }
     Shortcut { sequence: "Ctrl+Shift+J"; enabled: w.current !== null; onActivated: w.moveAll("junk") }
     Shortcut { sequence: "Ctrl+Shift+L"; enabled: w.current !== null; onActivated: w.store.toggleFlag(w.current.id) }

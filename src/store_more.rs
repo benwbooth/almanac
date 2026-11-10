@@ -1630,6 +1630,36 @@ impl qobject::Store {
         );
     }
 
+    /// Send Again: the original's attachments as files, and its Bcc line
+    /// (kept in the sent copy) from the whole message.
+    pub(super) fn fetch_send_again(mut self: Pin<&mut Self>, id: i64) {
+        let _timed = crate::Timed::new("fetch_send_again");
+        let Some(m) = self.db.get(id) else { return };
+        let live = self.db.live_message(id);
+        if !m.attachments.is_empty() {
+            self.as_mut().set_status_text(QString::from("Adding the attachments…"));
+        }
+        self.background(
+            move || {
+                let raw = original_message(&m, live.clone()).ok();
+                if let Some(raw) = &raw {
+                    if m.attachments.iter().any(|n| crate::mailstore::attachment_file(m.id, n).is_none()) {
+                        crate::mailstore::store_attachments_from(m.id, raw, &m.attachments);
+                    }
+                }
+                let bcc = raw.as_deref().map(bcc_of).unwrap_or_default();
+                let files: Vec<String> = m.attachments.iter().filter_map(|n| attachment_path(&m, live.clone(), n).ok()).map(|p| p.display().to_string()).collect();
+                Ok((files, bcc, m.attachments.len()))
+            },
+            move |mut store, (files, bcc, wanted): (Vec<String>, String, usize)| {
+                if files.len() < wanted {
+                    store.as_mut().set_status_text(QString::from("Some of the attachments aren't stored for this message."));
+                }
+                store.as_mut().set_attachments_ready(QString::from(json!({"id": id, "files": files, "bcc": bcc}).to_string().as_str()));
+            },
+        );
+    }
+
     pub(super) fn card_file(&self, id: i64) -> QString {
         let _timed = crate::Timed::new("card_file");
         let Some(c) = self.db.contacts.iter().find(|c| c.id == id) else { return QString::default() };
@@ -2097,6 +2127,13 @@ fn attachment_path(m: &crate::data::Message, live: Option<(LiveAccount, String, 
     crate::mailstore::attachment_file(m.id, wanted).ok_or_else(|| "Attachment not found in the message".into())
 }
 
+/// A message's Bcc line (decoded), or "".
+fn bcc_of(raw: &[u8]) -> String {
+    let end = raw.windows(4).position(|w| w == b"\r\n\r\n").or_else(|| raw.windows(2).position(|w| w == b"\n\n")).unwrap_or(raw.len());
+    let head = String::from_utf8_lossy(&raw[..end]).replace("\r\n", "\n");
+    crate::unsubscribe::header(&head, "Bcc").map(|v| crate::mime::decode_words(&v)).unwrap_or_default()
+}
+
 /// The whole original message (Thunderbird mailbox file or mail server).
 /// A picture's bytes: from a data: address, or (already shown in a message,
 /// so its server was allowed) fetched once more from the internet. At most 3 MB.
@@ -2316,5 +2353,15 @@ mod logo_tests {
         assert!(super::picture_stats(b"not a picture").is_none());
         // data: addresses read.
         assert_eq!(super::picture_bytes("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDwxcbtDyAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEyKzAwOjAwIgfZvQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMiswMDowMFNaYQEAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTIrMDA6MDAET0DeAAAAS0lEQVRYw+3PsREAEBBE0aMcrShJrCStaIdMIDZurP/CjfabAXhZ2IecyvA+dVrrdXVG7zO3EayOYHUEqyNYHcHqCFZHsLrvggExE9geBCK+Qfv/AAAAAElFTkSuQmCC").map(|b| b.len()), Some(png("iVBORw0KGgoAAAANSUhEUgAAADwAAAAYCAYAAACmwZ5SAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAHdElNRQfqCwgUDwxcbtDyAAAAJXRFWHRkYXRlOmNyZWF0ZQAyMDI2LTExLTA4VDIwOjE1OjEyKzAwOjAwIgfZvQAAACV0RVh0ZGF0ZTptb2RpZnkAMjAyNi0xMS0wOFQyMDoxNToxMiswMDowMFNaYQEAAAAodEVYdGRhdGU6dGltZXN0YW1wADIwMjYtMTEtMDhUMjA6MTU6MTIrMDA6MDAET0DeAAAAS0lEQVRYw+3PsREAEBBE0aMcrShJrCStaIdMIDZurP/CjfabAXhZ2IecyvA+dVrrdXVG7zO3EayOYHUEqyNYHcHqCFZHsLrvggExE9geBCK+Qfv/AAAAAElFTkSuQmCC").len()));
+    }
+}
+
+#[cfg(test)]
+mod send_again_tests {
+    #[test]
+    fn bcc_line_is_read_from_the_sent_copy() {
+        let raw = b"From: me@example.org\r\nTo: a@example.org\r\nBcc: =?UTF-8?Q?Jos=C3=A9?= <jose@example.org>,\r\n b@example.org\r\nSubject: Hi\r\n\r\nBcc: not@this.one\r\n";
+        assert_eq!(super::bcc_of(raw), "José <jose@example.org>, b@example.org");
+        assert_eq!(super::bcc_of(b"To: a@example.org\n\nhello"), "");
     }
 }

@@ -561,6 +561,9 @@ pub mod qobject {
         fn sync_subscriptions(self: Pin<&mut Store>);
         #[qinvokable]
         fn fetch_attachments(self: Pin<&mut Store>, id: i64);
+        /// Send Again: the original's attachments and its Bcc line, into `attachmentsReady`.
+        #[qinvokable]
+        fn fetch_send_again(self: Pin<&mut Store>, id: i64);
         #[qinvokable]
         fn blocked_and_vips(self: &Store) -> QString;
         #[qinvokable]

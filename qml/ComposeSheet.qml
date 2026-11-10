@@ -416,6 +416,12 @@ Popup {
     // Drafts save themselves while you write (as in Apple Mail): every half
     // minute, when something changed. Each save replaces the previous copy.
     property string savedSnapshot: ""
+    // Send Again: the original's Bcc line, once it's read (unless one was typed meanwhile).
+    function fillBcc(text) {
+        if (!text || bccRow.field.text) return
+        bccRow.field.text = text
+        showBcc = true
+    }
     function snapshot() { return JSON.stringify([toRow.field.text, ccRow.field.text, bccRow.field.text, subjectRow.field.text, body.text, attachments]) }
     function saveDraftNow() {
         draftId = store.saveDraft(JSON.stringify(payload()))

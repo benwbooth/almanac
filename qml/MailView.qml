@@ -612,7 +612,9 @@ Item {
         function onAttachmentsReadyChanged() {
             if (!store.attachmentsReady) return
             var r = JSON.parse(store.attachmentsReady)
-            if (r.id === compose.forwardOf) compose.attachments = compose.attachments.concat(r.files)
+            if (r.id !== compose.forwardOf) return
+            compose.attachments = compose.attachments.concat(r.files)
+            if (r.bcc) compose.fillBcc(r.bcc)
         }
     }
     function composeNew() { compose.openWith({ to: "riley@example.org", subject: "Agenda for Thursday", body: "Hi Riley,\n\nHere are my notes for the kickoff.\n" }) }
@@ -654,7 +656,16 @@ Item {
     function esc(t) { return (t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>") }
     // For the menus (named as in Apple Mail)
     function goTo(kind, name) { selection = "kind:" + kind; selectionName = name; selectedId = -1 }
-    function sendAgain() { if (current) compose.openWith({ to: current.to, cc: current.cc, subject: current.subject, body: current.body, html: current.html }) }
+    // Send Again (as in Apple Mail): a new message with the same recipients,
+    // subject, text and attachments, from the account it was in.
+    function sendAgain(which) {
+        var m = which || current
+        if (!m) return
+        compose.openWith({ to: m.to, cc: m.cc, subject: m.subject, body: m.body, html: m.html || "", account: store.messageAccount(m.id) })
+        // The attachments and the Bcc line come from the original a moment later.
+        compose.forwardOf = m.id
+        store.fetchSendAgain(m.id)
+    }
     // Saving asks where (the system's Save dialog, starting in Downloads).
     function saveAttachment(m, name) {
         saveOne.msgId = m.id
@@ -832,6 +843,7 @@ Item {
         if (action === "reply") reply(false, m, here)
         else if (action === "replyAll") reply(true, m, here)
         else if (action === "forward") forward(m, here)
+        else if (action === "sendAgain") sendAgain(m)
         else if (action === "unsubscribe") unsubscribe(m)
         else if (action === "notjunk") store.notJunk(JSON.stringify([m.id]))
         else if (action === "movejunk") {
@@ -1798,6 +1810,7 @@ Item {
                             P.MenuItem { icon.name: "mail-reply-sender"; shortcut: "Ctrl+R"; text: "Reply"; onTriggered: mail.reply(false) }
                             P.MenuItem { icon.name: "mail-reply-all"; shortcut: "Ctrl+Shift+R"; text: "Reply All"; onTriggered: mail.reply(true) }
                             P.MenuItem { icon.name: "mail-forward"; shortcut: "Ctrl+Shift+F"; text: "Forward"; onTriggered: mail.forward() }
+                            P.MenuItem { icon.name: "mail-send"; text: "Send Again\tCtrl+Shift+D"; onTriggered: mail.sendAgain() }
                             P.MenuSeparator {}
                             P.Menu {
                                 id: rowMoveMenu

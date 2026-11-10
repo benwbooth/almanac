@@ -687,7 +687,7 @@ ApplicationWindow {
                 rowSpacing: 4
                 Repeater {
                     model: [["Ctrl+1 / 2 / 3", "Mail / Calendar / Contacts"], ["Ctrl+N", "New message, event or contact"],
-                            ["Ctrl+R / Ctrl+Shift+R", "Reply / Reply All"], ["Ctrl+Shift+F", "Forward"], ["Ctrl+Return", "Send"],
+                            ["Ctrl+R / Ctrl+Shift+R", "Reply / Reply All"], ["Ctrl+Shift+F", "Forward"], ["Ctrl+Shift+D", "Send Again"], ["Ctrl+Return", "Send"],
                             ["Ctrl+Shift+N", "Get Mail"], ["Ctrl+Shift+U", "Mark as read / unread"], ["Ctrl+Shift+L", "Flag"],
                             ["Ctrl+Shift+A / J", "Archive / Junk"], ["Delete", "Delete message"], ["Ctrl+F", "Search"],
                             ["Ctrl+T", "Calendar: today"], ["Ctrl+← / →", "Calendar: previous / next"], ["Ctrl+B / I / U", "Bold / italic / underline"],
@@ -887,6 +887,8 @@ ApplicationWindow {
         // One message by its id (--id N), for pictures and checks against a copy of real mail.
         else if (p === "message") Qt.callLater(function() { mailView.openMessageById(parseInt(store.arg("--id"))) })
         else if (p === "compose") mailView.composeNew()
+        // Send Again on a message with pictures attached.
+        else if (p === "send-again") { mailView.selectSubject("Photos from the trip"); Qt.callLater(function() { mailView.sendAgain() }) }
         // A new message with a file attached (--attach <path>), e.g. a big one.
         else if (p === "compose-attach") mailView.composer.openWith({ to: "me@example.com", subject: "Big file", body: "Here it is.\n", attachments: [store.arg("--attach")] })
         else if (p === "event") calendarView.editFirst()
