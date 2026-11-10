@@ -178,6 +178,11 @@ WebEngineView {
             web.shownKey = ""
             Qt.callLater(web.render)
         }
+        // Its pages already made but drawn closed (the page was redrawn while it
+        // was closed, so they aren't on it to show): drawn again, open. (Closed
+        // and opened again without a redraw, they're still there: nothing to do,
+        // as the page's key is then the same.)
+        else if (on) Qt.callLater(web.render)
     }
     // Files shared by a link in a message (Google Drive, OneDrive, Dropbox,
     // Box, Nextcloud): [{url, name, provider}], each once, at most 8.
@@ -1037,7 +1042,7 @@ WebEngineView {
             var m = web.messages[i]
             if (!m.attachments || !m.attachments.length || !web.previewsFor) continue
             pv[m.id] = web.previewsOf(m)
-            pvKey.push(m.id + ":" + pv[m.id].map(function(p) { return p.name + p.data.length + "/" + (p.pages || []).length + (p.making ? "m" : "") }).join(","))
+            pvKey.push(m.id + ":" + pv[m.id].map(function(p) { return p.name + p.data.length + "/" + (p.pages || []).length + (p.making ? "m" : "") + (p.collapsed ? "c" : "") }).join(","))
         }
         var key = JSON.stringify([web.messages, web.subject, web.formatted, web.darkMessages, web.darkify, web.readableLogos, web.loadRemoteAlways,
                                   web.remoteLoaded, web.remoteSenders, Theme.dark, pvKey])
