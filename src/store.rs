@@ -858,11 +858,20 @@ impl cxx_qt::Initialize for qobject::Store {
             self.as_mut().sync_subscriptions();
         }
         // Each account's Inbox watched (IMAP IDLE): the server says when mail
-        // arrives, and it's fetched straight away, not at the next timed check.
+        // arrives, or a message is read, flagged or deleted elsewhere, and
+        // that's picked up straight away, not at the next timed check.
         for a in live.iter().filter(|a| !a.imap_host.is_empty() && !a.is_pop() && !a.is_ews()) {
             let thread = self.qt_thread();
-            crate::live::watch_inbox(a.clone(), move || {
-                let _ = thread.queue(|mut store| store.as_mut().refresh_all());
+            let id = a.id.clone();
+            crate::live::watch_inbox(a.clone(), move |arrived| {
+                let id = id.clone();
+                let _ = thread.queue(move |mut store| {
+                    if arrived {
+                        store.as_mut().refresh_all();
+                    } else {
+                        store.as_mut().inbox_changed(&id);
+                    }
+                });
             });
         }
         if !auto.is_empty() || !live.is_empty() {
@@ -1241,6 +1250,57 @@ impl qobject::Store {
                 }
                 // Everything else (other mailboxes, calendars, contacts), in the background.
                 store.as_mut().refresh_all();
+            });
+        });
+    }
+
+    /// A message in an account's Inbox read, flagged or removed elsewhere (the
+    /// server said so while it was watched): the Inbox alone checked quickly
+    /// (its counters, then the flags changed since the last look). During a
+    /// check, another one runs after it.
+    fn inbox_changed(mut self: Pin<&mut Self>, account: &str) {
+        if crate::offline() {
+            return;
+        }
+        if self.busy {
+            self.as_mut().rust_mut().get_mut().check_again = true;
+            return;
+        }
+        let Some(a) = self.db.live.iter().find(|a| a.id == account).cloned() else { return };
+        let mail = format!("{}:mail", a.source());
+        let only: Vec<String> = self.db.folders.iter().filter(|f| f.kind == "inbox" && f.account == mail).map(|f| f.id.clone()).collect();
+        if only.is_empty() {
+            return;
+        }
+        let backed = self.db.backed;
+        if backed {
+            self.as_mut().flush();
+        }
+        let known_here = if backed { None } else { Some(self.db.known_uids(&a.source())) };
+        let marks = self.db.folder_marks.clone();
+        self.as_mut().set_busy(true);
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            let known = known_here.unwrap_or_else(|| crate::mailstore::known_uids(&a.source()));
+            let result = crate::live::check_now(&a, &known, &marks, &only, &|_| {});
+            match &result {
+                Ok(_) => eprintln!("ALMANAC-CHECK {}: inbox changed elsewhere, checked in {} ms", a.name, t0.elapsed().as_millis()),
+                Err(e) => eprintln!("ALMANAC-CHECK {}: inbox changed elsewhere, check failed after {} ms: {e}", a.name, t0.elapsed().as_millis()),
+            }
+            let _ = thread.queue(move |mut store| {
+                if let Ok(imp) = result {
+                    let new_ids = store.as_mut().db_mut().apply_import(imp);
+                    store.as_mut().after_new_mail(new_ids);
+                    if store.db.backed {
+                        store.as_mut().flush();
+                    }
+                    store.as_mut().changed();
+                }
+                store.as_mut().set_busy(false);
+                if std::mem::take(&mut store.as_mut().rust_mut().get_mut().check_again) {
+                    store.as_mut().refresh_all();
+                }
             });
         });
     }

@@ -668,10 +668,12 @@ fn mailbox_list(names: Vec<(String, String, Vec<String>)>) -> Vec<(String, Strin
 static WATCHING: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
 
 /// Watches an account's Inbox over a connection of its own (IMAP IDLE, as
-/// phones do): when the server says mail has arrived, `on_new` runs (a check
-/// for new mail). Waits again after each; connects again after a dropped
-/// connection, a little later each time. Once per account.
-pub fn watch_inbox(a: LiveAccount, on_new: impl Fn() + Send + 'static) {
+/// phones do): when the server says something changed, `on_change` runs with
+/// true for mail arrived (a check for new mail) or false for a message read,
+/// flagged or removed elsewhere (on a phone, say), so that shows here within
+/// seconds, not at the next timed check. Waits again after each; connects
+/// again after a dropped connection, a little later each time. Once per account.
+pub fn watch_inbox(a: LiveAccount, on_change: impl Fn(bool) + Send + 'static) {
     if crate::offline() || !WATCHING.lock().unwrap().get_or_insert_with(Default::default).insert(a.id.clone()) {
         return;
     }
@@ -686,11 +688,23 @@ pub fn watch_inbox(a: LiveAccount, on_new: impl Fn() + Send + 'static) {
                     // (Servers end an idle connection after 30 minutes: started again before that.)
                     let mut idle = s.idle();
                     idle.timeout(std::time::Duration::from_secs(20 * 60));
+                    use imap::types::UnsolicitedResponse as U;
+                    let mut arrived = false;
                     let outcome = idle
-                        .wait_while(|r| !matches!(r, imap::types::UnsolicitedResponse::Exists(_) | imap::types::UnsolicitedResponse::Recent(_)))
+                        .wait_while(|r| match r {
+                            U::Exists(_) | U::Recent(_) => {
+                                arrived = true;
+                                false
+                            }
+                            // (Flags changed, or a message gone.)
+                            U::Fetch { .. } | U::Expunge(_) | U::Vanished { .. } => false,
+                            _ => true,
+                        })
                         .map_err(|e| e.to_string())?;
                     if matches!(outcome, imap::extensions::idle::WaitOutcome::MailboxChanged) {
-                        on_new();
+                        // (Several marked at once: one check for them all.)
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        on_change(arrived);
                     }
                 }
             })();
