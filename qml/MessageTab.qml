@@ -19,6 +19,8 @@ Item {
     signal popOutRequested()
     // In a message window, whose title bar has the buttons: no bar of its own.
     property bool bare: false
+    // Its message page (for Find in Message).
+    readonly property alias page: tabPage
     // After a reply, forward or new message is started (in the main window).
     signal composing()
 
@@ -84,6 +86,9 @@ Item {
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
         }
         MessagePage {
+            id: tabPage
+            // (No mailbox search in a message window: Ctrl+F finds in the message.)
+            ownsCtrlF: t.bare
             Layout.fillWidth: true
             Layout.fillHeight: true
             store: t.store

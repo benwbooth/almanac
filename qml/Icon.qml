@@ -77,6 +77,8 @@ Canvas {
             line([14.5, 5, 8, 12, 14.5, 19]); break
         case "chevronRight":
             line([9.5, 5, 16, 12, 9.5, 19]); break
+        case "chevronUp":
+            line([6, 14.5, 12, 8.5, 18, 14.5]); break
         case "chevronDown":
             line([6, 9.5, 12, 15.5, 18, 9.5]); break
         case "expandAll":

@@ -1126,7 +1126,23 @@ Item {
     Shortcut { sequence: "Ctrl+Shift+R"; enabled: mail.visible; onActivated: mail.reply(true) }
     Shortcut { sequence: "Ctrl+Shift+F"; enabled: mail.visible; onActivated: mail.forward() }
     Shortcut { sequence: "Ctrl+Shift+N"; enabled: mail.visible; onActivated: store.refreshAll() }
-    Shortcut { sequence: "Ctrl+F"; enabled: mail.visible; onActivated: mail.focusSearch() }
+    // (Ctrl+F while reading a message finds in it instead: see MessagePage.)
+    Shortcut { sequence: "Ctrl+F"; enabled: mail.visible && mail.focusedPage() === null; onActivated: mail.focusSearch() }
+    // The message page the focus is in (its text or its find bar), or null.
+    function focusedPage() {
+        var f = mail.Window.activeFocusItem
+        while (f) { if (f.isMessagePage === true) return f; f = f.parent }
+        return null
+    }
+    // The message page in view: the reading pane, or the open tab's.
+    function shownPage() {
+        if (mail.tabIndex === 0) return messagePage
+        var it = tabRepeater.itemAt(mail.tabIndex - 1)
+        return it && it.content && it.content.page ? it.content.page : null
+    }
+    // Edit ▸ Find…: in the message when reading it, else the mailbox search.
+    function find() { var p = mail.focusedPage(); if (p) p.openFind(); else mail.focusSearch() }
+    function findInMessage() { var p = mail.shownPage(); if (p) p.openFind() }
     Shortcut { sequence: "Ctrl+A"; enabled: mail.visible && messageList.activeFocus; onActivated: mail.selectAll() }
     Shortcut { sequences: ["Ctrl++", "Ctrl+="]; enabled: mail.visible; onActivated: mail.textZoom = Math.min(3, mail.textZoom * 1.1) }
     Shortcut { sequence: "Ctrl+-"; enabled: mail.visible; onActivated: mail.textZoom = Math.max(0.6, mail.textZoom / 1.1) }
@@ -1240,10 +1256,12 @@ Item {
         }
     }
     Repeater {
+        id: tabRepeater
         model: tabPages
         // A message (and its conversation), or a picture / PDF from one.
         delegate: Item {
             id: page
+            readonly property var content: tabLoader.item
             required property var messageId
             required property string sel
             required property bool thr
@@ -1253,6 +1271,7 @@ Item {
             anchors.top: tabStrip.bottom; anchors.bottom: parent.bottom
             visible: mail.tabIndex === index + 1
             Loader {
+                id: tabLoader
                 anchors.fill: parent
                 sourceComponent: page.att !== "" ? attachmentPage : messagePage
             }

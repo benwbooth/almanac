@@ -386,7 +386,8 @@ ApplicationWindow {
             P.MenuItem { id: menuCmd12; icon.name: "edit-delete"; text: "Delete\tDel"; enabled: win.section === 0 && mailView.current !== null; onTriggered: mailView.removeCurrent("delete") }
             P.MenuItem { icon.name: "edit-select-all"; text: "Select All"; shortcut: "Ctrl+A"; onTriggered: win.editAction("selectAll") }
             P.MenuSeparator {}
-            P.MenuItem { icon.name: "edit-find"; text: "Find…"; shortcut: "Ctrl+F"; onTriggered: win.views[win.section].focusSearch() }
+            P.MenuItem { icon.name: "edit-find"; text: "Find…"; shortcut: "Ctrl+F"; onTriggered: win.section === 0 ? mailView.find() : win.views[win.section].focusSearch() }
+            P.MenuItem { icon.name: "edit-find"; text: "Find in Message…\tCtrl+G"; enabled: win.section === 0 && mailView.current !== null; onTriggered: mailView.findInMessage() }
             P.Menu {
                 title: "Spelling and Grammar"
                 icon.name: "tools-check-spelling"
@@ -882,6 +883,7 @@ ApplicationWindow {
         else if (p === "search-open") Qt.callLater(function() { mailView.focusSearch() })
         else if (p === "search-query") Qt.callLater(function() { mailView.focusSearch(); mailView.typeQuery(store.arg("--query") || "project") })
         else if (p === "add-account") { sourcesDialog.open(); sourcesDialog.newAccount() }
+        else if (p === "find-message") findCheck.start()
         else if (p === "message-tab") Qt.callLater(function() { mailView.openInTab(mailView.selectedId) })
         // Many tabs (more than fit), the third one open.
         // A picture from a message in a tab of its own.
@@ -1064,6 +1066,8 @@ ApplicationWindow {
     }
 
     Timer { id: swipeCheck; interval: 1200; onTriggered: mailView.swipeOpenForCheck(1) }
+    // --show find-message [--query word]: Find in Message open on the shown message.
+    Timer { id: findCheck; interval: 1500; onTriggered: { var pg = mailView.shownPage(); if (pg) pg.findFor(store.arg("--query") || "the") } }
     Timer { id: pdfCheck; interval: 2600; onTriggered: mailView.checkPdfBar() }
     // For checks (--show type-search): types searches into the mail search box
     // a letter at a time in several mailboxes, list and conversations, and

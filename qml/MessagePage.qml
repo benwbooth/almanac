@@ -76,7 +76,7 @@ WebEngineView {
         else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
     }
     onLoadingChanged: function(info) {
-        if (info.status === WebEngineView.LoadSucceededStatus) { web.applySigs(); web.applyLists(); web.applyHighlight() }
+        if (info.status === WebEngineView.LoadSucceededStatus) { web.applySigs(); web.applyLists(); web.applyHighlight(); web.refind() }
         paneLog("loading " + ["started", "stopped", "succeeded", "failed"][info.status] + (info.errorString ? " " + info.errorString : "")) }
     onRenderProcessTerminated: function(status, code) { paneLog("render process ended, status " + status + " code " + code) }
     property int redrawPasses: 0
@@ -153,6 +153,114 @@ WebEngineView {
             + "if(!f.__almHl){f.__almHl=1;f.addEventListener('load',function(){window.__almHlRedo&&window.__almHlRedo(f)})}});"
             + "window.__almHlRedo=function(f){try{mark(f.contentDocument)}catch(e){}};"
             + "})(" + JSON.stringify(highlightWords || []) + "," + JSON.stringify(hlColor) + ")")
+    }
+    // ---- Find in this message (Ctrl+F while reading it, Ctrl+G anywhere, or the
+    // page's right-click menu): a small bar at the top right. Every match is
+    // marked (the browser engine's own find, which also looks inside each email's
+    // sealed frame), the current one in orange; Enter / Ctrl+G go to the next,
+    // Shift+Enter / Ctrl+Shift+G to the one before, Escape or × closes it.
+    readonly property bool isMessagePage: true
+    // In a message window there's no mailbox search, so Ctrl+F is always this.
+    property bool ownsCtrlF: false
+    property bool finding: false
+    property int findCount: 0
+    property int findIndex: 0
+    property bool findDone: false
+    // The focus is in this page (its text or the find bar).
+    function holdsFocus() {
+        var f = web.Window.activeFocusItem
+        while (f) { if (f === web) return true; f = f.parent }
+        return false
+    }
+    function openFind() {
+        if (!web.messages.length) return
+        web.finding = true
+        findField.forceActiveFocus()
+        findField.selectAll()
+        if (findField.text !== "") web.runFind(false, true)
+    }
+    // (For checks: the bar opened with q typed in it.)
+    function findFor(q) { web.openFind(); findField.text = q }
+    function closeFind() {
+        if (!web.finding) return
+        web.finding = false
+        web.findText("")
+        web.findCount = 0; web.findIndex = 0; web.findDone = false
+        web.forceActiveFocus()
+    }
+    // Next (or, back, the one before); fresh starts the search over.
+    function runFind(back, fresh) {
+        var q = findField.text
+        if (fresh) web.findText("")
+        if (q === "") { web.findCount = 0; web.findIndex = 0; web.findDone = false; return }
+        web.findText(q, back ? WebEngineView.FindBackward : 0)
+    }
+    function findStep(back) {
+        if (!web.finding) { web.openFind(); return }
+        if (findField.text === "") { findField.forceActiveFocus(); return }
+        web.runFind(back, false)
+    }
+    onFindTextFinished: function(result) {
+        web.findCount = result.numberOfMatches
+        web.findIndex = result.activeMatch
+        web.findDone = true
+    }
+    // A new page drawn (another message, or this one again): its matches found again.
+    function refind() { if (web.finding && findField.text !== "") web.runFind(false, true) }
+    Shortcut {
+        sequence: "Ctrl+F"
+        enabled: web.visible && web.messages.length > 0 && (web.ownsCtrlF || web.holdsFocus())
+        onActivated: web.openFind()
+    }
+    Shortcut { sequences: ["Ctrl+G", "F3"]; enabled: web.visible && web.messages.length > 0; onActivated: web.findStep(false) }
+    Shortcut { sequences: ["Ctrl+Shift+G", "Shift+F3"]; enabled: web.visible && web.messages.length > 0; onActivated: web.findStep(true) }
+    Rectangle {
+        id: findBar
+        visible: web.finding
+        z: 100
+        anchors.top: parent.top; anchors.right: parent.right
+        anchors.topMargin: 10; anchors.rightMargin: 18
+        width: Math.min(findRow.implicitWidth + 12, web.width - 28)
+        height: findRow.implicitHeight + 10
+        radius: 10
+        color: Theme.popup
+        border.color: Theme.border
+        // A soft shadow, so it reads as floating over the message.
+        Rectangle { z: -1; anchors.fill: parent; anchors.topMargin: 2; anchors.bottomMargin: -2; radius: parent.radius; color: Theme.shade }
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: function(w) { w.accepted = true } }
+        Row {
+            id: findRow
+            anchors.centerIn: parent
+            spacing: 4
+            FieldX {
+                id: findField
+                width: Math.max(120, Math.min(240, web.width - 200))
+                anchors.verticalCenter: parent.verticalCenter
+                placeholderText: "Find in Message"
+                leftPadding: 28
+                rightPadding: findStatus.visible ? findStatus.implicitWidth + 14 : 9
+                Icon { name: "search"; width: 15; height: 15; color: Theme.tertiary; anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter }
+                Text {
+                    id: findStatus
+                    visible: findField.text !== "" && web.findDone
+                    anchors.right: parent.right; anchors.rightMargin: 9; anchors.verticalCenter: parent.verticalCenter
+                    text: web.findCount === 0 ? "Not found" : web.findIndex + " of " + web.findCount
+                    color: web.findCount === 0 ? Theme.red : Theme.tertiary
+                    font.pixelSize: 11
+                }
+                onTextChanged: { web.findDone = false; findTyping.restart() }
+                // (Escape belongs to the bar here, not to the window's shortcut.)
+                Keys.onShortcutOverride: function(e) { if (e.key === Qt.Key_Escape) e.accepted = true }
+                Keys.onEscapePressed: web.closeFind()
+                Keys.onReturnPressed: function(e) { web.runFind((e.modifiers & Qt.ShiftModifier) !== 0, false) }
+                Keys.onEnterPressed: function(e) { web.runFind((e.modifiers & Qt.ShiftModifier) !== 0, false) }
+            }
+            // (Found as you type, after a short pause.)
+            Timer { id: findTyping; interval: 120; onTriggered: web.runFind(false, true) }
+            ToolButtonX { icon: "chevronUp"; tip: "Previous (Ctrl+Shift+G)"; enabled: web.findCount > 0; anchors.verticalCenter: parent.verticalCenter; onClicked: web.runFind(true, false) }
+            ToolButtonX { icon: "chevronDown"; tip: "Next (Ctrl+G)"; enabled: web.findCount > 0; anchors.verticalCenter: parent.verticalCenter; onClicked: web.runFind(false, false) }
+            ToolButtonX { icon: "close"; tip: "Done (Esc)"; anchors.verticalCenter: parent.verticalCenter; onClicked: web.closeFind() }
+        }
     }
     property bool formatted: true
     property bool darkMessages: true
@@ -533,6 +641,8 @@ WebEngineView {
         P.MenuSeparator { visible: pageMenu.link !== "" }
         P.MenuItem { visible: !pageMenu.attOnly; enabled: pageMenu.hasSelection; icon.name: "edit-copy"; text: "Copy"; onTriggered: web.triggerWebAction(WebEngineView.Copy) }
         P.MenuItem { visible: !pageMenu.attOnly; icon.name: "edit-select-all"; text: "Select All"; onTriggered: web.triggerWebAction(WebEngineView.SelectAll) }
+        P.MenuSeparator { visible: !pageMenu.attOnly }
+        P.MenuItem { visible: !pageMenu.attOnly; icon.name: "edit-find"; text: "Find in Message…"; onTriggered: web.openFind() }
     }
     TextEdit { id: linkCopy; visible: false }
     function senderTrusted(m) { return web.remoteSenders.indexOf((m.fromEmail || "").toLowerCase()) >= 0 }
