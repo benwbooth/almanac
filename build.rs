@@ -135,6 +135,6 @@ fn main() {
     .qt_module("PrintSupport")
     .qt_module("Pdf")
     .qt_module("WebEngineQuick")
-    .files(["src/store.rs"])
+    .files(["src/store.rs", "src/rows.rs"])
     .build();
 }

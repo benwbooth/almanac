@@ -4,6 +4,7 @@ import QtQuick.Controls.Basic
 import Qt.labs.platform as P
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import org.craft.pim
 
 // Mail: mailboxes on the left, the message list (grouped into
 // conversations), and the open conversation. Its buttons live in the
@@ -191,7 +192,7 @@ Item {
         var on = store.canWindow(selection, query, sortBy, sortAscending)
         winGen++
         winLoaded = ({}); winPending = ({})
-        if (on && windowed && winCount > 0) {
+        if (on && windowed && winModel.count() > 0) {
             winSwapping = true
             winWant = -1
             winFetch(0, true)
@@ -201,7 +202,7 @@ Item {
         winSwapping = false
         winRows = []; winTotal = 0; winUnread = 0
         rowsModel.clear()
-        winCount = 0
+        winModel.setCount(0)
         windowed = on
         if (!on) { syncRows(); return }
         // The first page, and where the open message is (found in the background;
@@ -260,7 +261,7 @@ Item {
                 var fresh = new Array(w.total).fill(null)
                 for (var f = 0; f < w.rows.length && f < w.total; f++) fresh[f] = w.rows[f]
                 mail.winRows = fresh
-                mail.winCount = w.total
+                winModel.setCount(w.total)
                 mail.winTotal = w.total
                 mail.winUnread = w.unread
                 mail.winLoaded = ({})
@@ -280,32 +281,33 @@ Item {
             var rows = mail.winRows
             if (w.total >= 0) {
                 mail.winUnread = w.unread
-                var n = mail.winCount
+                var n = winModel.count()
                 if (n === 0 && w.total > 0) {
                     // (null, not empty: QML drops an array's empty slots at the end.)
                     rows = new Array(w.total).fill(null)
                     mail.winRows = rows
-                    mail.winCount = w.total
+                    winModel.setCount(w.total)
                 } else if (w.total > n) {
-                    // New mail (at the top): room for it there, and what's on
-                    // screen kept where it was.
+                    // New mail (at the top): room for it there, and what's below kept.
                     rows = new Array(w.total - n).fill(null).concat(rows)
                     mail.winLoaded = ({})
-                    mail.winRecount(rows, w.total, w.total - n)
+                    mail.winRows = rows
+                    winModel.insertAt(0, w.total - n)
                 } else if (w.total < n) {
                     rows = rows.slice(0, w.total)
                     mail.winLoaded = ({})
-                    mail.winRecount(rows, w.total, 0)
+                    mail.winRows = rows
+                    winModel.setCount(w.total)
                 }
                 mail.winTotal = w.total
             }
             for (var k = 0; k < w.rows.length; k++) {
                 var at = w.offset + k
-                if (at >= mail.winCount) break
+                if (at >= mail.winTotal) break
                 rows[at] = w.rows[k]
             }
             // (Its length not known yet: asked for.)
-            if (w.total < 0 && mail.winCount === 0) { mail.winFetch(p, true); return }
+            if (w.total < 0 && winModel.count() === 0) { mail.winFetch(p, true); return }
             mail.winLoaded[p] = Date.now()
             mail.winTrim(p)
             mail.winRows = rows.slice()
@@ -341,7 +343,7 @@ Item {
         for (var i = 0; i < pages.length - winKeep; i++) {
             var p = pages[i]
             delete winLoaded[p]
-            for (var at = p * winSize; at < Math.min(winCount, (p + 1) * winSize); at++) {
+            for (var at = p * winSize; at < Math.min(winTotal, (p + 1) * winSize); at++) {
                 if (winRows[at] && winRows[at].id === selectedId) continue
                 winRows[at] = null
             }
@@ -366,6 +368,11 @@ Item {
     // Sort order (☰ › View › Sort By, or the "Sorted by" line above the list), as in Apple Mail.
     readonly property string sortBy: prefs.sort_by || "date"
     readonly property bool sortAscending: !!prefs.sort_ascending
+    // "Sorted by Date, newest first" (the sort's tooltip).
+    readonly property string sortTip: "Sorted by " + sortNames[sortBy] + ", "
+        + (sortBy === "date" ? (sortAscending ? "oldest first" : "newest first")
+           : ["attachments", "flags", "unread"].indexOf(sortBy) >= 0 ? (sortAscending ? "without first" : "with first")
+           : (sortAscending ? "A to Z" : "Z to A"))
     readonly property var sortNames: ({ date: "Date", from: "From", subject: "Subject", to: "To", attachments: "Attachments", flags: "Flags", unread: "Unread" })
     function setSort(key, ascending) { store.setSetting("sort_by", JSON.stringify(key)); store.setSetting("sort_ascending", JSON.stringify(ascending)) }
     property var list: page.rows
@@ -380,21 +387,9 @@ Item {
     // selection while mail arrives in the background.
     ListModel { id: rowsModel; dynamicRoles: true }
     // (Windowed: one small entry per row; each row's contents come from winRows.)
-    // How many rows the list read a page at a time has: the list's model (a
-    // count, so a list of a hundred thousand costs nothing to make longer or
-    // shorter; each row's message is in winRows).
-    property int winCount: 0
-    // The count changed by new mail at the top (`added` rows) or gone at the
-    // end: the rows on screen kept where they were.
-    function winRecount(rows, n, added) {
-        var lv = messageList
-        var top = lv.indexAt(10, lv.contentY + 1)
-        var cur = lv.currentIndex
-        winRows = rows
-        winCount = n
-        if (top >= 0 && n > 0) lv.positionViewAtIndex(Math.min(n - 1, top + added), ListView.Beginning)
-        if (cur >= 0 && n > 0) lv.currentIndex = Math.min(n - 1, cur + added)
-    }
+    // The rows of the list read a page at a time: only how many (see
+    // src/rows.rs); each row's message is in winRows.
+    RowCount { id: winModel }
     readonly property alias listView: messageList
     // What's on screen, saved when Almanac closes and put back when it opens.
     // Pane sizes from when this view was last on screen (a hidden view's panes
@@ -1409,9 +1404,19 @@ Item {
             SplitView.minimumHeight: 120
             spacing: 0
             Rectangle {
+                id: hdr
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
                 color: Theme.window
+                // What fits (measured, not guessed): the words "Conversations"
+                // and the sort's name, else an icon for each, conversations first.
+                TextMetrics { id: convTM; font.pixelSize: 11; text: "Conversations" }
+                TextMetrics { id: sortTM; font.pixelSize: 11; text: mail.sortNames[mail.sortBy] }
+                readonly property real sortFullW: sortTM.advanceWidth + 4 + 18 + 8
+                // margins 14 + 8, icons (filter, search) 24 each, gaps 4, and room to spare 8
+                readonly property real fixedW: 22 + 24 * 2 + 4 * 4 + 8
+                readonly property bool convIconOnly: width < fixedW + sortFullW + convTM.advanceWidth + 12
+                readonly property bool sortIconOnly: convIconOnly && width < fixedW + sortFullW + 24
                 // Searching (Ctrl+F or the magnifier at the end): this row is the
                 // search field, with the sort as a small button beside it.
                 readonly property bool searching: mail.searchOpen || mail.query !== ""
@@ -1456,16 +1461,33 @@ Item {
                         visible: parent.parent.searching
                         implicitHeight: 22; implicitWidth: 24
                         icon: "sort"
-                        tip: "Sorted by " + mail.sortNames[mail.sortBy]
+                        tip: mail.sortTip
                         onClicked: sortMenu.open()
                     }
-                    Text {
+                    // The sort: its name ("Date") and which way, the menu on a click.
+                    // (Only the icon when the row is too narrow for the name.)
+                    Rectangle {
+                        id: sortButton
                         visible: !parent.parent.searching
-                        Layout.fillWidth: true
-                        text: mail.unreadOnly ? "Filtered by: Unread" : "Sorted by " + mail.sortNames[mail.sortBy] + " ▾"
-                        color: mail.unreadOnly ? Theme.accent : Theme.secondary
-                        font.pixelSize: 11
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: sortMenu.open() }
+                        implicitHeight: 22
+                        implicitWidth: (hdr.sortIconOnly ? 0 : sortName.implicitWidth + 4) + 18 + 8
+                        radius: 5
+                        color: sortHover.containsMouse ? Theme.hover : "transparent"
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 4
+                            Text { id: sortName; visible: !hdr.sortIconOnly; text: mail.sortNames[mail.sortBy]; color: Theme.secondary; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                            Icon {
+                                name: "sort"; width: 16; height: 16; color: Theme.secondary
+                                anchors.verticalCenter: parent.verticalCenter
+                                // (Arrow up: ascending.)
+                                transform: Scale { origin.y: 8; yScale: mail.sortAscending ? -1 : 1 }
+                            }
+                        }
+                        MouseArea { id: sortHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: sortMenu.open() }
+                        ToolTip.visible: sortHover.containsMouse
+                        ToolTip.delay: 600
+                        ToolTip.text: mail.sortTip
                         P.Menu {
                             id: sortMenu
                             Instantiator {
@@ -1496,26 +1518,34 @@ Item {
                             }
                         }
                     }
+                    Item { visible: !parent.parent.searching; Layout.fillWidth: true }
                     ToolButtonX {
                         visible: !parent.parent.searching
                         implicitHeight: 22; implicitWidth: 24
                         icon: "filter"; checked: mail.unreadOnly
-                        tip: mail.unreadOnly ? "Show All Messages" : "Show Only Unread"
+                        tip: mail.unreadOnly ? "Showing Only Unread (click for all)" : "Show Only Unread"
                         onClicked: mail.unreadOnly = !mail.unreadOnly
                     }
-                    ToolButtonX {
-                        visible: !parent.parent.searching
-                        implicitHeight: 22; implicitWidth: 24
-                        icon: "refresh"
-                        tip: "Get Mail (Ctrl+Shift+N)"
-                        onClicked: store.refreshAll()
+                    // Conversations on or off: the word, highlighted when on (an icon
+                    // when the row is too narrow).
+                    Rectangle {
+                        visible: !parent.parent.searching && !hdr.convIconOnly
+                        implicitHeight: 22
+                        implicitWidth: convWord.implicitWidth + 12
+                        radius: 5
+                        color: mail.threaded ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, convHover.containsMouse ? 0.2 : 0.12) : (convHover.containsMouse ? Theme.hover : "transparent")
+                        Text { id: convWord; anchors.centerIn: parent; text: "Conversations"; font.pixelSize: 11; color: mail.threaded ? Theme.accent : Theme.secondary }
+                        MouseArea { id: convHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { mail.threaded = !mail.threaded; mail.selectedId = -1 } }
+                        ToolTip.visible: convHover.containsMouse
+                        ToolTip.delay: 600
+                        ToolTip.text: mail.threaded ? "Conversations: On" : "Conversations: Off"
                     }
-                    Text {
-                        visible: !parent.parent.searching
-                        text: mail.threaded ? "Conversations: On" : "Conversations: Off"
-                        color: Theme.accent
-                        font.pixelSize: 11
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { mail.threaded = !mail.threaded; mail.selectedId = -1 } }
+                    ToolButtonX {
+                        visible: !parent.parent.searching && hdr.convIconOnly
+                        implicitHeight: 22; implicitWidth: 24
+                        icon: "chat"; checked: mail.threaded
+                        tip: mail.threaded ? "Conversations: On" : "Conversations: Off"
+                        onClicked: { mail.threaded = !mail.threaded; mail.selectedId = -1 }
                     }
                     ToolButtonX {
                         visible: !parent.parent.searching
@@ -1570,7 +1600,7 @@ Item {
                 Layout.fillHeight: true
                 clip: true
                 focus: true
-                model: mail.windowed ? mail.winCount : rowsModel
+                model: mail.windowed ? winModel : rowsModel
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
                 keyNavigationEnabled: true

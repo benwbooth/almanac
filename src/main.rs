@@ -36,6 +36,7 @@ mod darkcolours;
 mod spelling;
 mod sources;
 mod tz;
+pub mod rows;
 pub mod store;
 
 use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};
