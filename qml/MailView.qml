@@ -1109,14 +1109,6 @@ Item {
                 onClicked: mail.setCurrentRead(!mail.currentRow.read)
             }
             Item { width: 6 }
-            // Search: a button here; the field drops down over the message list.
-            ToolButtonX {
-                priority: 3
-                icon: "search"
-                tip: mail.query !== "" ? "Search: “" + mail.query + "” (Ctrl+F)" : "Search (Ctrl+F)"
-                checked: mail.searchOpen || mail.query !== ""
-                onClicked: mail.searchOpen && searchField.text === "" ? mail.closeSearch() : mail.focusSearch()
-            }
         }
     }
 
@@ -1420,13 +1412,57 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
                 color: Theme.window
+                // Searching (Ctrl+F or the magnifier at the end): this row is the
+                // search field, with the sort as a small button beside it.
+                readonly property bool searching: mail.searchOpen || mail.query !== ""
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 14
+                    anchors.leftMargin: parent.searching ? 6 : 14
                     anchors.rightMargin: 8
-                    Text {
+                    spacing: 4
+                    SearchBox {
+                        id: searchField
+                        visible: parent.parent.searching
                         Layout.fillWidth: true
-                        text: mail.unreadOnly ? "Filtered by: Unread" : (mail.query ? "Search results" : "Sorted by " + mail.sortNames[mail.sortBy] + " ▾")
+                        Layout.preferredHeight: 24
+                        implicitHeight: 24
+                        placeholderText: "Search mail"
+                        text: mail.query
+                        // The list is searched once typing pauses (150 ms; a single
+                        // letter, which matches nearly everything, after 600 ms), not
+                        // for every letter typed. Cleared: at once.
+                        onTextChanged: {
+                            if (text === mail.query) { queryPause.stop(); return }
+                            if (text.trim() === "") { queryPause.stop(); mail.query = text; return }
+                            queryPause.interval = text.trim().length < 2 ? 600 : 150
+                            queryPause.restart()
+                        }
+                        Timer { id: queryPause; onTriggered: mail.query = searchField.text }
+                        onEscapePressed: mail.closeSearch()
+                        onClearClicked: mail.closeSearch()
+                        // Left empty: back to the sort line.
+                        onHasFocusChanged: if (!hasFocus && text === "" && mail.searchOpen) mail.searchOpen = false
+                    }
+                    // What the server's search is up to (see searchServerQuietly).
+                    Text {
+                        visible: parent.parent.searching && /server/i.test(store.statusText) && mail.query !== ""
+                        text: /^Searching/.test(store.statusText) ? "Server…" : store.statusText.replace(/^Found (\d+) more on the server\.?$/, "+$1 from server")
+                        color: Theme.tertiary
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: 110
+                    }
+                    ToolButtonX {
+                        visible: parent.parent.searching
+                        implicitHeight: 22; implicitWidth: 24
+                        icon: "sort"
+                        tip: "Sorted by " + mail.sortNames[mail.sortBy]
+                        onClicked: sortMenu.open()
+                    }
+                    Text {
+                        visible: !parent.parent.searching
+                        Layout.fillWidth: true
+                        text: mail.unreadOnly ? "Filtered by: Unread" : "Sorted by " + mail.sortNames[mail.sortBy] + " ▾"
                         color: mail.unreadOnly ? Theme.accent : Theme.secondary
                         font.pixelSize: 11
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: sortMenu.open() }
@@ -1461,68 +1497,32 @@ Item {
                         }
                     }
                     ToolButtonX {
+                        visible: !parent.parent.searching
                         implicitHeight: 22; implicitWidth: 24
                         icon: "filter"; checked: mail.unreadOnly
                         tip: mail.unreadOnly ? "Show All Messages" : "Show Only Unread"
                         onClicked: mail.unreadOnly = !mail.unreadOnly
                     }
                     ToolButtonX {
+                        visible: !parent.parent.searching
                         implicitHeight: 22; implicitWidth: 24
                         icon: "refresh"
                         tip: "Get Mail (Ctrl+Shift+N)"
                         onClicked: store.refreshAll()
                     }
                     Text {
+                        visible: !parent.parent.searching
                         text: mail.threaded ? "Conversations: On" : "Conversations: Off"
                         color: Theme.accent
                         font.pixelSize: 11
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { mail.threaded = !mail.threaded; mail.selectedId = -1 } }
                     }
-                }
-                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
-            }
-            // The search bar (see searchOpen): slides down above the list.
-            Item {
-                id: searchBar
-                Layout.fillWidth: true
-                Layout.preferredHeight: mail.searchOpen || mail.query !== "" ? 44 : 0
-                Behavior on Layout.preferredHeight { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
-                clip: true
-                visible: Layout.preferredHeight > 0
-                RowLayout {
-                    anchors.left: parent.left; anchors.right: parent.right
-                    anchors.bottom: parent.bottom; anchors.bottomMargin: 8
-                    anchors.leftMargin: 10; anchors.rightMargin: 10
-                    height: 28
-                    spacing: 8
-                    SearchBox {
-                        id: searchField
-                        Layout.fillWidth: true
-                        placeholderText: "Search mail"
-                        text: mail.query
-                        // The list is searched once typing pauses (150 ms; a single
-                        // letter, which matches nearly everything, after 600 ms), not
-                        // for every letter typed. Cleared: at once.
-                        onTextChanged: {
-                            if (text === mail.query) { queryPause.stop(); return }
-                            if (text.trim() === "") { queryPause.stop(); mail.query = text; return }
-                            queryPause.interval = text.trim().length < 2 ? 600 : 150
-                            queryPause.restart()
-                        }
-                        Timer { id: queryPause; onTriggered: mail.query = searchField.text }
-                        onEscapePressed: mail.closeSearch()
-                        onClearClicked: mail.closeSearch()
-                        // Left empty: closed.
-                        onHasFocusChanged: if (!hasFocus && text === "" && mail.searchOpen) mail.searchOpen = false
-                    }
-                    // What the server's search is up to (see searchServerQuietly).
-                    Text {
-                        visible: /server/i.test(store.statusText) && mail.query !== ""
-                        text: store.statusText.replace(/\.$/, "")
-                        color: Theme.secondary
-                        font.pixelSize: 11
-                        elide: Text.ElideRight
-                        Layout.maximumWidth: searchBar.width * 0.4
+                    ToolButtonX {
+                        visible: !parent.parent.searching
+                        implicitHeight: 22; implicitWidth: 24
+                        icon: "search"
+                        tip: "Search (Ctrl+F)"
+                        onClicked: mail.focusSearch()
                     }
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }

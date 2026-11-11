@@ -180,6 +180,9 @@ Canvas {
             circle(12, 12, 9); line([7.5, 9.5, 16.5, 9.5]); line([9, 12.5, 15, 12.5]); line([10.5, 15.5, 13.5, 15.5]); break
         case "export":
             line([12, 14, 12, 3]); line([7.5, 7.5, 12, 3, 16.5, 7.5]); line([4, 13, 4, 20, 20, 20, 20, 13]); break
+        case "sort":
+            // Lines getting shorter, and an arrow down beside them.
+            line([4, 7, 13, 7]); line([4, 12, 11, 12]); line([4, 17, 9, 17]); line([17.5, 5, 17.5, 19]); line([14.5, 16, 17.5, 19, 20.5, 16]); break
         case "more":
             circle(6, 12, 1.6, true); circle(12, 12, 1.6, true); circle(18, 12, 1.6, true); break
         case "star":
