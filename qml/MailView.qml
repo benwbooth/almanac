@@ -734,6 +734,8 @@ Item {
             function(r) { console.warn("ALMANAC-PDFBAR " + r) })
     }
     // For checks: the search box's text set as typing would (see Main's typeCheck).
+    // For pictures: the message list this wide (--list-width).
+    function setListWidth(w) { listPane.SplitView.preferredWidth = w }
     function typeQuery(t) { searchOpen = true; searchField.text = t }
     function selectSubject(prefix) { for (var i = 0; i < list.length; i++) if ((list[i] || {}).subject.indexOf(prefix) === 0) { select((list[i] || {}).id); return } }
     function selectInvite() { for (var i = 0; i < list.length; i++) if ((list[i] || {}).subject.indexOf("Invitation") === 0) { select((list[i] || {}).id); return } }
@@ -1417,58 +1419,15 @@ Item {
                 readonly property real fixedW: 22 + 24 * 2 + 4 * 4 + 8
                 readonly property bool convIconOnly: width < fixedW + sortFullW + convTM.advanceWidth + 12
                 readonly property bool sortIconOnly: convIconOnly && width < fixedW + sortFullW + 24
-                // Searching (Ctrl+F or the magnifier at the end): this row is the
-                // search field, with the sort as a small button beside it.
-                readonly property bool searching: mail.searchOpen || mail.query !== ""
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: parent.searching ? 6 : 14
+                    anchors.leftMargin: 10
                     anchors.rightMargin: 8
                     spacing: 4
-                    SearchBox {
-                        id: searchField
-                        visible: parent.parent.searching
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 24
-                        implicitHeight: 24
-                        placeholderText: "Search mail"
-                        text: mail.query
-                        // The list is searched once typing pauses (150 ms; a single
-                        // letter, which matches nearly everything, after 600 ms), not
-                        // for every letter typed. Cleared: at once.
-                        onTextChanged: {
-                            if (text === mail.query) { queryPause.stop(); return }
-                            if (text.trim() === "") { queryPause.stop(); mail.query = text; return }
-                            queryPause.interval = text.trim().length < 2 ? 600 : 150
-                            queryPause.restart()
-                        }
-                        Timer { id: queryPause; onTriggered: mail.query = searchField.text }
-                        onEscapePressed: mail.closeSearch()
-                        onClearClicked: mail.closeSearch()
-                        // Left empty: back to the sort line.
-                        onHasFocusChanged: if (!hasFocus && text === "" && mail.searchOpen) mail.searchOpen = false
-                    }
-                    // What the server's search is up to (see searchServerQuietly).
-                    Text {
-                        visible: parent.parent.searching && /server/i.test(store.statusText) && mail.query !== ""
-                        text: /^Searching/.test(store.statusText) ? "Server…" : store.statusText.replace(/^Found (\d+) more on the server\.?$/, "+$1 from server")
-                        color: Theme.tertiary
-                        font.pixelSize: 11
-                        elide: Text.ElideRight
-                        Layout.maximumWidth: 110
-                    }
-                    ToolButtonX {
-                        visible: parent.parent.searching
-                        implicitHeight: 22; implicitWidth: 24
-                        icon: "sort"
-                        tip: mail.sortTip
-                        onClicked: sortMenu.open()
-                    }
                     // The sort: its name ("Date") and which way, the menu on a click.
                     // (Only the icon when the row is too narrow for the name.)
                     Rectangle {
                         id: sortButton
-                        visible: !parent.parent.searching
                         implicitHeight: 22
                         implicitWidth: (hdr.sortIconOnly ? 0 : sortName.implicitWidth + 4) + 18 + 8
                         radius: 5
@@ -1518,9 +1477,8 @@ Item {
                             }
                         }
                     }
-                    Item { visible: !parent.parent.searching; Layout.fillWidth: true }
+                    Item { Layout.fillWidth: true }
                     ToolButtonX {
-                        visible: !parent.parent.searching
                         implicitHeight: 22; implicitWidth: 24
                         icon: "filter"; checked: mail.unreadOnly
                         tip: mail.unreadOnly ? "Showing Only Unread (click for all)" : "Show Only Unread"
@@ -1529,7 +1487,7 @@ Item {
                     // Conversations on or off: the word, highlighted when on (an icon
                     // when the row is too narrow).
                     Rectangle {
-                        visible: !parent.parent.searching && !hdr.convIconOnly
+                        visible: !hdr.convIconOnly
                         implicitHeight: 22
                         implicitWidth: convWord.implicitWidth + 12
                         radius: 5
@@ -1541,18 +1499,67 @@ Item {
                         ToolTip.text: mail.threaded ? "Conversations: On" : "Conversations: Off"
                     }
                     ToolButtonX {
-                        visible: !parent.parent.searching && hdr.convIconOnly
+                        visible: hdr.convIconOnly
                         implicitHeight: 22; implicitWidth: 24
                         icon: "chat"; checked: mail.threaded
                         tip: mail.threaded ? "Conversations: On" : "Conversations: Off"
                         onClicked: { mail.threaded = !mail.threaded; mail.selectedId = -1 }
                     }
                     ToolButtonX {
-                        visible: !parent.parent.searching
                         implicitHeight: 22; implicitWidth: 24
                         icon: "search"
-                        tip: "Search (Ctrl+F)"
-                        onClicked: mail.focusSearch()
+                        checked: mail.searchOpen || mail.query !== ""
+                        tip: mail.query !== "" ? "Searching for “" + mail.query + "” (Ctrl+F)" : "Search (Ctrl+F)"
+                        onClicked: mail.searchOpen && searchField.text === "" ? mail.closeSearch() : mail.focusSearch()
+                    }
+                }
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
+            }
+            // The search bar (Ctrl+F or the magnifier): slides down below the row
+            // above, over the top of the list's room (the list moves down with it).
+            Item {
+                id: searchBar
+                Layout.fillWidth: true
+                Layout.preferredHeight: mail.searchOpen || mail.query !== "" ? 38 : 0
+                Behavior on Layout.preferredHeight { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                clip: true
+                visible: Layout.preferredHeight > 0
+                RowLayout {
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.bottom: parent.bottom; anchors.bottomMargin: 6
+                    anchors.leftMargin: 10; anchors.rightMargin: 10
+                    height: 26
+                    spacing: 6
+                    SearchBox {
+                        id: searchField
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 24
+                        implicitHeight: 24
+                        placeholderText: "Search mail"
+                        text: mail.query
+                        // The list is searched once typing pauses (150 ms; a single
+                        // letter, which matches nearly everything, after 600 ms), not
+                        // for every letter typed. Cleared: at once.
+                        onTextChanged: {
+                            if (text === mail.query) { queryPause.stop(); return }
+                            if (text.trim() === "") { queryPause.stop(); mail.query = text; return }
+                            queryPause.interval = text.trim().length < 2 ? 600 : 150
+                            queryPause.restart()
+                        }
+                        Timer { id: queryPause; onTriggered: mail.query = searchField.text }
+                        onEscapePressed: mail.closeSearch()
+                        onClearClicked: mail.closeSearch()
+                        // Left empty: the bar goes back up.
+                        onHasFocusChanged: if (!hasFocus && text === "" && mail.searchOpen) mail.searchOpen = false
+                    }
+                    // What the server's search is up to (see searchServerQuietly).
+                    Text {
+                        visible: /server/i.test(store.statusText) && mail.query !== ""
+                        text: /^Searching/.test(store.statusText) ? "Server…" : store.statusText.replace(/^Found (\d+) more on the server\.?$/, "+$1 from server")
+                        color: Theme.tertiary
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: 110
                     }
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }

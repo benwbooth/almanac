@@ -874,6 +874,7 @@ ApplicationWindow {
         // --width N (for pictures of narrow windows)
         var w = parseInt(store.arg("--width"))
         if (w > 0) width = w
+        if (parseInt(store.arg("--list-width")) > 0) mailView.setListWidth(parseInt(store.arg("--list-width")))
         var p = store.startPanel
         if (p === "accounts") sourcesDialog.open()
         else if (p === "type-search") typeCheck.begin()
