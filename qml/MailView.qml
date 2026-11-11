@@ -355,7 +355,7 @@ Item {
     onSelectedIdChanged: { compose.leaveInline(); Qt.callLater(function() {
         if (mail.keepId === mail.selectedId) return
         // (With "only unread", the open one is kept in view once it's read.)
-        if (!mail.unreadOnly) for (var i = 0; i < mail.list.length; i++) if ((mail.list[i] || {}).id === mail.selectedId || ((mail.list[i] || {}).ids && (mail.list[i] || {}).ids.indexOf(mail.selectedId) >= 0)) return
+        if (!mail.unreadOnly && mail.rowIndex(mail.selectedId, true) >= 0) return
         mail.keepId = mail.selectedId
     }) }
     function resetPage() { limit = pageSize }
@@ -377,7 +377,27 @@ Item {
     function setSort(key, ascending) { store.setSetting("sort_by", JSON.stringify(key)); store.setSetting("sort_ascending", JSON.stringify(ascending)) }
     property var list: page.rows
     property var folders: { store.revision; return JSON.parse(store.mailFolders()) }
-    property var currentRow: { for (var i = 0; i < list.length; i++) if ((list[i] || {}).id === selectedId) return list[i]; return null }
+    property var currentRow: { list; var i = rowIndex(selectedId, false); return i >= 0 ? list[i] : null }
+    // Where message `id`'s row is (with `inGroup`, also a conversation holding
+    // it), or -1. A list read a page at a time is looked through only where
+    // it's been read (a mailbox of 120k: every row looked at took 50 ms for each
+    // change of the list, with typing waiting on it).
+    function rowIndex(id, inGroup) {
+        var rows = list
+        var hit = function(r) { return r && (r.id === id || (inGroup && r.ids && r.ids.indexOf(id) >= 0)) }
+        if (!windowed) {
+            for (var i = 0; i < rows.length; i++) if (hit(rows[i])) return i
+            return -1
+        }
+        var ci = messageList.currentIndex
+        if (ci >= 0 && hit(rows[ci])) return ci
+        var pages = Object.keys(winLoaded)
+        for (var k = 0; k < pages.length; k++) {
+            var p = Number(pages[k])
+            for (var at = p * winSize; at < Math.min(rows.length, (p + 1) * winSize); at++) if (hit(rows[at])) return at
+        }
+        return -1
+    }
     property var conversation: { store.revision; return selectedId >= 0 ? (threaded ? JSON.parse(store.thread(selection, selectedId)) : [JSON.parse(store.message(selectedId))]) : [] }
     property var current: conversation.length ? conversation[conversation.length - 1] : null
     property int unreadCount: page.unread
@@ -508,12 +528,12 @@ Item {
     }
     onListChanged: {
         syncRows()
-        var idx = -1
-        for (var i = 0; i < list.length; i++) if ((list[i] || {}).id === selectedId) { idx = i; break }
+        var idx = rowIndex(selectedId, false)
         if (idx < 0 && selectedId >= 0) {
             // The open conversation got a newer message: its row has the newest
             // message's id now. Stay on it.
-            for (var k = 0; k < list.length && idx < 0; k++) if ((list[k] || {}).ids && (list[k] || {}).ids.indexOf(selectedId) >= 0) { idx = k; selectedId = (list[k] || {}).id }
+            idx = rowIndex(selectedId, true)
+            if (idx >= 0) selectedId = (list[idx] || {}).id
         }
         if (windowed && idx < 0 && selectedId >= 0) {
             // Not among the rows read: where it is, if it's still in the list.
@@ -559,7 +579,7 @@ Item {
         }
         return currentRow && currentRow.ids ? currentRow.ids : (selectedId >= 0 ? [selectedId] : [])
     }
-    function indexOfSelected() { for (var i = 0; i < list.length; i++) if ((list[i] || {}).id === selectedId) return i; return messageList.currentIndex }
+    function indexOfSelected() { var i = rowIndex(selectedId, false); return i >= 0 ? i : messageList.currentIndex }
     function select(id, keepUnread) {
         selectedIds = []
         selectedId = id
