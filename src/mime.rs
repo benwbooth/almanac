@@ -217,6 +217,47 @@ pub fn decode_numeric(s: &str) -> String {
     out
 }
 
+/// Where an element that isn't shown (display: none, hidden, no size, see
+/// through) ends, when the tag at `at` opens one (`lower`: the HTML in lower case).
+fn hidden_element_end(lower: &str, at: usize) -> Option<usize> {
+    let tag_end = lower[at..].find('>').map(|e| at + e + 1)?;
+    let tag = &lower[at..tag_end];
+    if tag.starts_with("</") || tag.starts_with("<!") {
+        return None;
+    }
+    let squeezed: String = tag.chars().filter(|c| !c.is_whitespace()).collect();
+    let hidden = ["display:none", "visibility:hidden", "mso-hide:all", "opacity:0;", "opacity:0\"", "font-size:0;", "font-size:0px", "font-size:0\"", "max-height:0;", "max-height:0px"]
+        .iter()
+        .any(|h| squeezed.contains(h))
+        || tag.split(|c: char| c.is_whitespace() || c == '>' || c == '/').any(|w| w == "hidden" || w.starts_with("hidden="));
+    if !hidden {
+        return None;
+    }
+    let name: String = tag[1..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    if name.is_empty() || tag.ends_with("/>") || ["img", "br", "hr", "input", "meta", "link"].contains(&name.as_str()) {
+        return Some(tag_end);
+    }
+    // To its own closing tag (the same element inside it counted).
+    let (open, close) = (format!("<{name}"), format!("</{name}"));
+    let mut depth = 1;
+    let mut j = tag_end;
+    while depth > 0 {
+        let next_open = lower[j..].find(&open).map(|e| j + e);
+        let next_close = lower[j..].find(&close).map(|e| j + e)?;
+        match next_open {
+            Some(o) if o < next_close && lower[o + open.len()..].starts_with(|c: char| !c.is_ascii_alphanumeric()) => {
+                depth += 1;
+                j = o + open.len();
+            }
+            _ => {
+                depth -= 1;
+                j = next_close + close.len();
+            }
+        }
+    }
+    Some(lower[j..].find('>').map(|e| j + e + 1).unwrap_or(lower.len()))
+}
+
 pub fn html_to_text(html: &str) -> String {
     let mut out = String::new();
     let lower = html.to_lowercase();
@@ -225,6 +266,16 @@ pub fn html_to_text(html: &str) -> String {
     while i < bytes.len() {
         if bytes[i] == b'<' {
             let rest = &lower[i..];
+            // Comments, and what isn't shown (hidden preview lines and the
+            // like): not the email's text, so not searched either.
+            if rest.starts_with("<!--") {
+                i += rest.find("-->").map(|e| e + 3).unwrap_or(rest.len());
+                continue;
+            }
+            if let Some(end) = hidden_element_end(&lower, i) {
+                i = end;
+                continue;
+            }
             for skip in ["<style", "<script", "<head"] {
                 if rest.starts_with(skip) {
                     let close = format!("</{}", &skip[1..]);
@@ -713,5 +764,12 @@ mod numbered_character_tests {
     fn characters_written_by_number() {
         assert_eq!(decode_numeric("&#128205;: here &#x1F4CD; &#nope; & more"), "📍: here 📍 &#nope; & more");
         assert_eq!(html_to_text("&amp;#128205;: <a href=\"https://x\">https://x</a>").trim(), "📍: https://x");
+        // Only what's shown: no styles, comments, hidden preview lines or link addresses.
+        let page = "<html><head><style>p { font-family: Arial }</style></head><body><!-- family note -->\
+                    <span style=\"display: none; max-height:0\">family preview <b>inside</b></span>\
+                    <div hidden>family too</div><p style=\"font-family: Helvetica\">Hello <a href=\"https://x.example/family\">there</a></p></body></html>";
+        let text = html_to_text(page);
+        assert!(!text.to_lowercase().contains("family"), "{text}");
+        assert!(text.contains("Hello") && text.contains("there"), "{text}");
     }
 }
