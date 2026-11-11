@@ -64,6 +64,8 @@ pub mod qobject {
         /// A whole message list worked out in the background (request_page, for
         /// a search of a list that isn't read a page at a time): {"token", "page"}.
         #[qproperty(QString, page_json, cxx_name = "pageJson")]
+        /// A search on the mail servers (see search_server_quietly) is under way.
+        #[qproperty(bool, server_searching, cxx_name = "serverSearching")]
         /// A check_mail done: {"token", "error"} ("" when it went well).
         #[qproperty(QString, mail_check_done, cxx_name = "mailCheckDone")]
         /// A message's list and how to leave it (list_info): {"id", "list",
@@ -637,6 +639,7 @@ pub struct StoreRust {
     mail_undo_text: QString,
     window_json: QString,
     page_json: QString,
+    server_searching: bool,
     mail_check_done: QString,
     list_json: QString,
     image_stats_json: QString,
@@ -769,6 +772,7 @@ impl Default for StoreRust {
             mail_undo_text: QString::default(),
             window_json: QString::from("{}"),
             page_json: QString::from("{}"),
+            server_searching: false,
             mail_check_done: QString::from("{}"),
             list_json: QString::from("{}"),
             image_stats_json: QString::from("{}"),

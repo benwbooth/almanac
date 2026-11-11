@@ -66,6 +66,10 @@ Item {
     // the toolbar's magnifier). Open while there's a search; Escape or its ×
     // clears and closes it, and it closes on its own when left empty.
     property bool searchOpen: false
+    // A search still being worked out (here, or on the mail servers): a
+    // spinner in the search field, and no "No Results" until it's done.
+    readonly property bool searchBusy: query.trim() !== "" && (winSwapping || pageWaiting || store.serverSearching)
+        || searchField.text !== query
     onFocusSearch: { searchOpen = true; searchField.focusField() }
     function closeSearch() { searchField.text = ""; searchOpen = false; messageList.forceActiveFocus() }
     signal accountsRequested()
@@ -101,9 +105,11 @@ Item {
     readonly property var noPage: ({ rows: [], total: 0, all: 0, unread: 0 })
     property var asyncPage: noPage
     property int pageGen: 0
+    property bool pageWaiting: false
     function requestPage() {
         if (!pageAsync) return
         pageGen++
+        pageWaiting = true
         store.requestPage(pageGen, selection, query, threaded, sortBy, sortAscending, unreadOnly, keepId, limit)
     }
     readonly property string pageKey: [pageAsync, selection, query, threaded, sortBy, sortAscending, unreadOnly, keepId, limit].join("\u0001")
@@ -114,7 +120,7 @@ Item {
         function onRevisionChanged() { if (mail.pageAsync) pageRefresh.restart() }
         function onPageJsonChanged() {
             var d = JSON.parse(mail.store.pageJson || "{}")
-            if (d.token === mail.pageGen && mail.pageAsync) mail.asyncPage = d.page
+            if (d.token === mail.pageGen && mail.pageAsync) { mail.asyncPage = d.page; mail.pageWaiting = false }
         }
     }
 
@@ -1556,6 +1562,7 @@ Item {
                         Layout.preferredHeight: 24
                         implicitHeight: 24
                         placeholderText: "Search mail"
+                        busy: mail.searchBusy
                         text: mail.query
                         // The list is searched once typing pauses (150 ms; a single
                         // letter, which matches nearly everything, after 600 ms), not
@@ -1571,15 +1578,6 @@ Item {
                         onClearClicked: mail.closeSearch()
                         // Left empty: the bar goes back up.
                         onHasFocusChanged: if (!hasFocus && text === "" && mail.searchOpen) mail.searchOpen = false
-                    }
-                    // What the server's search is up to (see searchServerQuietly).
-                    Text {
-                        visible: /server/i.test(store.statusText) && mail.query !== ""
-                        text: /^Searching/.test(store.statusText) ? "Server…" : store.statusText.replace(/^Found (\d+) more on the server\.?$/, "+$1 from server")
-                        color: Theme.tertiary
-                        font.pixelSize: 11
-                        elide: Text.ElideRight
-                        Layout.maximumWidth: 110
                     }
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
@@ -1636,12 +1634,11 @@ Item {
                 highlightMoveDuration: 0
                 highlightMoveVelocity: -1
                 highlightResizeDuration: 0
-                // At the end of the list: older mail, or this search on the server.
+                // At the end of the list: older mail (a search looks on the server by itself).
                 footer: Item {
                     width: ListView.view ? ListView.view.width : 0
-                    // With all mail kept on this computer there's nothing older to fetch;
-                    // searching the server still helps before the first full download.
-                    readonly property bool wanted: mail.serverBox && (!mail.prefs.download_all_mail || mail.query !== "")
+                    // With all mail kept on this computer there's nothing older to fetch.
+                    readonly property bool wanted: mail.serverBox && !mail.prefs.download_all_mail && mail.query === ""
                     // Room for the rows not loaded yet, so the list (and its scroll
                     // bar) is as long as the whole mailbox from the start.
                     readonly property real unloaded: messageList.unloadedHeight
@@ -1650,11 +1647,10 @@ Item {
                         visible: parent.wanted
                         anchors.bottom: parent.bottom; anchors.bottomMargin: 14
                         anchors.horizontalCenter: parent.horizontalCenter
-                        icon: mail.query === "" ? "clock" : "search"
-                        text: mail.query === "" ? "Load Older Messages" : "Search for “" + mail.query + "” on the Server"
-                        tip: mail.query === "" ? "Get the next 200 older messages of this mailbox from the server"
-                                               : "Look through all of this mailbox on the server, not only the mail downloaded so far"
-                        onClicked: mail.query === "" ? store.loadOlder(mail.selection) : store.searchOnServer(mail.selection, mail.query)
+                        icon: "clock"
+                        text: "Load Older Messages"
+                        tip: "Get the next 200 older messages of this mailbox from the server"
+                        onClicked: store.loadOlder(mail.selection)
                     }
                 }
                 // Rows load as the list nears its end.
@@ -2040,7 +2036,7 @@ Item {
 
                 Text {
                     anchors.centerIn: parent
-                    visible: mail.list.length === 0
+                    visible: mail.list.length === 0 && !(mail.query !== "" && mail.searchBusy)
                     text: store.loading ? "Loading mail…" : (!mail.hasAccounts && mail.page.all === 0 ? "" : (mail.query ? "No Results" : (mail.unreadOnly ? "No Unread Messages" : "No Messages")))
                     color: Theme.tertiary
                     font.pixelSize: 16

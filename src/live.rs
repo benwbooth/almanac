@@ -1122,10 +1122,11 @@ fn server_search_cmd(a: &LiveAccount, query: &str) -> String {
     }
 }
 
-/// Whether the server searches quickly enough to be asked as words are typed
-/// (Gmail: its own index).
+/// Whether the server can be searched as words are typed (IMAP: Gmail with
+/// its own index, any other with SEARCH TEXT; not POP or Exchange, whose
+/// mail is all here).
 pub fn searches_quickly(a: &LiveAccount) -> bool {
-    is_gmail(a) && local_only::<()>(a).is_none()
+    local_only::<()>(a).is_none()
 }
 
 /// A search on the server while it's typed, read-only: for each folder

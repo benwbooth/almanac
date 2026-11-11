@@ -10,6 +10,8 @@ Rectangle {
     readonly property bool hasFocus: input.activeFocus || popField.activeFocus
     // On a very narrow window only the magnifier shows; it opens the field.
     property bool collapsed: false
+    // Still searching: a small spinner in place of the magnifier.
+    property bool busy: false
     // Escape pressed, or the clear button clicked (the text is cleared too).
     signal escapePressed()
     signal clearClicked()
@@ -28,7 +30,17 @@ Rectangle {
     border.color: input.activeFocus ? Theme.accent : "transparent"
     border.width: input.activeFocus ? 2 : 0
 
+    BusyIndicator {
+        visible: field.busy && !field.collapsed
+        running: visible
+        width: 16; height: 16
+        padding: 0
+        anchors.left: parent.left
+        anchors.leftMargin: 8
+        anchors.verticalCenter: parent.verticalCenter
+    }
     Icon {
+        visible: !(field.busy && !field.collapsed)
         name: "search"
         width: 15; height: 15
         color: Theme.tertiary
