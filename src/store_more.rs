@@ -222,6 +222,20 @@ impl qobject::Store {
             self.as_mut().changed();
         }
         let now = chrono::Local::now().timestamp();
+        // Reminders of mail in the database, looked for in the background (a
+        // scan of the mail: a quarter second and more, with the window frozen).
+        if self.as_mut().db_mut().reminders_to_look_for() {
+            let thread = self.qt_thread();
+            std::thread::spawn(move || {
+                let (due, next) = crate::data::Db::reminders_in_database();
+                let _ = thread.queue(move |mut store| {
+                    if store.as_mut().db_mut().reminders_found(due, next) {
+                        // (Shown at the next tick.)
+                        store.as_mut().rust_mut().get_mut().last_alert_check = 0;
+                    }
+                });
+            });
+        }
         if now - self.last_alert_check >= 20 {
             self.as_mut().rust_mut().get_mut().last_alert_check = now;
             let reminders = self.as_mut().db_mut().due_reminders();

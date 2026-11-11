@@ -61,6 +61,9 @@ pub mod qobject {
         /// A page of the message list read in the background (request_window):
         /// {"token", "offset", "rows", "total", "unread"} (total -1: not counted).
         #[qproperty(QString, window_json, cxx_name = "windowJson")]
+        /// A whole message list worked out in the background (request_page, for
+        /// a search of a list that isn't read a page at a time): {"token", "page"}.
+        #[qproperty(QString, page_json, cxx_name = "pageJson")]
         /// A check_mail done: {"token", "error"} ("" when it went well).
         #[qproperty(QString, mail_check_done, cxx_name = "mailCheckDone")]
         /// A message's list and how to leave it (list_info): {"id", "list",
@@ -325,6 +328,10 @@ pub mod qobject {
         /// The message list a page at a time: {rows, total, all, unread} (see Db::message_page).
         #[qinvokable]
         fn message_page(self: &Store, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, keep: i64, limit: i32) -> QString;
+        /// message_page worked out in the background: the answer comes in
+        /// pageJson with `token` (searches, so typing never waits on them).
+        #[qinvokable]
+        fn request_page(self: &Store, token: i32, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, keep: i64, limit: i32);
         /// Saves a reading-pane page too big to hand over directly (over 2 MB)
         /// as a private file; returns its file:// address.
         #[qinvokable]
@@ -629,6 +636,7 @@ pub struct StoreRust {
     mail_undo: Vec<MailUndo>,
     mail_undo_text: QString,
     window_json: QString,
+    page_json: QString,
     mail_check_done: QString,
     list_json: QString,
     image_stats_json: QString,
@@ -760,6 +768,7 @@ impl Default for StoreRust {
             mail_undo: Vec::new(),
             mail_undo_text: QString::default(),
             window_json: QString::from("{}"),
+            page_json: QString::from("{}"),
             mail_check_done: QString::from("{}"),
             list_json: QString::from("{}"),
             image_stats_json: QString::from("{}"),
@@ -2137,6 +2146,29 @@ impl qobject::Store {
     fn rows_before(&self, selection: &QString, query: &QString, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) -> i64 {
         let _timed = crate::Timed::new("rows_before");
         self.db.rows_before(&selection.to_string(), &query.to_string(), &sort_by.to_string(), ascending, unread_only, id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn request_page(&self, token: i32, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, keep: i64, limit: i32) {
+        let _timed = crate::Timed::new("request_page");
+        static LATEST: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(i32::MIN);
+        LATEST.fetch_max(token, std::sync::atomic::Ordering::SeqCst);
+        // (A copy of what the list needs: the mail itself is in the database,
+        // only what's not saved yet is in memory.)
+        let db = self.db.clone();
+        let (selection, query, sort_by) = (selection.to_string(), query.to_string(), sort_by.to_string());
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            if LATEST.load(std::sync::atomic::Ordering::SeqCst) > token {
+                return;
+            }
+            let page = db.message_page(&selection, &query, threaded, &sort_by, ascending, unread_only, keep, limit.max(1) as usize);
+            if LATEST.load(std::sync::atomic::Ordering::SeqCst) > token {
+                return;
+            }
+            let v = json!({"token": token, "page": page}).to_string();
+            let _ = thread.queue(move |mut store| store.as_mut().set_page_json(QString::from(v.as_str())));
+        });
     }
 
     fn message_page(&self, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, keep: i64, limit: i32) -> QString {

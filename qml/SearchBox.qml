@@ -10,6 +10,9 @@ Rectangle {
     readonly property bool hasFocus: input.activeFocus || popField.activeFocus
     // On a very narrow window only the magnifier shows; it opens the field.
     property bool collapsed: false
+    // Escape pressed, or the clear button clicked (the text is cleared too).
+    signal escapePressed()
+    signal clearClicked()
     function focusField() {
         if (collapsed) { pop.open(); popField.forceActiveFocus(); popField.selectAll() }
         else { input.forceActiveFocus(); input.selectAll() }
@@ -47,7 +50,7 @@ Rectangle {
         selectedTextColor: Theme.accentInk
         selectByMouse: true
         clip: true
-        Keys.onEscapePressed: text = ""
+        Keys.onEscapePressed: { text = ""; field.escapePressed() }
         Text {
             visible: input.text === "" && !input.activeFocus
             text: field.placeholderText
@@ -64,7 +67,7 @@ Rectangle {
         anchors.rightMargin: 6
         anchors.verticalCenter: parent.verticalCenter
         Icon { anchors.centerIn: parent; width: 10; height: 10; name: "close"; color: "white"; stroke: 3 }
-        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: input.text = "" }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { input.text = ""; field.clearClicked() } }
     }
     MouseArea {
         id: openArea

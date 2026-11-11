@@ -5388,6 +5388,19 @@ mod search_timings {
         crate::mailstore::build_conversations();
         // Opening messages: their conversations found by reading References,
         // then from the index by key.
+        if std::env::var_os("ALMANAC_TICK_TEST").is_some() {
+            db.release_saved();
+            for i in 0..3 {
+                db.next_reminder_look = 0;
+                let t = std::time::Instant::now();
+                let r = db.due_reminders().len();
+                let a = t.elapsed();
+                let t = std::time::Instant::now();
+                let al = db.due_alerts().len();
+                eprintln!("tick {i}: reminders {} ms ({r}), alerts {} ms ({al}), events {}", a.as_millis(), t.elapsed().as_millis(), db.events.len());
+            }
+            return;
+        }
         // The server searched as it's typed (read-only: EXAMINE, SEARCH, headers).
         if std::env::var_os("ALMANAC_SERVER_TEST").is_some() {
             for (sel, q) in [("kind:inbox", "invoice"), ("kind:inbox", "github"), ("kind:archive", "invoice"), ("kind:archive", "meeting tomorrow")] {

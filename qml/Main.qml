@@ -876,6 +876,7 @@ ApplicationWindow {
         if (w > 0) width = w
         var p = store.startPanel
         if (p === "accounts") sourcesDialog.open()
+        else if (p === "type-search") typeCheck.begin()
         else if (p === "add-account") { sourcesDialog.open(); sourcesDialog.newAccount() }
         else if (p === "message-tab") Qt.callLater(function() { mailView.openInTab(mailView.selectedId) })
         // Many tabs (more than fit), the third one open.
@@ -1059,6 +1060,59 @@ ApplicationWindow {
     }
 
     Timer { id: pdfCheck; interval: 2600; onTriggered: mailView.checkPdfBar() }
+    // For checks (--show type-search): types searches into the mail search box
+    // a letter at a time in several mailboxes, list and conversations, and
+    // reports the longest the window went without handling events (a ticker
+    // every 4 ms notes the gaps). Only times are printed.
+    QtObject {
+        id: typeCheck
+        property var steps: []
+        property int at: 0
+        property double last: 0
+        property double worst: 0
+        property string label: ""
+        function begin() {
+            var boxes = store.arg("--boxes") !== "" ? store.arg("--boxes").split(",") : ["kind:inbox", "kind:archive", "kind:flagged"]
+            if (store.arg("--smart") !== "") boxes.push("smart:" + store.arg("--smart"))
+            var words = store.arg("--words") !== "" ? store.arg("--words").split(",") : ["invoice", "github", "a"]
+            var s = []
+            boxes.forEach(function(b) {
+                [false, true].forEach(function(th) {
+                    s.push({ select: b, threaded: th })
+                    words.forEach(function(w) {
+                        for (var i = 1; i <= w.length; i++) s.push({ text: w.slice(0, i), label: b + (th ? " conv " : " list ") + w })
+                        s.push({ wait: 2500 })
+                        for (var j = w.length - 1; j >= 0; j--) s.push({ text: w.slice(0, j), label: b + (th ? " conv " : " list ") + w + " ⌫" })
+                        s.push({ wait: 2500 })
+                    })
+                })
+            })
+            steps = s
+            at = 0
+            stepTimer.start()
+            ticker.start()
+        }
+        function report() {
+            if (label !== "") console.warn("ALMANAC-TYPING " + label + ": longest stall " + Math.round(worst) + " ms")
+            worst = 0
+        }
+    }
+    Timer {
+        id: ticker; interval: 4; repeat: true
+        onTriggered: { var n = Date.now(); if (typeCheck.last > 0) typeCheck.worst = Math.max(typeCheck.worst, n - typeCheck.last - 4); typeCheck.last = n }
+    }
+    Timer {
+        id: stepTimer; interval: 110
+        onTriggered: {
+            if (typeCheck.at >= typeCheck.steps.length) { typeCheck.report(); console.warn("ALMANAC-TYPING done"); Qt.quit(); return }
+            var st = typeCheck.steps[typeCheck.at++]
+            interval = 110
+            if (st.select !== undefined) { typeCheck.report(); typeCheck.label = ""; mailView.typeQuery(""); mailView.selection = st.select; mailView.threaded = st.threaded; interval = 4000 }
+            else if (st.wait !== undefined) interval = st.wait
+            else { if (st.label !== typeCheck.label) { typeCheck.report(); typeCheck.label = st.label } mailView.typeQuery(st.text) }
+            start()
+        }
+    }
     // Check accounts for new mail and changes (Settings › General).
     Timer {
         readonly property int minutes: { store.revision; return JSON.parse(store.settings()).check_minutes }

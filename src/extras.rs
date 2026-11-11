@@ -538,16 +538,8 @@ impl Db {
     pub fn due_reminders(&mut self) -> Vec<(i64, String, String)> {
         let now = Local::now().timestamp();
         let mut out = Vec::new();
-        // (Mail in the database: those due read into memory to be changed.)
-        if self.backed && now >= self.next_reminder_look {
-            let due = crate::mailstore::rows("remind_at > 0 AND remind_at <= ?1", &[crate::mailstore::Arg::Integer(now)], "date DESC", 1000, 0);
-            for m in due {
-                self.msg_mut(m.id);
-            }
-            // The next one coming (looked for again then, or in ten minutes at the latest).
-            let next = crate::mailstore::rows("remind_at > ?1", &[crate::mailstore::Arg::Integer(now)], "remind_at ASC", 1, 0);
-            self.next_reminder_look = next.first().map(|m| m.remind_at).unwrap_or(i64::MAX).min(now + 600);
-        }
+        // (Mail in the database: those due are read into memory first, in the
+        // background, see `reminders_in_database`.)
         for m in self.messages.iter_mut().filter(|m| m.remind_at > 0 && m.remind_at <= now) {
             m.remind_at = 0;
             m.read = false;
@@ -561,6 +553,37 @@ impl Db {
 
     /// Calendar alerts that are due now and not shown yet: (title, when
     /// text, event id, start of this occurrence).
+    /// Whether the mail in the database should be looked at for reminders now
+    /// (then not again for ten minutes, or until `reminders_found` says when).
+    pub fn reminders_to_look_for(&mut self) -> bool {
+        let now = Local::now().timestamp();
+        if !self.backed || now < self.next_reminder_look {
+            return false;
+        }
+        self.next_reminder_look = now + 600;
+        true
+    }
+
+    /// Mail in the database with a reminder due (ids), and when the next one is
+    /// (on any thread: a scan of the mail, a fraction of a second on a big mailbox).
+    pub fn reminders_in_database() -> (Vec<i64>, Option<i64>) {
+        let now = Local::now().timestamp();
+        let due = crate::mailstore::rows("remind_at > 0 AND remind_at <= ?1", &[crate::mailstore::Arg::Integer(now)], "date DESC", 1000, 0);
+        let next = crate::mailstore::rows("remind_at > ?1", &[crate::mailstore::Arg::Integer(now)], "remind_at ASC", 1, 0);
+        (due.into_iter().map(|m| m.id).collect(), next.first().map(|m| m.remind_at))
+    }
+
+    /// What `reminders_in_database` found: those due into memory (shown at the
+    /// next look), and the next one looked for then (or in ten minutes).
+    pub fn reminders_found(&mut self, due: Vec<i64>, next: Option<i64>) -> bool {
+        let now = Local::now().timestamp();
+        for id in &due {
+            self.msg_mut(*id);
+        }
+        self.next_reminder_look = next.unwrap_or(i64::MAX).min(now + 600);
+        !due.is_empty()
+    }
+
     pub fn due_alerts(&mut self) -> Vec<(String, String, i64, String)> {
         let now = Local::now().naive_local();
         let from = now - Duration::days(2);

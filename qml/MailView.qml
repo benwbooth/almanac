@@ -61,6 +61,12 @@ Item {
     // A message that sets its own colours or backgrounds (a designed email).
     function ownLook(html) { return /bgcolor|background|color\s*[:=]/i.test(html || "") }
     signal focusSearch()
+    // The search bar, dropped down at the top of the message list (Ctrl+F or
+    // the toolbar's magnifier). Open while there's a search; Escape or its ×
+    // clears and closes it, and it closes on its own when left empty.
+    property bool searchOpen: false
+    onFocusSearch: { searchOpen = true; searchField.focusField() }
+    function closeSearch() { searchField.text = ""; searchOpen = false; messageList.forceActiveFocus() }
     signal accountsRequested()
     property var prefs: { store.revision; return JSON.parse(store.settings()) }
     property bool hasAccounts: { store.revision; return JSON.parse(store.liveAccounts()).length > 0 }
@@ -85,7 +91,31 @@ Item {
     readonly property int pageSize: 300
     property int limit: pageSize
     property var page: windowed ? ({ rows: winRows, total: winTotal, all: winTotal, unread: winUnread, countsMessages: !threaded })
-                                : (store.revision, JSON.parse(store.messagePage(selection, query, threaded, sortBy, sortAscending, unreadOnly, keepId, limit)))
+                       : pageAsync ? asyncPage
+                       : (store.revision, JSON.parse(store.messagePage(selection, query, threaded, sortBy, sortAscending, unreadOnly, keepId, limit)))
+    // A search of a list not read a page at a time (a smart mailbox, say):
+    // worked out in the background, so typing never waits on it; the last
+    // answer stays until the next comes.
+    readonly property bool pageAsync: !windowed && query.trim() !== ""
+    readonly property var noPage: ({ rows: [], total: 0, all: 0, unread: 0 })
+    property var asyncPage: noPage
+    property int pageGen: 0
+    function requestPage() {
+        if (!pageAsync) return
+        pageGen++
+        store.requestPage(pageGen, selection, query, threaded, sortBy, sortAscending, unreadOnly, keepId, limit)
+    }
+    readonly property string pageKey: [pageAsync, selection, query, threaded, sortBy, sortAscending, unreadOnly, keepId, limit].join("\u0001")
+    onPageKeyChanged: Qt.callLater(requestPage)
+    Timer { id: pageRefresh; interval: 300; onTriggered: mail.requestPage() }
+    Connections {
+        target: mail.store
+        function onRevisionChanged() { if (mail.pageAsync) pageRefresh.restart() }
+        function onPageJsonChanged() {
+            var d = JSON.parse(mail.store.pageJson || "{}")
+            if (d.token === mail.pageGen && mail.pageAsync) mail.asyncPage = d.page
+        }
+    }
 
     // ---- A mailbox's list read a page at a time (by date, no search): the
     // list is as long as the mailbox from the start, rows not read yet show as
@@ -153,12 +183,25 @@ Item {
     }
     Timer { id: pullErrorShown; interval: 2000; onTriggered: mail.pullError = "" }
     function placeholderRow(i) { return { id: -1 - i, placeholder: true, fromName: "", fromEmail: "", subject: "", preview: "", date: 0, read: true, flagged: false, attachments: false } }
+    // A new list (another search, say) read while the old one stays on screen:
+    // swapped in when its first page comes (see onWindowJsonChanged), so the
+    // list never flashes empty or into placeholders as you type.
+    property bool winSwapping: false
     function winReset() {
         var on = store.canWindow(selection, query, sortBy, sortAscending)
         winGen++
-        winLoaded = ({}); winPending = ({}); winRows = []; winTotal = 0; winUnread = 0
+        winLoaded = ({}); winPending = ({})
+        if (on && windowed && winCount > 0) {
+            winSwapping = true
+            winWant = -1
+            winFetch(0, true)
+            winLocate()
+            return
+        }
+        winSwapping = false
+        winRows = []; winTotal = 0; winUnread = 0
         rowsModel.clear()
-        winModel.clear()
+        winCount = 0
         windowed = on
         if (!on) { syncRows(); return }
         // The first page, and where the open message is (found in the background;
@@ -192,53 +235,80 @@ Item {
     Connections {
         target: store
         function onWindowJsonChanged() {
-            var w = JSON.parse(store.windowJson || "{}")
+            mail.winHandle(JSON.parse(store.windowJson || "{}"))
+        }
+    }
+    function winHandle(w) {
+        {
             if (!mail.windowed || w.token !== mail.winGen) return
             // Where the open message is: its page read, and it's gone to there.
             if (w.locate !== undefined) {
                 mail.winLocating = -1
                 if (w.locate < 0 || w.id !== mail.selectedId) return
+                // (The new list not shown yet: gone to once it is.)
+                if (mail.winSwapping) { mail.winWant = w.locate; return }
                 if (w.locate < mail.winTotal && mail.winRows[w.locate]) { messageList.currentIndex = w.locate; Qt.callLater(mail.revealSelected) }
                 else { mail.winWant = w.locate; mail.winFetch(Math.floor(w.locate / mail.winSize)) }
                 return
             }
             var p = Math.floor(w.offset / mail.winSize)
             delete mail.winPending[p]
+            if (mail.winSwapping) {
+                // Only the new list's first page (with its length) swaps it in.
+                if (p !== 0 || w.total < 0) return
+                mail.winSwapping = false
+                var fresh = new Array(w.total).fill(null)
+                for (var f = 0; f < w.rows.length && f < w.total; f++) fresh[f] = w.rows[f]
+                mail.winRows = fresh
+                mail.winCount = w.total
+                mail.winTotal = w.total
+                mail.winUnread = w.unread
+                mail.winLoaded = ({})
+                mail.winLoaded[0] = Date.now()
+                mail.winRows = fresh
+                var go = mail.winWant
+                if (go >= 0 && go < w.total) {
+                    if (fresh[go]) { mail.winWant = -1; messageList.currentIndex = go; messageList.positionViewAtIndex(go, ListView.Contain) }
+                    else mail.winFetch(Math.floor(go / mail.winSize))
+                } else {
+                    mail.winWant = -1
+                    messageList.positionViewAtBeginning()
+                }
+                Qt.callLater(mail.winEnsure)
+                return
+            }
             var rows = mail.winRows
             if (w.total >= 0) {
                 mail.winUnread = w.unread
-                var n = winModel.count
+                var n = mail.winCount
                 if (n === 0 && w.total > 0) {
-                    var ph = []
-                    for (var i = 0; i < w.total; i++) ph.push({ r: 0 })
-                    winModel.append(ph)
                     // (null, not empty: QML drops an array's empty slots at the end.)
                     rows = new Array(w.total).fill(null)
+                    mail.winRows = rows
+                    mail.winCount = w.total
                 } else if (w.total > n) {
-                    // New mail (at the top): room for it there, and what's below kept.
-                    var more = []
-                    for (var j = 0; j < w.total - n; j++) more.push({ r: 0 })
-                    winModel.insert(0, more)
+                    // New mail (at the top): room for it there, and what's on
+                    // screen kept where it was.
                     rows = new Array(w.total - n).fill(null).concat(rows)
                     mail.winLoaded = ({})
+                    mail.winRecount(rows, w.total, w.total - n)
                 } else if (w.total < n) {
-                    winModel.remove(w.total, n - w.total)
                     rows = rows.slice(0, w.total)
                     mail.winLoaded = ({})
+                    mail.winRecount(rows, w.total, 0)
                 }
                 mail.winTotal = w.total
             }
             for (var k = 0; k < w.rows.length; k++) {
                 var at = w.offset + k
-                if (at >= winModel.count) break
+                if (at >= mail.winCount) break
                 rows[at] = w.rows[k]
             }
             // (Its length not known yet: asked for.)
-            if (w.total < 0 && winModel.count === 0) { mail.winFetch(p, true); return }
+            if (w.total < 0 && mail.winCount === 0) { mail.winFetch(p, true); return }
             mail.winLoaded[p] = Date.now()
             mail.winTrim(p)
             mail.winRows = rows.slice()
-            if (mail.winWant >= 0) console.warn("DBGEND reply off=" + w.offset + " want=" + mail.winWant + " has=" + !!rows[mail.winWant])
             if (mail.winWant >= 0 && mail.winWant < mail.winTotal && rows[mail.winWant]) {
                 var want = mail.winWant
                 mail.winWant = -1
@@ -251,7 +321,7 @@ Item {
     }
     // The pages around what's on screen are read (a page above and below too).
     function winEnsure(counted) {
-        if (!windowed) return
+        if (!windowed || winSwapping) return
         var lv = messageList
         var top = lv.indexAt(10, lv.contentY + 1), bottom = lv.indexAt(10, lv.contentY + lv.height - 1)
         if (top < 0) top = 0
@@ -271,7 +341,7 @@ Item {
         for (var i = 0; i < pages.length - winKeep; i++) {
             var p = pages[i]
             delete winLoaded[p]
-            for (var at = p * winSize; at < Math.min(winModel.count, (p + 1) * winSize); at++) {
+            for (var at = p * winSize; at < Math.min(winCount, (p + 1) * winSize); at++) {
                 if (winRows[at] && winRows[at].id === selectedId) continue
                 winRows[at] = null
             }
@@ -310,7 +380,21 @@ Item {
     // selection while mail arrives in the background.
     ListModel { id: rowsModel; dynamicRoles: true }
     // (Windowed: one small entry per row; each row's contents come from winRows.)
-    ListModel { id: winModel }
+    // How many rows the list read a page at a time has: the list's model (a
+    // count, so a list of a hundred thousand costs nothing to make longer or
+    // shorter; each row's message is in winRows).
+    property int winCount: 0
+    // The count changed by new mail at the top (`added` rows) or gone at the
+    // end: the rows on screen kept where they were.
+    function winRecount(rows, n, added) {
+        var lv = messageList
+        var top = lv.indexAt(10, lv.contentY + 1)
+        var cur = lv.currentIndex
+        winRows = rows
+        winCount = n
+        if (top >= 0 && n > 0) lv.positionViewAtIndex(Math.min(n - 1, top + added), ListView.Beginning)
+        if (cur >= 0 && n > 0) lv.currentIndex = Math.min(n - 1, cur + added)
+    }
     readonly property alias listView: messageList
     // What's on screen, saved when Almanac closes and put back when it opens.
     // Pane sizes from when this view was last on screen (a hidden view's panes
@@ -654,6 +738,8 @@ Item {
         onTriggered: messagePage.runJavaScript('(function(){var bar=document.querySelector(".pdfbar"),th=document.querySelector(".pdfthumb");return "bar "+bar.className+" shown "+getComputedStyle(bar).opacity+" thumb top "+th.style.top+" height "+th.style.height})()',
             function(r) { console.warn("ALMANAC-PDFBAR " + r) })
     }
+    // For checks: the search box's text set as typing would (see Main's typeCheck).
+    function typeQuery(t) { searchOpen = true; searchField.text = t }
     function selectSubject(prefix) { for (var i = 0; i < list.length; i++) if ((list[i] || {}).subject.indexOf(prefix) === 0) { select((list[i] || {}).id); return } }
     function selectInvite() { for (var i = 0; i < list.length; i++) if ((list[i] || {}).subject.indexOf("Invitation") === 0) { select((list[i] || {}).id); return } }
     function remindIn(ms) { if (current) store.remindMe(current.id, Date.now() + ms) }
@@ -1023,25 +1109,13 @@ Item {
                 onClicked: mail.setCurrentRead(!mail.currentRow.read)
             }
             Item { width: 6 }
-            SearchBox {
-                id: search
-                Layout.preferredWidth: collapsed ? 30 : 160
-                Layout.maximumWidth: collapsed ? 30 : 160
-                Layout.fillWidth: true
-                Layout.minimumWidth: collapsed ? 30 : 84
-                readonly property real minW: 84
-                text: mail.query
-                // The list is searched once typing pauses (150 ms; a single
-                // letter, which matches nearly everything, after 600 ms), not
-                // for every letter typed. Cleared: at once.
-                onTextChanged: {
-                    if (text === mail.query) { queryPause.stop(); return }
-                    if (text.trim() === "") { queryPause.stop(); mail.query = text; return }
-                    queryPause.interval = text.trim().length < 2 ? 600 : 150
-                    queryPause.restart()
-                }
-                Timer { id: queryPause; onTriggered: mail.query = search.text }
-                Connections { target: mail; function onFocusSearch() { search.focusField() } }
+            // Search: a button here; the field drops down over the message list.
+            ToolButtonX {
+                priority: 3
+                icon: "search"
+                tip: mail.query !== "" ? "Search: “" + mail.query + "” (Ctrl+F)" : "Search (Ctrl+F)"
+                checked: mail.searchOpen || mail.query !== ""
+                onClicked: mail.searchOpen && searchField.text === "" ? mail.closeSearch() : mail.focusSearch()
             }
         }
     }
@@ -1407,6 +1481,52 @@ Item {
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
             }
+            // The search bar (see searchOpen): slides down above the list.
+            Item {
+                id: searchBar
+                Layout.fillWidth: true
+                Layout.preferredHeight: mail.searchOpen || mail.query !== "" ? 44 : 0
+                Behavior on Layout.preferredHeight { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                clip: true
+                visible: Layout.preferredHeight > 0
+                RowLayout {
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.bottom: parent.bottom; anchors.bottomMargin: 8
+                    anchors.leftMargin: 10; anchors.rightMargin: 10
+                    height: 28
+                    spacing: 8
+                    SearchBox {
+                        id: searchField
+                        Layout.fillWidth: true
+                        placeholderText: "Search mail"
+                        text: mail.query
+                        // The list is searched once typing pauses (150 ms; a single
+                        // letter, which matches nearly everything, after 600 ms), not
+                        // for every letter typed. Cleared: at once.
+                        onTextChanged: {
+                            if (text === mail.query) { queryPause.stop(); return }
+                            if (text.trim() === "") { queryPause.stop(); mail.query = text; return }
+                            queryPause.interval = text.trim().length < 2 ? 600 : 150
+                            queryPause.restart()
+                        }
+                        Timer { id: queryPause; onTriggered: mail.query = searchField.text }
+                        onEscapePressed: mail.closeSearch()
+                        onClearClicked: mail.closeSearch()
+                        // Left empty: closed.
+                        onHasFocusChanged: if (!hasFocus && text === "" && mail.searchOpen) mail.searchOpen = false
+                    }
+                    // What the server's search is up to (see searchServerQuietly).
+                    Text {
+                        visible: /server/i.test(store.statusText) && mail.query !== ""
+                        text: store.statusText.replace(/\.$/, "")
+                        color: Theme.secondary
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: searchBar.width * 0.4
+                    }
+                }
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
+            }
             // Pull to refresh's spinner: in the room the pulled-down list leaves
             // above its first row (the list is drawn over it otherwise).
             Item {
@@ -1450,7 +1570,7 @@ Item {
                 Layout.fillHeight: true
                 clip: true
                 focus: true
-                model: mail.windowed ? winModel : rowsModel
+                model: mail.windowed ? mail.winCount : rowsModel
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
                 keyNavigationEnabled: true
