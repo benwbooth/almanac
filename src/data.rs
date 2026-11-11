@@ -1782,9 +1782,11 @@ impl Db {
             cands = if members.is_empty() {
                 Vec::new()
             } else {
-                let args: Vec<Arg> = members.iter().map(|x| Arg::Integer(*x)).collect();
-                let marks: Vec<String> = (1..=members.len()).map(|n| format!("?{n}")).collect();
-                crate::mailstore::rows(&format!("id IN ({})", marks.join(", ")), &args, "date ASC", members.len() as i64 + 1, 0)
+                // One by one from the list's index: an `id IN (…)` through the
+                // date-ordered index read all of it (11 s with the window frozen).
+                let mut v: Vec<Message> = members.iter().filter_map(|x| crate::mailstore::by_id(*x)).collect();
+                v.sort_by_key(|x| x.date);
+                v
             };
             if !known.is_empty() {
                 let (filter, args) = like(&known, newest);
@@ -1798,7 +1800,16 @@ impl Db {
             // far. With none found (its start isn't here, as with GitHub notifications,
             // which all point at a pull request's first message nobody got), there's no
             // such bound: limiting to this message's own date found it alone.
-            let oldest = if cands.is_empty() { 0 } else { cands.iter().map(|x| x.date).min().unwrap_or(m.date).min(m.date) };
+            // A message referring to nothing starts its thread: its replies can only
+            // be newer (a newsletter just opened: a few rows, not a 15 s scan of the
+            // whole mailbox with the window frozen).
+            let oldest = if k.is_empty() {
+                m.date
+            } else if cands.is_empty() {
+                0
+            } else {
+                cands.iter().map(|x| x.date).min().unwrap_or(m.date).min(m.date)
+            };
             // Replies are found by the thread's first message (every reply's
             // References starts with it) and by this one's own id (direct replies):
             // two patterns, not one for each message of the thread (up to 40 made
