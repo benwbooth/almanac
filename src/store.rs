@@ -1045,7 +1045,20 @@ impl qobject::Store {
         }
         let Some(generation) = self.as_mut().db_mut().guard_flags(id) else { return };
         self.background(
-            move || Ok(crate::live::mail_op(&acct, &path, uid, op)),
+            move || {
+                // Tried again a little later when it doesn't get through (a
+                // dropped connection, a busy server): a change that never
+                // reaches the server isn't seen by the checks either, so the
+                // two would disagree from then on.
+                let mut r = crate::live::mail_op(&acct, &path, uid, op.clone());
+                for wait in [5, 30, 120] {
+                    let Err(e) = &r else { break };
+                    eprintln!("almanac: changing {path} {uid} on the server: {e} (again in {wait} s)");
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                    r = crate::live::mail_op(&acct, &path, uid, op.clone());
+                }
+                Ok(r)
+            },
             move |mut store, r: Result<(), String>| {
                 store.as_mut().db_mut().flag_pushed(generation);
                 if let Err(e) = r {

@@ -769,11 +769,14 @@ fn quick_check(
         new_at: Option<usize>,
         flags_at: Option<usize>,
         search_at: Option<usize>,
+        // The newest messages' flags read again whatever the counters say.
+        recheck_at: Option<usize>,
     }
+    let recheck = recheck_due(&a.id);
     let mut delta = crate::data::MailDelta::default();
     let mut plans: Vec<Plan> = Vec::new();
     let mut cmds: Vec<String> = Vec::new();
-    for (path, pretty, _) in &folders {
+    for (path, pretty, kind) in &folders {
         let id = format!("{account}/{path}");
         if only.is_some_and(|o| !o.contains(&id)) {
             continue;
@@ -781,7 +784,12 @@ fn quick_check(
         let here = known.get(&id).map_or(0, |h| h.len());
         let now = status[path];
         let before = marks.get(&id).copied().filter(|b| now.validity > 0 && now.modseq > 0 && b.validity == now.validity && b.modseq > 0);
-        if unchanged(before.as_ref(), &now, here, false) {
+        // Now and then (and at the first check) the Inbox's newest flags are
+        // read whole: a read/unread change that went astray (a mark sent from
+        // here the server never took, say) is put right even though the
+        // counters say there's nothing new.
+        let recheck_from = (recheck && kind == "inbox" && now.exists > 0 && before.is_some()).then(|| recent_from(known.get(&id).map(|h| h.as_slice()).unwrap_or(&[]))).flatten();
+        if recheck_from.is_none() && unchanged(before.as_ref(), &now, here, false) {
             delta.marks.push((id, now));
             continue;
         }
@@ -811,7 +819,12 @@ fn quick_check(
             }
             None => {}
         }
-        plans.push(Plan { path: path.clone(), id, pretty: pretty.clone(), before, now, first, new_at, flags_at, search_at });
+        let mut recheck_at = None;
+        if let (Some(from), Some(_)) = (recheck_from, before) {
+            cmds.push(format!("UID FETCH {from}:* (UID FLAGS)"));
+            recheck_at = Some(cmds.len() - 1);
+        }
+        plans.push(Plan { path: path.clone(), id, pretty: pretty.clone(), before, now, first, new_at, flags_at, search_at, recheck_at });
     }
     if !plans.is_empty() {
         let names: Vec<&str> = plans.iter().map(|p| p.pretty.as_str()).collect();
@@ -826,19 +839,23 @@ fn quick_check(
     let mut to_fetch: Vec<(usize, Vec<u32>)> = Vec::new();
     let mut fresh: Vec<Vec<Message>> = Vec::new();
     let mut whole: Vec<bool> = vec![true; plans.len()];
+    let mut rechecked = false;
     for (k, p) in plans.iter().enumerate() {
         fresh.push(Vec::new());
         let here: std::collections::HashSet<u32> = known.get(&p.id).map(|h| h.iter().copied().collect()).unwrap_or_default();
-        if !replies[p.first].ok || [p.new_at, p.flags_at, p.search_at].iter().flatten().any(|i| !replies[*i].ok) {
+        if !replies[p.first].ok || [p.new_at, p.flags_at, p.search_at, p.recheck_at].iter().flatten().any(|i| !replies[*i].ok) {
             whole[k] = false;
             progress(format!("{}: {}: {}", a.name, p.pretty, replies[p.first].info));
             continue;
         }
         let on_server: Option<std::collections::HashSet<u32>> = p.search_at.map(|i| replies[i].search.iter().copied().collect());
-        if let Some(i) = p.flags_at {
+        for i in [p.flags_at, p.recheck_at].into_iter().flatten() {
             for f in replies[i].fetches.iter().filter(|f| here.contains(&f.uid)) {
                 delta.flags.push((p.id.clone(), f.uid, f.flags.iter().any(|x| x == "Seen"), f.flags.iter().any(|x| x == "Flagged"), flag_color(&f.flags)));
             }
+        }
+        if p.recheck_at.is_some() {
+            rechecked = true;
         }
         match (p.before, on_server) {
             (Some(b), _) => {
@@ -917,6 +934,9 @@ fn quick_check(
         }
     }
     pipe.logout();
+    if rechecked {
+        recheck_done(&a.id);
+    }
     // All read: now it counts.
     imp.accounts.push(Account { id: account.clone(), name: a.name.clone(), email: a.email.clone(), source: a.source() });
     for (path, pretty, kind) in folders {
@@ -933,6 +953,28 @@ fn quick_check(
     }
     imp.mail_delta = Some(delta);
     Ok(true)
+}
+
+/// How often the Inbox's newest flags are read again in full (see `quick_check`).
+const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// When each account's Inbox flags were last read again in full (this run).
+static RECHECKED: std::sync::Mutex<Option<HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
+
+fn recheck_due(account: &str) -> bool {
+    RECHECKED.lock().unwrap().as_ref().and_then(|m| m.get(account)).is_none_or(|t| t.elapsed() >= RECHECK_EVERY)
+}
+
+fn recheck_done(account: &str) {
+    RECHECKED.lock().unwrap().get_or_insert_with(Default::default).insert(account.to_string(), std::time::Instant::now());
+}
+
+/// The first UID of the newest RECENT_FLAGS messages here (None: none here).
+fn recent_from(here: &[u32]) -> Option<u32> {
+    let mut uids = here.to_vec();
+    uids.sort_unstable();
+    let i = uids.len().checked_sub(RECENT_FLAGS).unwrap_or(0);
+    uids.get(i).copied()
 }
 
 /// Nothing added (UIDNEXT) and so nothing removed (the count) since the last
@@ -1725,6 +1767,21 @@ mod connection_tests {
     }
 
     #[test]
+    fn recheck_starts_at_the_newest_few_thousand() {
+        assert_eq!(super::recent_from(&[]), None);
+        assert_eq!(super::recent_from(&[9, 3, 5]), Some(3));
+        let many: Vec<u32> = (1..=super::RECENT_FLAGS as u32 + 10).rev().collect();
+        assert_eq!(super::recent_from(&many), Some(11));
+    }
+
+    #[test]
+    fn recheck_is_due_at_first_then_hourly() {
+        assert!(super::recheck_due("test-recheck"));
+        super::recheck_done("test-recheck");
+        assert!(!super::recheck_due("test-recheck"));
+    }
+
+    #[test]
     #[ignore]
     fn unchanged_mailboxes_are_skipped() {
         let Some(dir) = std::env::var_os("ALMANAC_REAL_DATA").map(std::path::PathBuf::from) else { return };
@@ -1812,6 +1869,7 @@ mod counted_tests {
 }
 
 /// A change to one message on the server.
+#[derive(Clone, Debug)]
 pub enum MailOp {
     Seen(bool),
     Flagged(bool),
