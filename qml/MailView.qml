@@ -82,6 +82,8 @@ Item {
     // The search bar, dropped down at the top of the message list (Ctrl+F or
     // the toolbar's magnifier). Open while there's a search; Escape or its ×
     // clears and closes it, and it closes on its own when left empty.
+    // The row left open on its Archive / Trash buttons (see the row's swipe).
+    property var openSwipe: null
     property bool searchOpen: false
     // ---- Search matches highlighted (as the search finds them: words starting
     // with what's typed, case and accents ignored), in the list and the message.
@@ -805,6 +807,8 @@ Item {
     // For checks: the search box's text set as typing would (see Main's typeCheck).
     // For pictures: the message list this wide (--list-width).
     function setListWidth(w) { listPane.SplitView.preferredWidth = w }
+    // For pictures: row `i` swiped open on its buttons.
+    function swipeOpenForCheck(i) { var r = messageList.itemAtIndex(i); if (r) { r.swipe = -r.buttonsWidth; openSwipe = r } }
     function typeQuery(t) { searchOpen = true; searchField.text = t }
     function selectSubject(prefix) { for (var i = 0; i < list.length; i++) if ((list[i] || {}).subject.indexOf(prefix) === 0) { select((list[i] || {}).id); return } }
     function selectInvite() { for (var i = 0; i < list.length; i++) if ((list[i] || {}).subject.indexOf("Invitation") === 0) { select((list[i] || {}).id); return } }
@@ -1671,7 +1675,13 @@ Item {
                 clip: true
                 focus: true
                 model: mail.windowed ? winModel : rowsModel
-                boundsBehavior: Flickable.StopAtBounds
+                // Dragged down past the top with a finger: pull to refresh (the
+                // list itself stays; the pull shows above it as with a trackpad).
+                boundsBehavior: Flickable.DragOverBounds
+                boundsMovement: Flickable.StopAtBounds
+                onVerticalOvershootChanged: if (dragging && verticalOvershoot < 0) listMomentum.pull = Math.min(140, -verticalOvershoot * 0.6)
+                onDraggingChanged: if (!dragging && listMomentum.pull > 0) listMomentum.releasePull()
+                onMovementStarted: mail.openSwipe = null
                 ScrollBar.vertical: ScrollBar {}
                 keyNavigationEnabled: true
                 // The list goes to the selected message at once, never gliding
@@ -1809,24 +1819,47 @@ Item {
                     property color main: strong ? Theme.accentInk : Theme.text
                     property color sub: strong ? "#e8f1ff" : Theme.secondary
 
-                    // Two-finger swipe sideways, as in Apple Mail: left to
-                    // move to Trash, right to mark as read or unread.
+                    // Swiped sideways (two fingers on a trackpad, or a finger on a
+                    // touch screen), as in Apple Mail: left a little shows Archive
+                    // and Trash buttons (the row stays open on them), left all the
+                    // way moves it to the Trash; right marks it read or unread.
                     property real swipe: 0
                     property bool swiping: false
                     readonly property real swipeLimit: Math.min(130, width * 0.35)
+                    readonly property real buttonsWidth: 2 * 76
+                    readonly property real swipeAll: Math.max(buttonsWidth + 60, width * 0.55)
+                    property real swipeFrom: 0
                     Behavior on swipe { enabled: !row.swiping; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                     function swipeBy(dx) {
                         swiping = true
-                        swipe = Math.max(-width * 0.6, Math.min(width * 0.6, swipe + dx))
+                        swipe = Math.max(-width * 0.8, Math.min(width * 0.6, swipe + dx))
                         swipeEnd.restart()
                     }
                     function finishSwipe() {
                         swipeEnd.stop()
                         swiping = false
                         var id = modelData.id
-                        if (swipe <= -swipeLimit) { swipe = 0; mail.select(id); mail.removeCurrent("delete") }
+                        if (swipe <= -swipeAll) { swipe = 0; mail.select(id); mail.removeCurrent("delete") }
+                        else if (swipe <= -50) { swipe = -buttonsWidth; mail.openSwipe = row }
                         else if (swipe >= swipeLimit) { swipe = 0; store.setRead(id, !modelData.read) }
                         else swipe = 0
+                    }
+                    function closeSwipe() { swipe = 0; if (mail.openSwipe === row) mail.openSwipe = null }
+                    // (Another row opened, or the list scrolled: this one closes.)
+                    Connections {
+                        target: mail
+                        function onOpenSwipeChanged() { if (mail.openSwipe !== row && row.swipe < 0 && !row.swiping) row.swipe = 0 }
+                    }
+                    // A finger on a touch screen.
+                    DragHandler {
+                        target: null
+                        yAxis.enabled: false
+                        acceptedDevices: PointerDevice.TouchScreen
+                        onActiveChanged: {
+                            if (active) { row.swiping = true; row.swipeFrom = row.swipe }
+                            else row.finishSwipe()
+                        }
+                        onTranslationChanged: if (active) row.swipe = Math.max(-row.width * 0.8, Math.min(row.width * 0.6, row.swipeFrom + translation.x))
                     }
                     Timer { id: swipeEnd; interval: 180; onTriggered: row.finishSwipe() }
                     // What the swipe reveals, behind the row
@@ -1843,10 +1876,39 @@ Item {
                             color: "white"; font.pixelSize: Theme.base; font.weight: Font.DemiBold
                         }
                         Text {
-                            visible: row.swipe < 0
+                            visible: row.swipe < 0 && row.swipe <= -row.swipeAll
                             anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter
                             text: "Trash"
                             color: "white"; font.pixelSize: Theme.base; font.weight: Font.DemiBold
+                        }
+                    }
+                    // Swiped part way left: Archive and Trash, to tap.
+                    Row {
+                        z: -1.5
+                        visible: row.swipe < 0 && row.swipe > -row.swipeAll
+                        anchors.right: parent.right
+                        height: parent.height
+                        Repeater {
+                            model: [{ act: "archive", label: "Archive", icon: "archive", color: Theme.accent }, { act: "delete", label: "Trash", icon: "trash", color: Theme.red }]
+                            delegate: Rectangle {
+                                required property var modelData
+                                width: Math.max(0, Math.min(76, -row.swipe / 2))
+                                height: parent.height
+                                color: modelData.color
+                                clip: true
+                                Column {
+                                    anchors.centerIn: parent
+                                    spacing: 4
+                                    Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.icon; width: 20; height: 20; color: "white" }
+                                    Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.label; color: "white"; font.pixelSize: 12; font.weight: Font.DemiBold }
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: { var id = row.modelData.id; row.closeSwipe(); mail.select(id); mail.removeCurrent(modelData.act) }
+                                }
+                                ToolTip.visible: false
+                            }
                         }
                     }
                     Rectangle {
@@ -2005,6 +2067,8 @@ Item {
                             row.swipeBy(dx)
                         }
                         onClicked: function(ev) {
+                            // (Open on its buttons: a tap on the row closes it.)
+                            if (row.swipe < 0 && !row.swiping) { row.closeSwipe(); return }
                             messageList.forceActiveFocus()
                             // Right-click: the menu acts on this message (or on all the
                             // picked ones), and opening it doesn't count as reading.

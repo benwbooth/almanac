@@ -878,6 +878,7 @@ ApplicationWindow {
         var p = store.startPanel
         if (p === "accounts") sourcesDialog.open()
         else if (p === "type-search") typeCheck.begin()
+        else if (p === "swipe-open") swipeCheck.start()
         else if (p === "search-open") Qt.callLater(function() { mailView.focusSearch() })
         else if (p === "search-query") Qt.callLater(function() { mailView.focusSearch(); mailView.typeQuery(store.arg("--query") || "project") })
         else if (p === "add-account") { sourcesDialog.open(); sourcesDialog.newAccount() }
@@ -1062,6 +1063,7 @@ ApplicationWindow {
         function onOpenUrlChanged() { if (store.openUrl !== "") { Qt.openUrlExternally(store.openUrl); store.openUrl = "" } }
     }
 
+    Timer { id: swipeCheck; interval: 1200; onTriggered: mailView.swipeOpenForCheck(1) }
     Timer { id: pdfCheck; interval: 2600; onTriggered: mailView.checkPdfBar() }
     // For checks (--show type-search): types searches into the mail search box
     // a letter at a time in several mailboxes, list and conversations, and
