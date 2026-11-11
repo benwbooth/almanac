@@ -754,6 +754,9 @@ pub struct WindowPlan {
     /// A search of mailboxes (the folders) by date: its full-text words (see
     /// `mailstore::search_rows`), read from the index rather than every row.
     pub search: Option<String>,
+    /// A search's words (see `searchhl::words`): each row shows the part of its
+    /// text where they are, not its first lines.
+    pub words: Vec<String>,
     /// The list's request (the window's count of lists asked for): one asked
     /// for since is newer, and this one isn't worked out any more (see
     /// `LIST_WANTED`). -1: always worked out.
@@ -796,6 +799,24 @@ impl WindowPlan {
 /// (a conversation, or one message), and with `counted`, how many rows there
 /// are and how many have unread mail.
 pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: bool) -> (Vec<Vec<Message>>, i64, i64) {
+    let (mut groups, total, unread) = fetch_window_rows(plan, offset, count, counted);
+    if !plan.words.is_empty() {
+        // Searching: each row shows where the words are in its text (a
+        // conversation: the first of its messages that has them).
+        let _t = crate::Timed::new("search snippets");
+        let ids: Vec<i64> = groups.iter().flatten().map(|m| m.id).collect();
+        let bodies = crate::mailstore::bodies(&ids);
+        for g in groups.iter_mut() {
+            let found = g.iter().find_map(|m| bodies.get(&m.id).and_then(|b| crate::searchhl::snippet(b, &plan.words)));
+            if let (Some(s), Some(first)) = (found, g.first_mut()) {
+                first.preview = s;
+            }
+        }
+    }
+    (groups, total, unread)
+}
+
+fn fetch_window_rows(plan: &WindowPlan, offset: usize, count: usize, counted: bool) -> (Vec<Vec<Message>>, i64, i64) {
     if plan.filter.is_some() {
         let whole = whole_list(plan);
         let end = (offset + count).min(whole.rows.len());
@@ -2294,7 +2315,7 @@ impl Db {
         let unread_or = unread_only.then_some(keep);
         let sort = if sort_by.is_empty() { "date".to_string() } else { sort_by.to_string() };
         if let Some(folders) = self.window_folders(selection, query, sort_by) {
-            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search: None, token: -1 });
+            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search: None, token: -1, words: Vec::new() });
         }
         // Anything else SQL can say (not a smart mailbox's conditions).
         let filter = self.list_filter(selection, query, unread_or)?;
@@ -2305,7 +2326,7 @@ impl Db {
             Some((f, expr)) => (f, Some(expr)),
             None => (Vec::new(), None),
         };
-        Some(WindowPlan { folders, filter: Some(filter), sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search, token: -1 })
+        Some(WindowPlan { folders, filter: Some(filter), sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search, token: -1, words: crate::searchhl::words(query) })
     }
 
     /// The list's rows from what `fetch_window` read.

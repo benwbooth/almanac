@@ -83,6 +83,32 @@ Item {
     // the toolbar's magnifier). Open while there's a search; Escape or its ×
     // clears and closes it, and it closes on its own when left empty.
     property bool searchOpen: false
+    // ---- Search matches highlighted (as the search finds them: words starting
+    // with what's typed, case and accents ignored), in the list and the message.
+    readonly property var hlWords: query.split(/[^0-9A-Za-z\u00C0-\uFFFF]+/).map(hlFold).filter(function(w) { return w !== "" })
+    readonly property color hlColor: Theme.dark ? "#d4a017" : "#ffe066"
+    function hlFold(t) { return String(t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") }
+    function hlWordChar(c) { return /[0-9A-Za-z\u00C0-\uFFFF]/.test(c) && !/[\u2000-\u206F\u3000-\u303F\uFF00-\uFF0F]/.test(c) }
+    function hlEsc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
+    // `text` with its matches marked (styled text), or "" when it has none.
+    function hl(text) {
+        if (!hlWords.length || !text) return ""
+        var w = hlWords, out = "", i = 0, n = text.length, any = false
+        while (i < n) {
+            if (!hlWordChar(text[i])) { out += hlEsc(text[i]); i++; continue }
+            var j = i
+            while (j < n && hlWordChar(text[j])) j++
+            var tok = text.slice(i, j), f = "", k = -1
+            for (var q = 0; q < tok.length && k < 0; q++) {
+                f += hlFold(tok[q])
+                for (var x = 0; x < w.length; x++) if (f.length >= w[x].length && f.indexOf(w[x]) === 0) { k = q + 1; break }
+            }
+            if (k > 0) { any = true; out += '<span style="background-color:' + hlColor + ';color:#000">' + hlEsc(tok.slice(0, k)) + '</span>' + hlEsc(tok.slice(k)) }
+            else out += hlEsc(tok)
+            i = j
+        }
+        return any ? out : ""
+    }
     // A search still being worked out (here, or on the mail servers): a
     // spinner in the search field, and no "No Results" until it's done.
     readonly property bool searchBusy: query.trim() !== "" && (winSwapping || pageWaiting || store.serverSearching)
@@ -1099,8 +1125,11 @@ Item {
                     font.pixelSize: 11; color: Theme.secondary
                 }
             }
-            ToolButtonX { priority: 3; icon: "compose"; tip: "New Message (Ctrl+N)"; onClicked: compose.openWith({}) }
             Item { Layout.fillWidth: true }
+            // New Message with the other buttons (the search that sat at the end,
+            // taking up room, has gone to the message list).
+            ToolButtonX { priority: 3; icon: "compose"; tip: "New Message (Ctrl+N)"; onClicked: compose.openWith({}) }
+            Item { width: 6 }
             ToolButtonX { priority: 1; icon: "archive"; tip: "Archive (Ctrl+Shift+A)"; enabled: mail.current !== null; onClicked: mail.removeCurrent("archive") }
             ToolButtonX { priority: 2; icon: "trash"; tip: "Delete"; enabled: mail.current !== null; onClicked: mail.removeCurrent("delete") }
             ToolButtonX {
@@ -1148,7 +1177,6 @@ Item {
                 enabled: mail.currentRow !== null
                 onClicked: mail.setCurrentRead(!mail.currentRow.read)
             }
-            Item { width: 6 }
         }
     }
 
@@ -1889,7 +1917,9 @@ Item {
                             Text {
                                 id: rowFrom
                                 Layout.fillWidth: true
-                                text: modelData.fromName
+                                readonly property string marked: mail.hl(modelData.fromName)
+                                text: marked || modelData.fromName
+                                textFormat: marked ? Text.RichText : Text.PlainText
                                 font.pixelSize: Theme.base + 1
                                 font.weight: Font.Bold
                                 color: row.main
@@ -1920,7 +1950,13 @@ Item {
                         Text {
                             id: rowSubject
                             width: parent.width
-                            text: modelData.subject
+                            readonly property string marked: mail.hl(modelData.subject)
+                            text: marked || modelData.subject
+                            textFormat: marked ? Text.RichText : Text.PlainText
+                            // (Marked text is rich text, which doesn't stop at two lines itself.)
+                            height: marked ? Math.min(implicitHeight, Math.ceil(subjectLines.lineSpacing * 2) + 1) : implicitHeight
+                            clip: !!marked
+                            FontMetrics { id: subjectLines; font: rowSubject.font }
                             color: row.main
                             font.pixelSize: Theme.base
                             wrapMode: Text.Wrap
@@ -1933,7 +1969,13 @@ Item {
                         }
                         Text {
                             width: parent.width
-                            text: (modelData.account ? modelData.account + " — " : "") + modelData.preview
+                            readonly property string plain: (modelData.account ? modelData.account + " — " : "") + modelData.preview
+                            readonly property string marked: mail.hl(plain)
+                            text: marked || plain
+                            textFormat: marked ? Text.RichText : Text.PlainText
+                            height: marked ? Math.min(implicitHeight, Math.ceil(previewLines.lineSpacing * 2) + 1) : implicitHeight
+                            clip: !!marked
+                            FontMetrics { id: previewLines; font.pixelSize: 12 }
                             color: row.sub
                             font.pixelSize: 12
                             wrapMode: Text.WordWrap
@@ -2144,6 +2186,8 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     messages: mail.conversation
+                    // (The search's matches marked in the message too.)
+                    highlightWords: mail.hlWords
                     subject: mail.current ? mail.current.subject : ""
                     formatted: mail.formatted
                     darkMessages: !!mail.prefs.dark_messages

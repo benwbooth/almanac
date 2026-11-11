@@ -40,6 +40,8 @@ ring = "0.17"
 notify-rust = "4"
 # Picking app IDs out of pasted text (Sign-in Setup)
 regex = "1"
+# Search matches found as the search index finds them (accents ignored).
+unicode-normalization = "0.1"
 # Spelling and grammar while writing (offline, English).
 harper-core = "3"
 

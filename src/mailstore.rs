@@ -831,6 +831,21 @@ pub fn date_page(folders: &[String], unread_or: Option<i64>, ascending: bool, of
     .unwrap_or((Vec::new(), 0))
 }
 
+/// The text of these messages (those that have it here), by id.
+pub fn bodies(ids: &[i64]) -> HashMap<i64, String> {
+    let path = db_path();
+    if !path.exists() || ids.is_empty() {
+        return HashMap::new();
+    }
+    with_conn(&path, |c| {
+        let marks = (1..=ids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+        let mut st = c.prepare(&format!("SELECT id, body FROM messages WHERE id IN ({marks}) AND body <> ''")).map_err(|e| e.to_string())?;
+        let rows = st.query_map(rusqlite::params_from_iter(ids.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+        Ok(rows.flatten().collect())
+    })
+    .unwrap_or_default()
+}
+
 /// Messages by id, in the order given.
 pub fn by_ids(ids: &[i64]) -> Vec<Message> {
     let path = db_path();

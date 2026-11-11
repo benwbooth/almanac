@@ -76,7 +76,7 @@ WebEngineView {
         else if (p[2] === "all") for (var k = 0; k < web.messages.length; k++) web.expandedState[web.messages[k].id] = on
     }
     onLoadingChanged: function(info) {
-        if (info.status === WebEngineView.LoadSucceededStatus) { web.applySigs(); web.applyLists() }
+        if (info.status === WebEngineView.LoadSucceededStatus) { web.applySigs(); web.applyLists(); web.applyHighlight() }
         paneLog("loading " + ["started", "stopped", "succeeded", "failed"][info.status] + (info.errorString ? " " + info.errorString : "")) }
     onRenderProcessTerminated: function(status, code) { paneLog("render process ended, status " + status + " code " + code) }
     property int redrawPasses: 0
@@ -122,6 +122,35 @@ WebEngineView {
     }
     property var messages: []
     property string subject: ""
+    // A search's words (folded, see MailView.hlWords): their matches marked in
+    // the message (headers and text, each message's own page too).
+    property var highlightWords: []
+    onHighlightWordsChanged: applyHighlight()
+    readonly property string hlColor: Theme.dark ? "#d4a017" : "#ffe066"
+    function applyHighlight() {
+        web.runJavaScript("(function(words, color){"
+            + "var W=/[0-9A-Za-z\\u00C0-\\uFFFF]/,P=/[\\u2000-\\u206F\\u3000-\\u303F\\uFF00-\\uFF0F]/;"
+            + "function wc(c){return W.test(c)&&!P.test(c)}"
+            + "function fold(t){return t.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'')}"
+            + "function clear(d){[].slice.call(d.querySelectorAll('mark.alm-hl')).forEach(function(m){var p=m.parentNode;p.replaceChild(d.createTextNode(m.textContent),m);p.normalize()})}"
+            + "function mark(d){if(!d||!d.body)return null;clear(d);if(!words.length)return null;var first=null;"
+            + "var tw=d.createTreeWalker(d.body,4,{acceptNode:function(n){var p=n.parentNode&&n.parentNode.nodeName;return /^(SCRIPT|STYLE|TEXTAREA|MARK)$/.test(p)?2:1}});"
+            + "var nodes=[];while(tw.nextNode())nodes.push(tw.currentNode);"
+            + "nodes.forEach(function(n){var t=n.nodeValue,i=0,L=t.length,parts=[],last=0;"
+            + "while(i<L){if(!wc(t[i])){i++;continue}var j=i;while(j<L&&wc(t[j]))j++;var f='',k=-1;"
+            + "for(var q=i;q<j&&k<0;q++){f+=fold(t[q]);for(var x=0;x<words.length;x++)if(f.length>=words[x].length&&f.indexOf(words[x])===0){k=q+1;break}}"
+            + "if(k>0)parts.push([i,k]);i=j}"
+            + "if(!parts.length)return;var fr=d.createDocumentFragment();"
+            + "parts.forEach(function(p){fr.appendChild(d.createTextNode(t.slice(last,p[0])));var m=d.createElement('mark');m.className='alm-hl';"
+            + "m.style.cssText='background:'+color+';color:#000;border-radius:2px;padding:0';m.textContent=t.slice(p[0],p[1]);fr.appendChild(m);if(!first)first=m;last=p[1]});"
+            + "fr.appendChild(d.createTextNode(t.slice(last)));n.parentNode.replaceChild(fr,n)});return first}"
+            + "var first=mark(document);"
+            + "[].slice.call(document.querySelectorAll('iframe')).forEach(function(f){"
+            + "var go=function(){try{var m=mark(f.contentDocument);if(m&&!first)first=m}catch(e){}};go();"
+            + "if(!f.__almHl){f.__almHl=1;f.addEventListener('load',function(){window.__almHlRedo&&window.__almHlRedo(f)})}});"
+            + "window.__almHlRedo=function(f){try{mark(f.contentDocument)}catch(e){}};"
+            + "})(" + JSON.stringify(highlightWords || []) + "," + JSON.stringify(hlColor) + ")")
+    }
     property bool formatted: true
     property bool darkMessages: true
     // Dark logos made readable in dark mode (see logos() in the page).
