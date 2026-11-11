@@ -1839,6 +1839,7 @@ Item {
                         swipeEnd.stop()
                         swiping = false
                         var id = modelData.id
+                        console.warn("ALMANAC-SWIPE end at " + Math.round(swipe) + " of " + Math.round(width))
                         if (swipe <= -swipeAll) { swipe = 0; mail.select(id); mail.removeCurrent("delete") }
                         else if (swipe <= -50) { swipe = -buttonsWidth; mail.openSwipe = row }
                         else if (swipe >= swipeLimit) { swipe = 0; store.setRead(id, !modelData.read) }
@@ -1849,17 +1850,6 @@ Item {
                     Connections {
                         target: mail
                         function onOpenSwipeChanged() { if (mail.openSwipe !== row && row.swipe < 0 && !row.swiping) row.swipe = 0 }
-                    }
-                    // A finger on a touch screen.
-                    DragHandler {
-                        target: null
-                        yAxis.enabled: false
-                        acceptedDevices: PointerDevice.TouchScreen
-                        onActiveChanged: {
-                            if (active) { row.swiping = true; row.swipeFrom = row.swipe }
-                            else row.finishSwipe()
-                        }
-                        onTranslationChanged: if (active) row.swipe = Math.max(-row.width * 0.8, Math.min(row.width * 0.6, row.swipeFrom + translation.x))
                     }
                     Timer { id: swipeEnd; interval: 180; onTriggered: row.finishSwipe() }
                     // What the swipe reveals, behind the row
@@ -2057,6 +2047,22 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        // Dragged sideways (pressed and moved: a mouse, a trackpad's
+                        // click, or a finger): the row swipes. Here, on the row's own
+                        // MouseArea, so it sees the press before the MouseArea takes
+                        // it (on the row it never got one); a click still selects.
+                        DragHandler {
+                            target: null
+                            yAxis.enabled: false
+                            acceptedButtons: Qt.LeftButton
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.TouchScreen
+                            grabPermissions: PointerHandler.CanTakeOverFromAnything
+                            onActiveChanged: {
+                                if (active) { row.swiping = true; row.swipeFrom = row.swipe; console.warn("ALMANAC-SWIPE begin drag") }
+                                else row.finishSwipe()
+                            }
+                            onTranslationChanged: if (active) row.swipe = Math.max(-row.width * 0.8, Math.min(row.width * 0.6, row.swipeFrom + translation.x))
+                        }
                         // Sideways scrolling swipes the row; up and down still scrolls the list.
                         onWheel: function(ev) {
                             var dx = ev.pixelDelta.x !== 0 ? ev.pixelDelta.x : ev.angleDelta.x / 2
@@ -2064,11 +2070,14 @@ Item {
                             if (ev.phase === Qt.ScrollEnd && row.swiping) { row.finishSwipe(); return }
                             if (dx === 0 || Math.abs(dy) > Math.abs(dx)) { ev.accepted = false; return }
                             if (ev.phase === Qt.ScrollMomentum) return
+                            if (!row.swiping) console.warn("ALMANAC-SWIPE begin wheel px" + ev.pixelDelta.x + " a" + ev.angleDelta.x)
                             row.swipeBy(dx)
                         }
                         onClicked: function(ev) {
                             // (Open on its buttons: a tap on the row closes it.)
                             if (row.swipe < 0 && !row.swiping) { row.closeSwipe(); return }
+                            // (Another row left open: closed.)
+                            if (mail.openSwipe) mail.openSwipe = null
                             messageList.forceActiveFocus()
                             // Right-click: the menu acts on this message (or on all the
                             // picked ones), and opening it doesn't count as reading.
