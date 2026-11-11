@@ -55,7 +55,7 @@ Item {
             function linesOf(e) {
                 // (Only the first line stops short of the time; the rest are full width.)
                 var w = width - 16 - (e.allDay ? 0 : 11)
-                var time = e.allDay ? 0 : timeMetrics.advanceWidth(Theme.fmtTime(Theme.parseDT(e.start))) + 4
+                var time = e.allDay ? 0 : Math.ceil(timeMetrics.advanceWidth(Theme.fmtTime(Theme.parseDT(e.start)))) + 8
                 return Math.max(1, Math.ceil((nameMetrics.advanceWidth(e.title) * 1.08 + time) / Math.max(20, w)))
             }
             property int fit: {
@@ -123,14 +123,20 @@ Item {
                                 id: nameText
                                 // The whole name, on more lines when it's long: the first line
                                 // up to the time at the right, the others the full width.
-                                width: parent.width - 12
+                                // (The time's room comes from FontMetrics, not timeText, which
+                                // may not be laid out yet; a change lays the name out again.
+                                // A one-line name is narrowed itself, since eliding ignores
+                                // the line's own width.)
+                                property real timeRoom: modelData.allDay ? 0 : Math.ceil(timeMetrics.advanceWidth(Theme.fmtTime(Theme.parseDT(modelData.start)))) + 8
+                                onTimeRoomChanged: forceLayout()
+                                width: parent.width - 12 - (maximumLineCount === 1 ? timeRoom : 0)
                                 text: modelData.title
                                 wrapMode: Text.Wrap
                                 // (Shortened only when even the whole day can't hold it.)
                                 maximumLineCount: Math.max(1, Math.floor((cell.height - 30) / 14))
                                 elide: Text.ElideRight
                                 onLineLaidOut: function(line) {
-                                    if (line.number === 0 && timeText.visible) line.width = width - timeText.implicitWidth - 4
+                                    if (line.number === 0 && maximumLineCount > 1) line.width = width - timeRoom
                                 }
                                 font.pixelSize: 11
                                 font.weight: modelData.allDay ? Font.DemiBold : Font.Normal
