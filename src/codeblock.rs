@@ -240,7 +240,7 @@ fn decode(s: &str) -> String {
 
 /// A cell's inner HTML (as the editor writes it) → its lines.
 fn cell_text(inner: &str) -> String {
-    let lower = inner.to_lowercase();
+    let lower = inner.to_ascii_lowercase();
     let mut lines = Vec::new();
     if lower.contains("<p") {
         let mut at = 0;
@@ -267,7 +267,8 @@ fn br_lines(html: &str) -> String {
 /// The editor's code blocks: (start, end) of each table in `html`, its
 /// language and its code.
 fn editor_blocks(html: &str) -> Vec<(usize, usize, String, String)> {
-    let lower = html.to_lowercase();
+    // (ASCII only: same length as the HTML, so a place in one is a place in the other.)
+    let lower = html.to_ascii_lowercase();
     let mut out = Vec::new();
     let mut at = 0;
     while let Some(s) = lower[at..].find("<table").map(|i| at + i) {
@@ -424,7 +425,8 @@ pub fn for_sending(html: &str) -> String {
 /// A message opened to be written again (a draft, a reply's quote): its
 /// <pre><code class="language-…"> blocks as editor blocks.
 pub fn for_editing(html: &str, dark: bool) -> String {
-    let lower = html.to_lowercase();
+    // (ASCII only: same length as the HTML, so a place in one is a place in the other.)
+    let lower = html.to_ascii_lowercase();
     if !lower.contains("<pre") || !lower.contains("language-") {
         return html.to_string();
     }

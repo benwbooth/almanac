@@ -698,7 +698,7 @@ BT /F1 15 Tf 50 270 Td (2. Budget) Tj ET\nBT /F1 15 Tf 50 240 Td (3. Who owns th
 pub fn thread_key(subject: &str) -> String {
     let mut s = subject.trim();
     loop {
-        let lower = s.to_lowercase();
+        let lower = s.to_ascii_lowercase();
         let mut cut = None;
         for p in ["re:", "fwd:", "fw:", "aw:", "sv:", "wg:", "re :", "tr:"] {
             if lower.starts_with(p) {

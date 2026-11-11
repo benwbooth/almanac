@@ -261,7 +261,21 @@ fn hidden_element_end(lower: &str, at: usize) -> Option<usize> {
 }
 
 pub fn html_to_text(html: &str) -> String {
-    html_text(html, true)
+    // (Never failing: HTML this can't take apart gives its text roughly.)
+    std::panic::catch_unwind(|| html_text(html, true)).unwrap_or_else(|_| {
+        eprintln!("almanac: couldn't take the text out of some HTML ({} bytes)", html.len());
+        let mut out = String::new();
+        let mut inside = false;
+        for c in html.chars() {
+            match c {
+                '<' => inside = true,
+                '>' => inside = false,
+                _ if !inside => out.push(c),
+                _ => {}
+            }
+        }
+        out
+    })
 }
 
 /// The text of HTML (`shown_only`: without comments and hidden parts; false:
@@ -534,7 +548,7 @@ pub fn clean_html(html: &str) -> String {
     let mut s = html.to_string();
     for tag in ["script", "iframe", "object", "embed", "form", "link", "base", "meta", "title", "frameset", "frame", "applet"] {
         loop {
-            let lower = s.to_lowercase();
+            let lower = s.to_ascii_lowercase();
             let Some(a) = lower.find(&format!("<{tag}")) else { break };
             let close = format!("</{tag}>");
             let b = lower[a..].find(&close).map(|i| a + i + close.len()).or_else(|| lower[a..].find('>').map(|i| a + i + 1)).unwrap_or(s.len());
@@ -684,7 +698,64 @@ pub fn extract_attachment(raw: &[u8], name: &str) -> Option<(Vec<u8>, String)> {
     walk(&headers(head), body, 0, name)
 }
 
+/// A message read (see `parse_whole`), never failing: a message this code
+/// can't read (a mistake here, not in the mail) is noted in the log and kept
+/// with what could be read of it, rather than stopping a mail check or the app.
 pub fn parse(raw: &[u8]) -> Parsed {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse_whole(raw))) {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("almanac: couldn't read a message ({} bytes): kept as plain text", raw.len());
+            let text = String::from_utf8_lossy(raw);
+            let (head, body) = text.split_once("\r\n\r\n").or_else(|| text.split_once("\n\n")).unwrap_or(("", &text));
+            let field = |name: &str| {
+                head.lines()
+                    .find(|l| l.len() > name.len() && l.as_bytes()[..name.len()].eq_ignore_ascii_case(name.as_bytes()) && l.as_bytes()[name.len()] == b':')
+                    .map(|l| l[name.len() + 1..].trim().to_string())
+                    .unwrap_or_default()
+            };
+            Parsed {
+                from_name: String::new(),
+                from_email: field("From"),
+                to: field("To"),
+                cc: field("Cc"),
+                subject: field("Subject"),
+                date: chrono::DateTime::parse_from_rfc2822(&field("Date")).map(|d| d.timestamp()).unwrap_or(0),
+                body: first_chars(body, 60_000).to_string(),
+                attachments: Vec::new(),
+                html: String::new(),
+                invite: String::new(),
+                message_id: field("Message-ID"),
+                in_reply_to: field("In-Reply-To"),
+                references: field("References"),
+                reply_to: field("Reply-To"),
+                mozilla_status: None,
+            }
+        }
+    }
+}
+
+/// The start of `s`, at most `n` characters (never cut inside one).
+pub fn first_chars(s: &str, n: usize) -> &str {
+    match s.char_indices().nth(n) {
+        Some((i, _)) => &s[..i],
+        None => s,
+    }
+}
+
+/// `s` cut to at most `n` bytes, at a character's edge.
+pub fn first_bytes(s: &str, n: usize) -> &str {
+    if s.len() <= n {
+        return s;
+    }
+    let mut i = n;
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    &s[..i]
+}
+
+fn parse_whole(raw: &[u8]) -> Parsed {
     let (head, body) = split_head_body(raw);
     let h = headers(head);
     let (from_name, from_email) = split_address(&decode_words(get(&h, "from")));
@@ -786,5 +857,78 @@ mod numbered_character_tests {
         // (Letters whose lower case is longer, before tags: no panic.)
         assert!(html_to_text("<p>İİİ <b>x</b> ẞ</p><div>ok</div>").contains("ok"));
         assert!(text.contains("Hello") && text.contains("there"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod robustness {
+    //! Mail in any language, and mail that isn't what it says it is: nothing
+    //! here may panic (cutting text inside a character did).
+
+    /// Random bytes (a fixed sequence, so a failure can be found again).
+    fn bytes(seed: &mut u64, n: usize) -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (*seed >> 33) as u8
+            })
+            .collect()
+    }
+
+    const PIECES: &[&str] = &[
+        "<p>", "</p>", "<div style=\"display:none\">", "</div>", "<span hidden>", "</span>", "<!-- ", " -->", "<style>", "</style>", "<br>", "<a href=\"x\">",
+        "</a>", "<", ">", "&amp;", "&#128205;", "&#x1F600;", "&", ";", "=?UTF-8?B?w6nDqA==?=", "=?iso-8859-1?Q?caf=E9?=", "=?bad?X?zz?=", "=E9", "=\r\n",
+        "İİ", "ẞ", "K", "Ⅻ", "ǅ", "日本語のメール", "😀👍🏽", "e\u{301}", "\u{202e}مرحبا", "Ελληνικά", "ﬃ", "\u{0}", "\r\n", "\n\n", " ", "Re: ", "family",
+    ];
+
+    fn mixed(seed: &mut u64, n: usize) -> String {
+        bytes(seed, n).iter().map(|b| PIECES[*b as usize % PIECES.len()]).collect()
+    }
+
+    #[test]
+    fn any_text_at_any_length() {
+        let mut seed = 7u64;
+        let words = crate::searchhl::words("family café 日本");
+        for round in 0..300 {
+            let text = mixed(&mut seed, 40 + round % 60);
+            // Every cut at a character's edge, and raw bytes too.
+            let cuts: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+            for &c in cuts.iter().step_by(3) {
+                let t = &text[..c];
+                let _ = super::html_text(t, true);
+                let _ = super::html_text(t, false);
+                let _ = super::decode_words(t);
+                let _ = super::decode_numeric(t);
+                let _ = super::clean_html(t);
+                let _ = super::block_remote(t);
+                let _ = super::looks_like_html(t);
+                let _ = crate::data::strip_preview(t);
+                let _ = crate::data::thread_key(t);
+                let _ = crate::searchhl::snippet(t, &words);
+                let _ = crate::searchhl::matches(t, &words);
+                let _ = crate::mailstore::match_expr(t);
+                let _ = crate::mailstore::search_expr(t);
+                let _ = super::first_chars(t, c / 2);
+                let _ = super::first_bytes(t, c / 2);
+            }
+            // Whole messages: headers and parts in any charset, broken encodings.
+            let raw = format!(
+                "From: {}\r\nSubject: {}\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain; charset=\"{}\"\r\nContent-Transfer-Encoding: {}\r\n\r\n{}\r\n--b\r\nContent-Type: text/html\r\n\r\n{}\r\n--b--\r\n",
+                mixed(&mut seed, 6),
+                mixed(&mut seed, 8),
+                ["utf-8", "iso-8859-1", "windows-1252", "shift_jis", "nonsense", ""][round % 6],
+                ["quoted-printable", "base64", "8bit", "x-unknown"][round % 4],
+                text,
+                mixed(&mut seed, 30)
+            );
+            let _ = super::parse_whole(raw.as_bytes());
+            let noise = bytes(&mut seed, 200 + round);
+            let _ = super::parse_whole(&noise);
+            let _ = super::decode_charset(&noise, ["utf-8", "iso-2022-jp", "gb18030", "bogus"][round % 4]);
+            // (And anything cut short.)
+            for cut in (0..raw.len()).step_by(37) {
+                let _ = super::parse_whole(&raw.as_bytes()[..cut]);
+            }
+        }
     }
 }

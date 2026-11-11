@@ -30,7 +30,8 @@ pub fn gist(body: &str, html: &str) -> String {
 /// HTML without what it quotes: blockquotes (all of each, however nested) and
 /// Gmail's / Outlook's quoted part (from where it starts to the end).
 fn without_html_quotes(html: &str) -> String {
-    let lower = html.to_lowercase();
+    // (ASCII only: the same length as the HTML, so its places are the HTML's.)
+    let lower = html.to_ascii_lowercase();
     // Quoted parts that run to the end.
     let mut end = html.len();
     for marker in ["class=\"gmail_quote", "id=\"appendonsend", "id=\"divrplyfwdmsg", "class=\"yahoo_quoted", "id=\"stopspelling"] {
