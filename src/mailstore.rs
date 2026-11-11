@@ -768,6 +768,82 @@ pub fn search_rows(folders: &[String], expr: &str, extra: &[i64], unread_or: Opt
     .unwrap_or_else(|_| (empty(), 0))
 }
 
+/// A query's messages in these folders, by date (`cond`: SQL over the
+/// messages table as `m`, its arguments as ?#n, see `query::number_args`):
+/// the rows and how many have unread mail, as `search_rows`.
+pub fn query_rows(folders: &[String], cond: &str, cond_args: &[Arg], must: &[String], unread_or: Option<i64>, threaded: bool, ascending: bool) -> (SearchRows, i64) {
+    let empty = || if threaded { SearchRows::Conversations(Vec::new()) } else { SearchRows::Messages(Vec::new()) };
+    let path = db_path();
+    if !path.exists() || folders.is_empty() {
+        return (empty(), 0);
+    }
+    with_conn(&path, |c| {
+        let mut args: Vec<Arg> = Vec::new();
+        let marks: Vec<String> = folders
+            .iter()
+            .map(|f| {
+                args.push(Arg::Text(f.clone()));
+                format!("?{}", args.len())
+            })
+            .collect();
+        let mut found = format!("t.folder IN ({})", marks.join(","));
+        if let Some(k) = unread_or {
+            args.push(Arg::Integer(k));
+            found.push_str(&format!(" AND (t.read = 0 OR t.id = ?{})", args.len()));
+        }
+        // What every result has that the small table knows (read, dates).
+        for f in must.iter().filter(|m| m.starts_with("t.")) {
+            found.push_str(&format!(" AND {f}"));
+        }
+        let must: Vec<String> = must.iter().filter(|m| !m.starts_with("t.")).cloned().collect();
+        // What every result has (words, phrases): through the index first.
+        if !must.is_empty() {
+            args.push(Arg::Text(must.join(" AND ")));
+            found.push_str(&format!(" AND t.id IN (SELECT rowid FROM search WHERE search MATCH ?{})", args.len()));
+        }
+        // Then the rest, for each of those: its list columns read through the
+        // list's own index by date and id (the message's row has its text before
+        // some of them), one message at a time, however the database would plan it.
+        found.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM messages m INDEXED BY messages_for_list WHERE m.date = t.date AND m.id = t.id AND ({}))",
+            crate::query::number_args(cond, args.len())
+        ));
+        args.extend(cond_args.iter().cloned());
+        let dir = if ascending { "ASC" } else { "DESC" };
+        let from = format!("msg_threads t WHERE {found}");
+        let mut unread = 0i64;
+        if threaded {
+            let sql = format!(
+                "SELECT c.folder, c.tkey, c.unread FROM convs c WHERE (c.folder, c.tkey) IN (SELECT t.folder, t.tk FROM {from}) ORDER BY c.latest {dir}, c.top_id {dir}"
+            );
+            let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+            let rows = st
+                .query_map(rusqlite::params_from_iter(args.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for (f, t, u) in rows.filter_map(Result::ok) {
+                unread += (u > 0) as i64;
+                out.push((f, t));
+            }
+            Ok((SearchRows::Conversations(out), unread))
+        } else {
+            let sql = format!("SELECT t.id, t.read FROM {from} ORDER BY t.date {dir}, t.id {dir}");
+            let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+            let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for (id, read) in rows.filter_map(Result::ok) {
+                unread += (read == 0) as i64;
+                out.push(id);
+            }
+            Ok((SearchRows::Messages(out), unread))
+        }
+    })
+    .unwrap_or_else(|e| {
+        eprintln!("almanac: search: {e}");
+        (empty(), 0)
+    })
+}
+
 fn search_rows_sql(folders: &[String], expr: &str, extra: &[i64], unread_or: Option<i64>, threaded: bool, ascending: bool) -> (String, Vec<Arg>) {
     let mut args: Vec<Arg> = vec![Arg::Text(expr.to_string())];
     let marks: Vec<String> = folders

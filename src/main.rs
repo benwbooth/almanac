@@ -38,6 +38,7 @@ mod sources;
 mod tz;
 pub mod rows;
 pub mod searchhl;
+pub mod query;
 pub mod store;
 
 use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};

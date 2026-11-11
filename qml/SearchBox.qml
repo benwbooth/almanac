@@ -6,6 +6,9 @@ import QtQuick.Controls.Basic
 Rectangle {
     id: field
     property alias text: input.text
+    property alias cursorPosition: input.cursorPosition
+    // Keys looked at first (a list of suggestions): true when it took the key.
+    property var keyFilter: null
     property string placeholderText: "Search"
     readonly property bool hasFocus: input.activeFocus || popField.activeFocus
     // On a very narrow window only the magnifier shows; it opens the field.
@@ -64,6 +67,7 @@ Rectangle {
         selectedTextColor: Theme.accentInk
         selectByMouse: true
         clip: true
+        Keys.onPressed: function(ev) { if (field.keyFilter && field.keyFilter(ev.key)) ev.accepted = true }
         Keys.onEscapePressed: { text = ""; field.escapePressed() }
         Text {
             visible: input.text === "" && !input.activeFocus

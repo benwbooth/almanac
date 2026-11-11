@@ -87,29 +87,51 @@ Item {
     property bool searchOpen: false
     // ---- Search matches highlighted (as the search finds them: words starting
     // with what's typed, case and accents ignored), in the list and the message.
-    readonly property var hlWords: query.split(/[^0-9A-Za-z\u00C0-\uFFFF]+/).map(hlFold).filter(function(w) { return w !== "" })
+    // What to mark: [[a word's start], [a phrase's words, in order]] (folded,
+    // from the query: field values and free words, not what's excluded).
+    readonly property var hlTerms: query.trim() === "" ? [] : JSON.parse(store.searchMarks(query))
     readonly property color hlColor: Theme.dark ? "#d4a017" : "#ffe066"
     function hlFold(t) { return String(t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") }
     function hlWordChar(c) { return /[0-9A-Za-z\u00C0-\uFFFF]/.test(c) && !/[\u2000-\u206F\u3000-\u303F\uFF00-\uFF0F]/.test(c) }
     function hlEsc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
-    // `text` with its matches marked (styled text), or "" when it has none.
+    // `text` with its matches marked (rich text), or "" when it has none.
     function hl(text) {
-        if (!hlWords.length || !text) return ""
-        var w = hlWords, out = "", i = 0, n = text.length, any = false
+        if (!hlTerms.length || !text) return ""
+        // The text's words: [start, end, folded].
+        var toks = [], i = 0, n = text.length
         while (i < n) {
-            if (!hlWordChar(text[i])) { out += hlEsc(text[i]); i++; continue }
+            if (!hlWordChar(text[i])) { i++; continue }
             var j = i
             while (j < n && hlWordChar(text[j])) j++
-            var tok = text.slice(i, j), f = "", k = -1
-            for (var q = 0; q < tok.length && k < 0; q++) {
-                f += hlFold(tok[q])
-                for (var x = 0; x < w.length; x++) if (f.length >= w[x].length && f.indexOf(w[x]) === 0) { k = q + 1; break }
-            }
-            if (k > 0) { any = true; out += '<span style="background-color:' + hlColor + ';color:#000">' + hlEsc(tok.slice(0, k)) + '</span>' + hlEsc(tok.slice(k)) }
-            else out += hlEsc(tok)
+            toks.push([i, j, hlFold(text.slice(i, j))])
             i = j
         }
-        return any ? out : ""
+        // Marked spans: a word's start, or a phrase's words one after another.
+        var spans = []
+        for (var t = 0; t < toks.length; t++) {
+            for (var x = 0; x < hlTerms.length; x++) {
+                var term = hlTerms[x]
+                if (term.length === 1) {
+                    if (toks[t][2].indexOf(term[0]) !== 0) continue
+                    // (As many letters as the word typed: accents count as one.)
+                    var f = "", k = toks[t][0]
+                    while (k < toks[t][1] && f.length < term[0].length) { f += hlFold(text[k]); k++ }
+                    spans.push([toks[t][0], k]); break
+                }
+                if (t + term.length > toks.length) continue
+                var ok = true
+                for (var q = 0; q < term.length && ok; q++) ok = toks[t + q][2] === term[q]
+                if (ok) { spans.push([toks[t][0], toks[t + term.length - 1][1]]); break }
+            }
+        }
+        if (!spans.length) return ""
+        var out = "", at = 0
+        for (var s = 0; s < spans.length; s++) {
+            if (spans[s][0] < at) continue
+            out += hlEsc(text.slice(at, spans[s][0])) + '<span style="background-color:' + hlColor + ';color:#000">' + hlEsc(text.slice(spans[s][0], spans[s][1])) + '</span>'
+            at = spans[s][1]
+        }
+        return out + hlEsc(text.slice(at))
     }
     // A search still being worked out (here, or on the mail servers): a
     // spinner in the search field, and no "No Results" until it's done.
@@ -1601,6 +1623,7 @@ Item {
                         // letter, which matches nearly everything, after 600 ms), not
                         // for every letter typed. Cleared: at once.
                         onTextChanged: {
+                            searchHints.refresh()
                             if (text === mail.query) { queryPause.stop(); return }
                             if (text.trim() === "") { queryPause.stop(); mail.query = text; return }
                             queryPause.interval = text.trim().length < 2 ? 600 : 150
@@ -1609,11 +1632,86 @@ Item {
                         Timer { id: queryPause; onTriggered: mail.query = searchField.text }
                         onEscapePressed: mail.closeSearch()
                         onClearClicked: mail.closeSearch()
+                        // Suggestions first: arrows move, Tab or Enter takes one, Escape closes them.
+                        keyFilter: function(key) {
+                            if (!searchHints.opened || !searchHints.items.length) return false
+                            if (key === Qt.Key_Down) { searchHints.at = (searchHints.at + 1) % searchHints.items.length; return true }
+                            if (key === Qt.Key_Up) { searchHints.at = (searchHints.at + searchHints.items.length - 1) % searchHints.items.length; return true }
+                            if (key === Qt.Key_Tab || key === Qt.Key_Return || key === Qt.Key_Enter) { searchHints.take(searchHints.at); return true }
+                            if (key === Qt.Key_Escape) { searchHints.close(); searchHints.dismissed = searchField.text; return true }
+                            return false
+                        }
                         // Left empty: the bar goes back up.
                         onHasFocusChanged: if (!hasFocus && text === "" && mail.searchOpen) mail.searchOpen = false
                     }
                 }
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
+                // As an operator's typed: the operators, and for from:, to: and cc:
+                // the people (address book and mail), to take with Tab or Enter.
+                Popup {
+                    id: searchHints
+                    y: searchBar.height - 4
+                    x: 10
+                    width: searchBar.width - 20
+                    padding: 4
+                    closePolicy: Popup.CloseOnPressOutside
+                    property var items: []
+                    property int at: 0
+                    property string dismissed: ""
+                    readonly property var ops: [
+                        ["from:", "Sender"], ["to:", "Recipient"], ["cc:", "Copied to"], ["subject:", "Words in the subject"],
+                        ["is:unread", "Not read yet"], ["is:read", "Read"], ["is:starred", "Flagged"], ["has:attachment", "With attachments"],
+                        ["in:inbox", "In the Inbox"], ["in:sent", "Sent mail"], ["in:anywhere", "In every mailbox"], ["label:", "In a mailbox by name"],
+                        ["after:", "On or after (2025/01/31)"], ["before:", "Before (2025/01/31)"], ["newer_than:", "Within (7d, 2m, 1y)"],
+                        ["older_than:", "Longer ago than (7d, 2m, 1y)"], ["filename:", "Attachment name"], ["has:red-flag", "With a red flag"]]
+                    // The word being typed (at the end).
+                    function current() { var t = searchField.text; var m = /(^|[\s(])(-?)([^\s()]*)$/.exec(t); return m ? m[3] : "" }
+                    function refresh() {
+                        var w = current(), out = []
+                        if (searchField.text === dismissed) { close(); return }
+                        var m = /^(from|to|cc|bcc):(.*)$/i.exec(w)
+                        if (m && m[2].length >= 1 && m[2].indexOf('"') < 0) {
+                            var people = JSON.parse(store.emailSuggestions(m[2])).slice(0, 6)
+                            for (var i = 0; i < people.length; i++) out.push({ text: m[1].toLowerCase() + ":" + people[i].email, label: people[i].name || people[i].email, hint: people[i].email })
+                        } else if (w.length >= 1 && !m) {
+                            var lw = w.toLowerCase()
+                            for (var k = 0; k < ops.length; k++) if (ops[k][0].indexOf(lw) === 0 && ops[k][0] !== lw) out.push({ text: ops[k][0], label: ops[k][0], hint: ops[k][1] })
+                        }
+                        items = out
+                        at = 0
+                        if (out.length && mail.searchOpen) open(); else close()
+                    }
+                    function take(i) {
+                        var w = current(), t = searchField.text, it = items[i]
+                        if (!it) return
+                        var done = it.text + (/:$/.test(it.text) ? "" : " ")
+                        searchField.text = t.slice(0, t.length - w.length) + done
+                        searchField.cursorPosition = searchField.text.length
+                        close()
+                    }
+                    background: Rectangle { radius: 8; color: Theme.popup; border.color: Theme.border }
+                    contentItem: Column {
+                        Repeater {
+                            model: searchHints.items
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+                                width: searchHints.width - 8
+                                height: 26
+                                radius: 5
+                                color: index === searchHints.at ? Theme.accentSoft : (hintMouse.containsMouse ? Theme.hover : "transparent")
+                                Row {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    x: 8
+                                    spacing: 10
+                                    Text { text: modelData.label; color: Theme.text; font.pixelSize: 12; font.weight: Font.DemiBold }
+                                    Text { text: modelData.hint; color: Theme.secondary; font.pixelSize: 12; visible: modelData.hint !== modelData.label }
+                                }
+                                MouseArea { id: hintMouse; anchors.fill: parent; hoverEnabled: true; onClicked: searchHints.take(index) }
+                            }
+                        }
+                    }
+                }
             }
             // Pull to refresh's spinner: in the room the pulled-down list leaves
             // above its first row (the list is drawn over it otherwise).
@@ -2258,7 +2356,7 @@ Item {
                     Layout.fillHeight: true
                     messages: mail.conversation
                     // (The search's matches marked in the message too.)
-                    highlightWords: mail.hlWords
+                    highlightWords: mail.hlTerms
                     subject: mail.current ? mail.current.subject : ""
                     formatted: mail.formatted
                     darkMessages: !!mail.prefs.dark_messages

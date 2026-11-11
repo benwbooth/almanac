@@ -122,7 +122,7 @@ WebEngineView {
     }
     property var messages: []
     property string subject: ""
-    // A search's words (folded, see MailView.hlWords): their matches marked in
+    // A search's terms (folded words and phrases, see MailView.hlTerms): their matches marked in
     // the message (headers and text, each message's own page too).
     property var highlightWords: []
     onHighlightWordsChanged: applyHighlight()
@@ -136,10 +136,13 @@ WebEngineView {
             + "function mark(d){if(!d||!d.body)return null;clear(d);if(!words.length)return null;var first=null;"
             + "var tw=d.createTreeWalker(d.body,4,{acceptNode:function(n){var p=n.parentNode&&n.parentNode.nodeName;return /^(SCRIPT|STYLE|TEXTAREA|MARK)$/.test(p)?2:1}});"
             + "var nodes=[];while(tw.nextNode())nodes.push(tw.currentNode);"
-            + "nodes.forEach(function(n){var t=n.nodeValue,i=0,L=t.length,parts=[],last=0;"
-            + "while(i<L){if(!wc(t[i])){i++;continue}var j=i;while(j<L&&wc(t[j]))j++;var f='',k=-1;"
-            + "for(var q=i;q<j&&k<0;q++){f+=fold(t[q]);for(var x=0;x<words.length;x++)if(f.length>=words[x].length&&f.indexOf(words[x])===0){k=q+1;break}}"
-            + "if(k>0)parts.push([i,k]);i=j}"
+            + "nodes.forEach(function(n){var t=n.nodeValue,L=t.length,parts=[],last=0,toks=[],i=0;"
+            + "while(i<L){if(!wc(t[i])){i++;continue}var j=i;while(j<L&&wc(t[j]))j++;toks.push([i,j,fold(t.slice(i,j))]);i=j}"
+            + "for(var a=0;a<toks.length;a++){for(var x=0;x<words.length;x++){var w=words[x];"
+            + "if(w.length===1){if(toks[a][2].indexOf(w[0])!==0)continue;var f='',k=toks[a][0];while(k<toks[a][1]&&f.length<w[0].length){f+=fold(t[k]);k++}parts.push([toks[a][0],k]);break}"
+            + "if(a+w.length>toks.length)continue;var ok=true;for(var q=0;q<w.length&&ok;q++)ok=toks[a+q][2]===w[q];"
+            + "if(ok){parts.push([toks[a][0],toks[a+w.length-1][1]]);break}}}"
+            + "parts=parts.filter(function(p,ix){return ix===0||p[0]>=parts[ix-1][1]});"
             + "if(!parts.length)return;var fr=d.createDocumentFragment();"
             + "parts.forEach(function(p){fr.appendChild(d.createTextNode(t.slice(last,p[0])));var m=d.createElement('mark');m.className='alm-hl';"
             + "m.style.cssText='background:'+color+';color:#000;border-radius:2px;padding:0';m.textContent=t.slice(p[0],p[1]);fr.appendChild(m);if(!first)first=m;last=p[1]});"

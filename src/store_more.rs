@@ -1902,6 +1902,10 @@ impl qobject::Store {
         q(&Value::Array(out))
     }
 
+    pub(super) fn search_marks(&self, query: &QString) -> QString {
+        q(&json!(crate::query::parse(&query.to_string()).marks()))
+    }
+
     pub(super) fn can_archive(&self, id: i64) -> bool {
         let Some(m) = self.db.get(id) else { return false };
         let Some(account) = self.db.folders.iter().find(|f| f.id == m.folder).map(|f| f.account.clone()) else { return false };
@@ -1943,6 +1947,8 @@ impl qobject::Store {
         let gen = LATEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let q = query.to_string().trim().to_string();
         let expr = crate::mailstore::search_expr(&q);
+        // (What it finds is kept by the words, or by the whole query: see WindowPlan::hits_key.)
+        let key = if crate::query::has_operators(&q) { q.clone() } else { expr.clone() };
         if q.chars().count() < 2 || expr.is_empty() || !self.db.backed {
             crate::data::set_server_hits("", Vec::new());
             self.as_mut().set_server_searching(false);
@@ -1992,40 +1998,47 @@ impl qobject::Store {
                     return;
                 }
             }
-            // What the server found among mail whose whole text is here counts
-            // only if the search here finds it too: Gmail's search also looks
-            // through a message's HTML source (its styles say "font-family").
-            // Those with only their headers here aren't shown until their own
-            // text (what it shows, not its HTML) or subject or people have the
-            // words: their text is fetched and looked through first.
+            // What a server finds counts only once it's what was searched
+            // for in what the message shows (its text, not its HTML source;
+            // each field in its own place): checked here.
+            let node = crate::query::parse(&q);
             let mut unchecked: Vec<i64> = Vec::new();
             if !hits.is_empty() {
                 let whole = crate::mailstore::whole_here(&hits);
-                let here = crate::mailstore::search(&q).unwrap_or_default();
                 unchecked = hits.iter().copied().filter(|id| !whole.contains(id)).collect();
-                hits.retain(|id| whole.contains(id) && here.contains(id));
+                let here: Vec<i64> = hits.iter().copied().filter(|id| whole.contains(id)).collect();
+                let bodies = crate::mailstore::bodies(&here);
+                hits = crate::mailstore::by_ids(&here)
+                    .into_iter()
+                    .filter(|m| {
+                        let (body, html) = bodies.get(&m.id).cloned().unwrap_or_default();
+                        node.matches(m, &shown_text(&body, &html))
+                    })
+                    .map(|m| m.id)
+                    .collect();
             }
-            let words = crate::searchhl::words(&q);
             let _ = thread.queue(move |mut store| {
                 if LATEST.load(std::sync::atomic::Ordering::SeqCst) != gen {
                     return;
                 }
                 let ids = store.as_mut().db_mut().add_messages(heads);
                 unchecked.extend(ids);
-                // (Its subject or people have them: shown now.)
+                // (Told by its headers alone: shown now; else its text first.)
                 let mut fetch: Vec<(i64, i64, String, String, u32)> = Vec::new();
                 for id in unchecked {
                     let Some(m) = store.db.get(id) else { continue };
-                    let heads = [m.subject.as_str(), m.from_name.as_str(), m.from_email.as_str(), m.to.as_str(), m.cc.as_str()];
-                    if heads.iter().any(|t| !crate::searchhl::matches(t, &words).is_empty()) || shows_words(&m.body, &m.html, &words) {
+                    let has_text = !m.body.is_empty() || !m.html.is_empty();
+                    if (!node.needs_text() || has_text) && node.matches(&m, &shown_text(&m.body, &m.html)) {
                         hits.push(id);
-                    } else if let Some(path) = store.db.folders.iter().find(|f| f.id == m.folder).map(|f| f.path.clone()) {
-                        if m.uid > 0 {
-                            fetch.push((m.date, id, m.source.clone(), path, m.uid));
+                    } else if !has_text && node.needs_text() {
+                        if let Some(path) = store.db.folders.iter().find(|f| f.id == m.folder).map(|f| f.path.clone()) {
+                            if m.uid > 0 {
+                                fetch.push((m.date, id, m.source.clone(), path, m.uid));
+                            }
                         }
                     }
                 }
-                crate::data::set_server_hits(&expr, hits);
+                crate::data::set_server_hits(&key, hits);
                 store.as_mut().changed();
                 if fetch.is_empty() {
                     store.as_mut().set_server_searching(false);
@@ -2050,17 +2063,22 @@ impl qobject::Store {
                             return;
                         }
                         let t = thread.clone();
-                        let words = words.clone();
-                        let expr = expr.clone();
+                        let key = key.clone();
+                        let node = node.clone();
                         let deliver = move |texts: Vec<crate::live::Text>| {
-                            let found: Vec<i64> = texts.iter().filter(|x| shows_words(&x.body, &x.html, &words)).map(|x| x.id).collect();
-                            let expr = expr.clone();
+                            let key = key.clone();
+                            let node = node.clone();
                             let _ = t.queue(move |mut store| {
+                                let ids: Vec<i64> = texts.iter().map(|x| x.id).collect();
                                 let filled = store.as_mut().db_mut().fill_texts(texts);
+                                let found: Vec<i64> = ids
+                                    .into_iter()
+                                    .filter(|id| store.db.get(*id).is_some_and(|m| node.matches(&m, &shown_text(&m.body, &m.html))))
+                                    .collect();
                                 if LATEST.load(std::sync::atomic::Ordering::SeqCst) == gen && !found.is_empty() {
-                                    let mut now = crate::data::server_hits(&expr);
+                                    let mut now = crate::data::server_hits(&key);
                                     now.extend(found);
-                                    crate::data::set_server_hits(&expr, now);
+                                    crate::data::set_server_hits(&key, now);
                                     store.as_mut().changed();
                                 } else if filled {
                                     store.as_mut().changed();
@@ -2533,24 +2551,26 @@ mod send_again_tests {
     }
 }
 
-/// Whether a message's text has the words where it's seen: its plain text,
-/// else the text its HTML shows (never the HTML's styles, links or hidden parts).
-fn shows_words(body: &str, html: &str, words: &[String]) -> bool {
-    if !crate::searchhl::matches(body, words).is_empty() {
-        return true;
+/// What a message shows, as text: its plain text and the text its HTML
+/// shows (never the HTML's styles, links or hidden parts).
+fn shown_text(body: &str, html: &str) -> String {
+    if html.is_empty() {
+        body.to_string()
+    } else {
+        format!("{body}\n{}", crate::mime::html_to_text(html))
     }
-    !html.is_empty() && !crate::searchhl::matches(&crate::mime::html_to_text(html), words).is_empty()
 }
 
 #[cfg(test)]
 mod shows_words_tests {
     #[test]
     fn only_what_the_message_shows_counts() {
-        let w = crate::searchhl::words("family");
         let styled = "<html><head><style>td{font-family:Arial}</style></head><body><p style=\"font-family:x\">Your visit today</p>\
                       <span style=\"display:none\">family</span><a href=\"https://x.example/family\">Directions</a></body></html>";
-        assert!(!super::shows_words("Your visit today", styled, &w), "styles, hidden text and link addresses don't count");
-        assert!(super::shows_words("", "<p>Bring the <b>family</b></p>", &w));
-        assert!(super::shows_words("Family dinner", "", &w));
+        let m = crate::data::Message { subject: "Visit".into(), ..Default::default() };
+        let q = crate::query::parse("family");
+        assert!(!q.matches(&m, &super::shown_text("Your visit today", styled)), "styles, hidden text and link addresses don't count");
+        assert!(q.matches(&m, &super::shown_text("", "<p>Bring the <b>family</b></p>")));
+        assert!(q.matches(&m, &super::shown_text("Family dinner", "")));
     }
 }

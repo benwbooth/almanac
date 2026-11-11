@@ -757,6 +757,13 @@ pub struct WindowPlan {
     /// A search's words (see `searchhl::words`): each row shows the part of its
     /// text where they are, not its first lines.
     pub words: Vec<String>,
+    /// What the server's searches found is kept by (see `server_hits`).
+    pub hits_key: String,
+    /// What every result of a query has, through the index (see `query::Node::must_match`).
+    pub must: Vec<String>,
+    /// A query (from:, is:, "…": see `query`): SQL over the messages as `m`,
+    /// and its arguments; the folders then are where it looks.
+    pub cond: Option<(String, Vec<crate::mailstore::Arg>)>,
     /// The list's request (the window's count of lists asked for): one asked
     /// for since is newer, and this one isn't worked out any more (see
     /// `LIST_WANTED`). -1: always worked out.
@@ -903,8 +910,8 @@ fn whole_list(plan: &WindowPlan) -> std::sync::Arc<WholeList> {
     use std::sync::{Arc, Mutex};
     static CACHE: Mutex<Option<(String, Arc<WholeList>)>> = Mutex::new(None);
     let Some((filter, args)) = &plan.filter else { return Arc::new(WholeList { rows: Vec::new(), unread: 0 }) };
-    let hits = plan.search.as_deref().map(server_hits).unwrap_or_default();
-    let key = format!("{}|{}|{:?}|{}|{}|{}|{:?}|{}", plan.threaded, filter, args, plan.sort_by, plan.ascending, plan.generation, plan.search, hits.len());
+    let hits = if plan.hits_key.is_empty() { Vec::new() } else { server_hits(&plan.hits_key) };
+    let key = format!("{}|{}|{:?}|{}|{}|{}|{:?}|{}|{:?}", plan.threaded, filter, args, plan.sort_by, plan.ascending, plan.generation, plan.search, hits.len(), plan.folders);
     // (Worked out under the lock: two pages asked for at once wait for one reading.)
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((k, w)) = cache.as_ref() {
@@ -918,7 +925,24 @@ fn whole_list(plan: &WindowPlan) -> std::sync::Arc<WholeList> {
     }
     let _t = crate::Timed::new(if plan.search.is_some() { "working out a search whole" } else { "working out a list whole" });
     let (msg_order, conv_order) = crate::mailstore::list_orders(&plan.sort_by, plan.ascending);
-    let whole = if let Some(expr) = &plan.search {
+    let whole = if let Some((cond, args)) = &plan.cond {
+        // (With what the servers' searches found and checked.)
+        let (cond, args) = if hits.is_empty() {
+            (cond.clone(), args.clone())
+        } else {
+            let mut a = args.clone();
+            a.push(crate::mailstore::Arg::Text(serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into())));
+            (format!("(({cond}) OR m.id IN (SELECT value FROM json_each(?#{})))", a.len()), a)
+        };
+        // (What every result has, unless the servers found some that may not.)
+        let must = if hits.is_empty() { plan.must.clone() } else { plan.must.iter().filter(|m| m.starts_with("t.")).cloned().collect() };
+        let (rows, unread) = crate::mailstore::query_rows(&plan.folders, &cond, &args, &must, plan.unread_or, plan.threaded, plan.ascending);
+        let rows = match rows {
+            crate::mailstore::SearchRows::Messages(ids) => ids.into_iter().map(ListItem::Message).collect(),
+            crate::mailstore::SearchRows::Conversations(cs) => cs.into_iter().map(|(f, t)| ListItem::Conversation(f, t)).collect(),
+        };
+        WholeList { rows, unread }
+    } else if let Some(expr) = &plan.search {
         let (rows, unread) = crate::mailstore::search_rows(&plan.folders, expr, &hits, plan.unread_or, plan.threaded, plan.ascending);
         let rows = match rows {
             crate::mailstore::SearchRows::Messages(ids) => ids.into_iter().map(ListItem::Message).collect(),
@@ -1477,7 +1501,19 @@ impl Db {
         use crate::mailstore::Arg;
         let (base, mut args) = self.selection_sql(selection)?;
         let mut sql = format!("({base})");
-        if !query.trim().is_empty() {
+        if crate::query::has_operators(query) {
+            // A query: its own conditions (in: and label: as said, the rest in this mailbox).
+            let node = crate::query::parse(query);
+            let mut qargs = Vec::new();
+            let cond = node.sql("", &self.places(), &mut qargs);
+            let cond = crate::query::number_args(&cond, args.len());
+            args.extend(qargs);
+            if node.places() {
+                sql = format!("({cond})");
+            } else {
+                sql.push_str(&format!(" AND ({cond})"));
+            }
+        } else if !query.trim().is_empty() {
             args.push(Arg::Text(format!("%{}%", query.trim())));
             let n = args.len();
             let mut q = format!(" AND (subject LIKE ?{n} OR from_name LIKE ?{n} OR from_email LIKE ?{n} OR to_addr LIKE ?{n}");
@@ -2299,6 +2335,14 @@ impl Db {
         Some(self.folders_of_kind(&[k]))
     }
 
+    /// Where a query's in: and label: look, and who's a VIP (see `query::Places`).
+    pub fn places(&self) -> crate::query::Places {
+        crate::query::Places {
+            folders: self.folders.iter().map(|f| (f.id.clone(), f.kind.clone(), f.name.clone(), f.path.clone())).collect(),
+            vips: self.vips.clone(),
+        }
+    }
+
     /// The folders of a search that the full-text index can answer alone (a
     /// mailbox or a kind of mailbox, by date, with words to look for, once each
     /// message's folder and date are in the small table), or None.
@@ -2334,18 +2378,48 @@ impl Db {
         let unread_or = unread_only.then_some(keep);
         let sort = if sort_by.is_empty() { "date".to_string() } else { sort_by.to_string() };
         if let Some(folders) = self.window_folders(selection, query, sort_by) {
-            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search: None, token: -1, words: Vec::new() });
+            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search: None, token: -1, words: Vec::new(), cond: None, hits_key: String::new(), must: Vec::new() });
         }
         // Anything else SQL can say (not a smart mailbox's conditions).
         let filter = self.list_filter(selection, query, unread_or)?;
         // A search of mailboxes by date: from the full-text index (words
         // starting with what's typed, in the subject, the people or the text).
+        // A query (from:, is:unread, "a phrase" …): read as one, from the
+        // index and the small table, in the mailbox (all of them with in: or label:).
+        if crate::query::has_operators(query) && (sort_by == "date" || sort_by.is_empty()) && crate::mailstore::conversations_ready() {
+            let node = crate::query::parse(query);
+            let base = self.search_folders(selection, "x", sort_by);
+            if let Some(mut folders) = base {
+                if node.places() {
+                    folders = self.folders.iter().map(|f| f.id.clone()).collect();
+                }
+                let mut args = Vec::new();
+                let cond = node.sql("m.", &self.places(), &mut args);
+                let words = node.marks().into_iter().flatten().collect();
+                return Some(WindowPlan {
+                    folders,
+                    filter: Some(filter),
+                    sort_by: sort,
+                    ascending,
+                    generation: self.generation,
+                    threaded,
+                    unread_or,
+                    show_folder: show_folder || node.places(),
+                    search: None,
+                    token: -1,
+                    words,
+                    cond: Some((cond, args)),
+                    hits_key: query.trim().to_string(),
+                    must: node.thread_filter().into_iter().chain(node.must_match()).collect(),
+                });
+            }
+        }
         let search = self.search_folders(selection, query, sort_by).map(|f| (f, crate::mailstore::search_expr(query)));
         let (folders, search) = match search {
             Some((f, expr)) => (f, Some(expr)),
             None => (Vec::new(), None),
         };
-        Some(WindowPlan { folders, filter: Some(filter), sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search, token: -1, words: crate::searchhl::words(query) })
+        Some(WindowPlan { folders, filter: Some(filter), sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search: search.clone(), token: -1, words: crate::searchhl::words(query), cond: None, hits_key: search.unwrap_or_default(), must: Vec::new() })
     }
 
     /// The list's rows from what `fetch_window` read.
@@ -5338,6 +5412,16 @@ mod backed_tests {
             let thread = db.thread(&sel, id);
             assert_eq!(thread.as_array().map(|a| a.len()), Some(3), "1 and its two replies, opened at {uid}");
         }
+        // Gmail-style queries: fields, flags, phrases, NOT, OR, in:.
+        let total = |q: &str| db.list_window(&sel, q, false, "date", false, false, 0, 0, 100).unwrap()["total"].as_i64().unwrap();
+        assert_eq!(total("subject:invoice"), 7, "subjects 4, 8, …, 28");
+        assert_eq!(total("subject:invoice is:unread"), 0, "those are all read (even)");
+        assert_eq!(total("from:invoicing"), 1, "the sender's name");
+        assert_eq!(total("\"invoices are attached\""), 8, "a phrase, its words in order");
+        assert_eq!(total("\"attached invoices\""), 0);
+        assert_eq!(total("invoic -subject:invoice"), 9, "texts and the sender, not the subjects");
+        assert_eq!(total("subject:lunch OR subject:invoice"), 15);
+        assert_eq!(total("in:archive subject:invoice"), 3, "in: looks in the Archive, wherever the list is");
         // What the server's search found (text not here) shows with the rest.
         let hello = crate::mailstore::id_at(src, inbox, 2).unwrap();
         set_server_hits(&crate::mailstore::search_expr("invoic"), vec![hello]);
@@ -5428,6 +5512,26 @@ mod search_timings {
         crate::mailstore::build_conversations();
         // Opening messages: their conversations found by reading References,
         // then from the index by key.
+        if std::env::var_os("ALMANAC_QUERY_TEST").is_some() {
+            for sel in ["kind:inbox", "kind:archive"] {
+                for q in ["from:github is:unread", "subject:invoice after:2025/01/01", "\"thank you\"", "from:amazon", "is:unread", "has:attachment invoice", "invoice -from:amazon"] {
+                    for threaded in [false, true] {
+                        let Some(plan) = db.window_plan(sel, q, threaded, "date", false, false, 0) else { continue };
+                        let mut ms = Vec::new();
+                        let mut total = 0;
+                        for _ in 0..2 {
+                            let mut p = plan.clone();
+                            p.generation += ms.len() as u64 + 1;
+                            let t = std::time::Instant::now();
+                            total = super::fetch_window(&p, 0, 100, true).1;
+                            ms.push(t.elapsed().as_millis());
+                        }
+                        eprintln!("query {sel} {} {q:?}: {total} rows, {} ms (warm {} ms){}", if threaded { "conv" } else { "list" }, ms[0], ms[1], if plan.cond.is_some() { "" } else { " old way" });
+                    }
+                }
+            }
+            return;
+        }
         if std::env::var_os("ALMANAC_HIDDEN_TEST").is_some() {
             let t = std::time::Instant::now();
             crate::mailstore::drop_hidden_text();

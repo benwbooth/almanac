@@ -1112,14 +1112,19 @@ pub fn search_server(a: &LiveAccount, path: &str, folder_id: &str, query: &str) 
 /// The IMAP search for words: Gmail's own search (its index, as in its web
 /// mail: quick however big the mailbox) on Gmail, else the words in the text.
 fn server_search_cmd(a: &LiveAccount, query: &str) -> String {
-    let q = query.replace(['"', '\\'], " ");
-    let q = q.trim();
-    let what = if is_gmail(a) { "X-GM-RAW" } else { "TEXT" };
-    if q.is_ascii() {
-        format!("{what} \"{q}\"")
-    } else {
-        format!("CHARSET UTF-8 {what} \"{q}\"")
+    let q = query.trim();
+    let quoted = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    let charset = if q.is_ascii() { "" } else { "CHARSET UTF-8 " };
+    if is_gmail(a) {
+        // Gmail reads its own search words, operators and phrases as typed.
+        return format!("{charset}X-GM-RAW {}", quoted(q));
     }
+    if crate::query::has_operators(q) {
+        // (What IMAP can't say is left out; what's found is checked here.)
+        return format!("{charset}{}", crate::query::parse(q).imap());
+    }
+    let words = q.replace(['"', '\\'], " ");
+    format!("{charset}TEXT {}", quoted(words.trim()))
 }
 
 /// Whether the server can be searched as words are typed (IMAP: Gmail with
