@@ -15,7 +15,7 @@ Item {
     property string selection: "kind:inbox"
     // New mail the junk filter thinks is junk (left in place): id → true.
     readonly property var junkSuspects: { var o = {}; JSON.parse(store.junkSuspectsJson || "[]").forEach(function(i) { o[i] = true }); return o }
-    onSelectionChanged: { selectedIds = []; resetPage() }
+    onSelectionChanged: { selectedIds = []; resetPage(); serverSearchAgain() }
     property string selectionName: "Inbox"
     property var selectedId: -1
     // More than one row picked (Ctrl-click, Shift-click, Ctrl+A); empty otherwise.
@@ -101,6 +101,11 @@ Item {
     property var winLoaded: ({})
     property var winPending: ({})
     property int winWant: -1
+    // The server searched too, once typing has paused a while (Gmail: its own
+    // index, quick), headers of what isn't here yet added to the list. A new
+    // search, or another mailbox, stops the last one.
+    function serverSearchAgain() { store.searchServerQuietly(selection, ""); if (query.trim().length >= 2) serverPause.restart(); else serverPause.stop() }
+    Timer { id: serverPause; interval: 600; onTriggered: mail.store.searchServerQuietly(mail.selection, mail.query) }
     readonly property string winKey: [selection, query, threaded, sortBy, sortAscending, unreadOnly].join("\u0001")
     onWinKeyChanged: Qt.callLater(winReset)
     // ---- Pull to refresh: the mail checked (Get Mail), the spinner held until
@@ -282,7 +287,7 @@ Item {
         mail.keepId = mail.selectedId
     }) }
     function resetPage() { limit = pageSize }
-    onQueryChanged: resetPage()
+    onQueryChanged: { resetPage(); serverSearchAgain() }
     onThreadedChanged: resetPage()
     onUnreadOnlyChanged: resetPage()
     onSortByChanged: resetPage()

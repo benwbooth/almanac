@@ -656,14 +656,14 @@ pub enum SearchRows {
     Conversations(Vec<(String, String)>),
 }
 
-pub fn search_rows(folders: &[String], expr: &str, unread_or: Option<i64>, threaded: bool, ascending: bool) -> (SearchRows, i64) {
+pub fn search_rows(folders: &[String], expr: &str, extra: &[i64], unread_or: Option<i64>, threaded: bool, ascending: bool) -> (SearchRows, i64) {
     let empty = || if threaded { SearchRows::Conversations(Vec::new()) } else { SearchRows::Messages(Vec::new()) };
     let path = db_path();
     if !path.exists() || folders.is_empty() || expr.is_empty() {
         return (empty(), 0);
     }
     with_conn(&path, |c| {
-        let (sql, args) = search_rows_sql(folders, expr, unread_or, threaded, ascending);
+        let (sql, args) = search_rows_sql(folders, expr, extra, unread_or, threaded, ascending);
         let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
         let mut unread = 0i64;
         if threaded {
@@ -689,7 +689,7 @@ pub fn search_rows(folders: &[String], expr: &str, unread_or: Option<i64>, threa
     .unwrap_or_else(|_| (empty(), 0))
 }
 
-fn search_rows_sql(folders: &[String], expr: &str, unread_or: Option<i64>, threaded: bool, ascending: bool) -> (String, Vec<Arg>) {
+fn search_rows_sql(folders: &[String], expr: &str, extra: &[i64], unread_or: Option<i64>, threaded: bool, ascending: bool) -> (String, Vec<Arg>) {
     let mut args: Vec<Arg> = vec![Arg::Text(expr.to_string())];
     let marks: Vec<String> = folders
         .iter()
@@ -698,7 +698,14 @@ fn search_rows_sql(folders: &[String], expr: &str, unread_or: Option<i64>, threa
             format!("?{}", args.len())
         })
         .collect();
-    let mut found = format!("t.id IN (SELECT rowid FROM search WHERE search MATCH ?1) AND t.folder IN ({})", marks.join(","));
+    // (With those the server's search found too: their text may not be here.)
+    let words = if extra.is_empty() {
+        "t.id IN (SELECT rowid FROM search WHERE search MATCH ?1)".to_string()
+    } else {
+        args.push(Arg::Text(serde_json::to_string(extra).unwrap_or_else(|_| "[]".into())));
+        format!("(t.id IN (SELECT rowid FROM search WHERE search MATCH ?1) OR t.id IN (SELECT value FROM json_each(?{})))", args.len())
+    };
+    let mut found = format!("{words} AND t.folder IN ({})", marks.join(","));
     if let Some(k) = unread_or {
         args.push(Arg::Integer(k));
         found.push_str(&format!(" AND (t.read = 0 OR t.id = ?{})", args.len()));
@@ -1410,6 +1417,20 @@ pub fn id_at(source: &str, folder: &str, uid: u32) -> Option<i64> {
 }
 
 /// Each folder's server UIDs of a live account's messages here.
+/// A folder's messages here by their UID on the server (UID → id).
+pub fn folder_uid_ids(source: &str, folder: &str) -> HashMap<u32, i64> {
+    let path = db_path();
+    if !path.exists() {
+        return HashMap::new();
+    }
+    with_conn(&path, |c| {
+        let mut st = c.prepare_cached("SELECT uid, id FROM messages INDEXED BY messages_by_server WHERE source = ?1 AND folder = ?2 AND uid > 0").map_err(|e| e.to_string())?;
+        let rows = st.query_map(params![source, folder], |r| Ok((r.get::<_, i64>(0)? as u32, r.get::<_, i64>(1)?))).map_err(|e| e.to_string())?;
+        Ok(rows.flatten().collect())
+    })
+    .unwrap_or_default()
+}
+
 pub fn known_uids(source: &str) -> HashMap<String, Vec<u32>> {
     let path = db_path();
     let mut out: HashMap<String, Vec<u32>> = HashMap::new();

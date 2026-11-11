@@ -146,6 +146,11 @@ pub mod qobject {
         /// Searches the shown mailbox on the server (finds older mail too).
         #[qinvokable]
         fn search_on_server(self: Pin<&mut Store>, selection: &QString, query: &QString);
+        /// Searches the shown mailbox on the server as it's typed (Gmail: its
+        /// own index), headers only: what's found shows in the list with what's
+        /// here. A new call (another search, or none) stops the last.
+        #[qinvokable]
+        fn search_server_quietly(self: Pin<&mut Store>, selection: &QString, query: &QString);
         /// Whether the shown mailbox is on a mail server (so the above apply).
         #[qinvokable]
         fn is_server_mailbox(self: &Store, selection: &QString) -> bool;

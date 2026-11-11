@@ -1100,14 +1100,72 @@ pub fn search_server(a: &LiveAccount, path: &str, folder_id: &str, query: &str) 
     }
     let mut s = imap_connect(a)?;
     s.examine(path).map_err(|e| e.to_string())?;
-    let q = query.replace(['"', '\\'], " ");
-    let cmd = if q.is_ascii() { format!("TEXT \"{q}\"") } else { format!("CHARSET UTF-8 TEXT \"{q}\"") };
+    let cmd = server_search_cmd(a, query);
     let mut uids: Vec<u32> = s.uid_search(cmd).map_err(|e| e.to_string())?.into_iter().collect();
     uids.sort_unstable();
     let take = &uids[uids.len().saturating_sub(200)..];
     let r = fetch_headers(&mut s, take, folder_id, &a.source());
     let _ = s.logout();
     r
+}
+
+/// The IMAP search for words: Gmail's own search (its index, as in its web
+/// mail: quick however big the mailbox) on Gmail, else the words in the text.
+fn server_search_cmd(a: &LiveAccount, query: &str) -> String {
+    let q = query.replace(['"', '\\'], " ");
+    let q = q.trim();
+    let what = if is_gmail(a) { "X-GM-RAW" } else { "TEXT" };
+    if q.is_ascii() {
+        format!("{what} \"{q}\"")
+    } else {
+        format!("CHARSET UTF-8 {what} \"{q}\"")
+    }
+}
+
+/// Whether the server searches quickly enough to be asked as words are typed
+/// (Gmail: its own index).
+pub fn searches_quickly(a: &LiveAccount) -> bool {
+    is_gmail(a) && local_only::<()>(a).is_none()
+}
+
+/// A search on the server while it's typed, read-only: for each folder
+/// (folder id, server path), the UIDs the server finds, and the headers of
+/// the newest of those not here yet (`missing` says which of them aren't; at
+/// most `cap` in all). Stops (Ok with what it has) once `stale`.
+#[allow(clippy::type_complexity)]
+pub fn search_server_quietly(
+    a: &LiveAccount,
+    folders: &[(String, String)],
+    query: &str,
+    cap: usize,
+    missing: &dyn Fn(&str, &[u32]) -> Vec<u32>,
+    stale: &dyn Fn() -> bool,
+) -> Result<Vec<(String, Vec<u32>, Vec<Message>)>, String> {
+    if let Some(r) = local_only(a) {
+        return r;
+    }
+    let mut s = imap_connect(a)?;
+    let mut out = Vec::new();
+    let mut left = cap;
+    for (folder_id, path) in folders {
+        if stale() {
+            break;
+        }
+        s.examine(path).map_err(|e| e.to_string())?;
+        let mut uids: Vec<u32> = s.uid_search(server_search_cmd(a, query)).map_err(|e| e.to_string())?.into_iter().collect();
+        uids.sort_unstable();
+        if stale() {
+            break;
+        }
+        let mut new = missing(folder_id, &uids);
+        new.sort_unstable();
+        let take = &new[new.len().saturating_sub(left)..];
+        left -= take.len();
+        let heads = if take.is_empty() { Vec::new() } else { fetch_headers(&mut s, take, folder_id, &a.source())? };
+        out.push((folder_id.clone(), uids, heads));
+    }
+    let _ = s.logout();
+    Ok(out)
 }
 
 /// A message whose text is wanted: (message id, server folder, UID).

@@ -1918,6 +1918,85 @@ impl qobject::Store {
         self.fetch_more_mail(targets, q);
     }
 
+    pub(super) fn search_server_quietly(mut self: Pin<&mut Self>, selection: &QString, query: &QString) {
+        static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        const SEARCHING: &str = "Searching the server…";
+        let gen = LATEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let q = query.to_string().trim().to_string();
+        let expr = crate::mailstore::search_expr(&q);
+        if q.chars().count() < 2 || expr.is_empty() || !self.db.backed {
+            crate::data::set_server_hits("", Vec::new());
+            if self.status_text().to_string() == SEARCHING {
+                self.as_mut().set_status_text(QString::default());
+            }
+            return;
+        }
+        // Each account whose server searches quickly, with its folders here.
+        let mut by_account: Vec<(LiveAccount, Vec<(String, String)>)> = Vec::new();
+        for (fid, path, acct) in self.db.live_folders_for(&selection.to_string()) {
+            if !crate::live::searches_quickly(&acct) {
+                continue;
+            }
+            match by_account.iter_mut().find(|(a, _)| a.source() == acct.source()) {
+                Some((_, fs)) => fs.push((fid, path)),
+                None => by_account.push((acct, vec![(fid, path)])),
+            }
+        }
+        if by_account.is_empty() {
+            return;
+        }
+        self.as_mut().set_status_text(QString::from(SEARCHING));
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let _timed = crate::Timed::new("searching the server as typed");
+            let stale = || LATEST.load(std::sync::atomic::Ordering::SeqCst) != gen;
+            let mut hits: Vec<i64> = Vec::new();
+            let mut heads: Vec<crate::data::Message> = Vec::new();
+            let mut error = String::new();
+            for (acct, folders) in by_account {
+                let source = acct.source();
+                let missing = |fid: &str, uids: &[u32]| -> Vec<u32> {
+                    let here = crate::mailstore::folder_uid_ids(&source, fid);
+                    uids.iter().copied().filter(|u| !here.contains_key(u)).collect()
+                };
+                // (The newest 200 not here yet, headers only: their text when opened.)
+                match crate::live::search_server_quietly(&acct, &folders, &q, 200usize.saturating_sub(heads.len()), &missing, &stale) {
+                    Ok(found) => {
+                        for (fid, uids, h) in found {
+                            let here = crate::mailstore::folder_uid_ids(&source, &fid);
+                            hits.extend(uids.iter().filter_map(|u| here.get(u).copied()));
+                            heads.extend(h);
+                        }
+                    }
+                    Err(e) => error = format!("{}: {e}", acct.name),
+                }
+                if stale() {
+                    return;
+                }
+            }
+            let _ = thread.queue(move |mut store| {
+                if LATEST.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                    return;
+                }
+                let new = heads.len();
+                let ids = store.as_mut().db_mut().add_messages(heads);
+                hits.extend(ids);
+                crate::data::set_server_hits(&expr, hits);
+                let note = if !error.is_empty() {
+                    error
+                } else if new > 0 {
+                    format!("Found {new} more on the server.")
+                } else {
+                    String::new()
+                };
+                if store.status_text().to_string() == SEARCHING || !note.is_empty() {
+                    store.as_mut().set_status_text(QString::from(note.as_str()));
+                }
+                store.changed();
+            });
+        });
+    }
+
     /// Older mail (no query) or server search results (a query): headers
     /// first, shown at once, then the text of each message.
     fn fetch_more_mail(mut self: Pin<&mut Self>, targets: Vec<(String, String, LiveAccount, u32)>, query: String) {

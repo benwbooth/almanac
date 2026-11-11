@@ -760,6 +760,26 @@ pub struct WindowPlan {
     pub token: i64,
 }
 
+/// What the server's search found for the words being searched (see
+/// `Store::search_server_quietly`): message ids here, shown with what the
+/// search here finds (their text may not be downloaded, so it can't).
+static SERVER_HITS: std::sync::Mutex<Option<(String, Vec<i64>)>> = std::sync::Mutex::new(None);
+
+/// Notes what the server found for a search's words (`mailstore::search_expr`).
+pub fn set_server_hits(expr: &str, mut ids: Vec<i64>) {
+    ids.sort_unstable();
+    ids.dedup();
+    *SERVER_HITS.lock().unwrap_or_else(|e| e.into_inner()) = Some((expr.to_string(), ids));
+}
+
+/// What the server found for these words (none for other words).
+pub fn server_hits(expr: &str) -> Vec<i64> {
+    match SERVER_HITS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        Some((e, ids)) if e == expr => ids.clone(),
+        _ => Vec::new(),
+    }
+}
+
 /// The newest list the window asked for (its token): searches typed letter by
 /// letter ask for a list per letter, and those overtaken while waiting aren't
 /// worked out (they took turns, so the last letter's list came seconds late).
@@ -843,7 +863,8 @@ fn whole_list(plan: &WindowPlan) -> std::sync::Arc<WholeList> {
     use std::sync::{Arc, Mutex};
     static CACHE: Mutex<Option<(String, Arc<WholeList>)>> = Mutex::new(None);
     let Some((filter, args)) = &plan.filter else { return Arc::new(WholeList { rows: Vec::new(), unread: 0 }) };
-    let key = format!("{}|{}|{:?}|{}|{}|{}|{:?}", plan.threaded, filter, args, plan.sort_by, plan.ascending, plan.generation, plan.search);
+    let hits = plan.search.as_deref().map(server_hits).unwrap_or_default();
+    let key = format!("{}|{}|{:?}|{}|{}|{}|{:?}|{}", plan.threaded, filter, args, plan.sort_by, plan.ascending, plan.generation, plan.search, hits.len());
     // (Worked out under the lock: two pages asked for at once wait for one reading.)
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((k, w)) = cache.as_ref() {
@@ -858,7 +879,7 @@ fn whole_list(plan: &WindowPlan) -> std::sync::Arc<WholeList> {
     let _t = crate::Timed::new(if plan.search.is_some() { "working out a search whole" } else { "working out a list whole" });
     let (msg_order, conv_order) = crate::mailstore::list_orders(&plan.sort_by, plan.ascending);
     let whole = if let Some(expr) = &plan.search {
-        let (rows, unread) = crate::mailstore::search_rows(&plan.folders, expr, plan.unread_or, plan.threaded, plan.ascending);
+        let (rows, unread) = crate::mailstore::search_rows(&plan.folders, expr, &hits, plan.unread_or, plan.threaded, plan.ascending);
         let rows = match rows {
             crate::mailstore::SearchRows::Messages(ids) => ids.into_iter().map(ListItem::Message).collect(),
             crate::mailstore::SearchRows::Conversations(cs) => cs.into_iter().map(|(f, t)| ListItem::Conversation(f, t)).collect(),
@@ -5277,6 +5298,14 @@ mod backed_tests {
             let thread = db.thread(&sel, id);
             assert_eq!(thread.as_array().map(|a| a.len()), Some(3), "1 and its two replies, opened at {uid}");
         }
+        // What the server's search found (text not here) shows with the rest.
+        let hello = crate::mailstore::id_at(src, inbox, 2).unwrap();
+        set_server_hits(&crate::mailstore::search_expr("invoic"), vec![hello]);
+        let w = db.list_window(&sel, "invoic", false, "date", false, false, 0, 0, 100).unwrap();
+        assert_eq!(w["total"], 17, "the server's find too");
+        set_server_hits("", Vec::new());
+        let w = db.list_window(&sel, "invoic", false, "date", false, false, 0, 0, 100).unwrap();
+        assert_eq!(w["total"], 16);
         // A newer list asked for: an older one isn't worked out.
         let mut old = db.window_plan(&sel, "lunch", false, "date", false, false, 0).unwrap();
         old.token = 5;
@@ -5359,6 +5388,38 @@ mod search_timings {
         crate::mailstore::build_conversations();
         // Opening messages: their conversations found by reading References,
         // then from the index by key.
+        // The server searched as it's typed (read-only: EXAMINE, SEARCH, headers).
+        if std::env::var_os("ALMANAC_SERVER_TEST").is_some() {
+            for (sel, q) in [("kind:inbox", "invoice"), ("kind:inbox", "github"), ("kind:archive", "invoice"), ("kind:archive", "meeting tomorrow")] {
+                let mut by_account: Vec<(crate::live::LiveAccount, Vec<(String, String)>)> = Vec::new();
+                for (fid, path, acct) in db.live_folders_for(sel) {
+                    if !crate::live::searches_quickly(&acct) {
+                        continue;
+                    }
+                    match by_account.iter_mut().find(|(a, _)| a.source() == acct.source()) {
+                        Some((_, fs)) => fs.push((fid, path)),
+                        None => by_account.push((acct, vec![(fid, path)])),
+                    }
+                }
+                for (acct, folders) in by_account {
+                    let source = acct.source();
+                    let missing = |fid: &str, uids: &[u32]| -> Vec<u32> {
+                        let here = crate::mailstore::folder_uid_ids(&source, fid);
+                        uids.iter().copied().filter(|u| !here.contains_key(u)).collect()
+                    };
+                    let t = std::time::Instant::now();
+                    match crate::live::search_server_quietly(&acct, &folders, q, 200, &missing, &|| false) {
+                        Ok(found) => {
+                            let uids: usize = found.iter().map(|f| f.1.len()).sum();
+                            let heads: usize = found.iter().map(|f| f.2.len()).sum();
+                            eprintln!("server {sel} {q:?}: {} folders, {uids} found, {heads} not here (headers read) in {} ms", folders.len(), t.elapsed().as_millis());
+                        }
+                        Err(e) => eprintln!("server {sel} {q:?}: error {e}"),
+                    }
+                }
+            }
+            return;
+        }
         if std::env::var_os("ALMANAC_THREAD_TEST").is_some() {
             db.release_saved();
             let sel = "kind:inbox";
