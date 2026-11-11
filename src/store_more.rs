@@ -1903,7 +1903,13 @@ impl qobject::Store {
     }
 
     pub(super) fn search_marks(&self, query: &QString) -> QString {
-        q(&json!(crate::query::parse(&query.to_string()).marks()))
+        use crate::query::Field;
+        let node = crate::query::parse(&query.to_string());
+        q(&json!({
+            "text": node.marks(),
+            "subject": node.marks_in(&[Field::Any, Field::Subject]),
+            "from": node.marks_in(&[Field::Any, Field::From]),
+        }))
     }
 
     pub(super) fn can_archive(&self, id: i64) -> bool {

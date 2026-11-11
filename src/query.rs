@@ -527,17 +527,23 @@ impl Node {
         }
     }
 
-    /// What to mark where it's shown: each a word's start, or a phrase's words.
+    /// What to mark in a message's text (and to show the part of it with): the
+    /// free words and phrases only (each a word's start, or a phrase's words),
+    /// never a field's value (to:me isn't marked wherever "me" is written).
     pub fn marks(&self) -> Vec<Vec<String>> {
+        self.marks_in(&[Field::Any])
+    }
+    /// What to mark where these fields are shown (as `marks`).
+    pub fn marks_in(&self, fields: &[Field]) -> Vec<Vec<String>> {
         let mut out = Vec::new();
-        self.collect_marks(false, &mut out);
+        self.collect_marks(false, fields, &mut out);
         out
     }
-    fn collect_marks(&self, negated: bool, out: &mut Vec<Vec<String>>) {
+    fn collect_marks(&self, negated: bool, fields: &[Field], out: &mut Vec<Vec<String>>) {
         match self {
-            Node::And(v) | Node::Or(v) => v.iter().for_each(|n| n.collect_marks(negated, out)),
-            Node::Not(b) => b.collect_marks(!negated, out),
-            Node::Text { field, words, phrase, .. } if !negated && !matches!(field, Field::Filename | Field::MsgId) => {
+            Node::And(v) | Node::Or(v) => v.iter().for_each(|n| n.collect_marks(negated, fields, out)),
+            Node::Not(b) => b.collect_marks(!negated, fields, out),
+            Node::Text { field, words, phrase, .. } if !negated && fields.contains(field) => {
                 let folded = crate::searchhl::words(&words.join(" "));
                 if *phrase {
                     out.push(folded);
@@ -699,7 +705,12 @@ mod tests {
         assert!(parse("family").matches(&m, "Bring the family"));
         assert!(!parse("family").matches(&m, "font stuff"));
         assert!(parse("from:\"jane doe\" OR to:nobody").matches(&m, ""));
-        assert_eq!(parse("subject:\"weekly report\" invoice -spam").marks(), vec![w(&["weekly", "report"]), w(&["invoice"])]);
+        let q = parse("subject:\"weekly report\" invoice -spam to:me@example.org from:jane");
+        assert_eq!(q.marks(), vec![w(&["invoice"])], "a message's text: free words only");
+        assert_eq!(q.marks_in(&[Field::Any, Field::Subject]), vec![w(&["weekly", "report"]), w(&["invoice"])]);
+        assert_eq!(q.marks_in(&[Field::Any, Field::From]), vec![w(&["invoice"]), w(&["jane"])]);
+        assert!(!q.marks_in(&[Field::Any, Field::From, Field::Subject]).iter().flatten().any(|x| x == "me" || x == "example"), "to: is marked nowhere shown");
+        assert!(parse("to:me@example.org").marks().is_empty(), "only a field: no snippet, nothing marked in the text");
     }
 
     #[test]

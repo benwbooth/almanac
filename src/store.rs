@@ -162,7 +162,8 @@ pub mod qobject {
         /// Whether message `id` can be archived (its account has an Archive).
         #[qinvokable]
         fn can_archive(self: &Store, id: i64) -> bool;
-        /// What a search marks where it's shown: [[word], [phrase words…]] (folded).
+        /// What a search marks where it's shown: {text, subject, from}, each
+        /// [[word], [phrase words…]] (folded): a field's value only in its own place.
         #[qinvokable]
         fn search_marks(self: &Store, query: &QString) -> QString;
         /// Pictures and PDFs attached to a message, ready to show inside it

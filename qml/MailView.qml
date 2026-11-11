@@ -89,14 +89,18 @@ Item {
     // with what's typed, case and accents ignored), in the list and the message.
     // What to mark: [[a word's start], [a phrase's words, in order]] (folded,
     // from the query: field values and free words, not what's excluded).
-    readonly property var hlTerms: query.trim() === "" ? [] : JSON.parse(store.searchMarks(query))
+    // (By where they're shown: a message's text gets the free words only, its
+    // subject and sender line their own field's words too; to: is marked nowhere.)
+    readonly property var hlSets: query.trim() === "" ? ({ text: [], subject: [], from: [] }) : JSON.parse(store.searchMarks(query))
+    readonly property var hlTerms: hlSets.text
     readonly property color hlColor: Theme.dark ? "#d4a017" : "#ffe066"
     function hlFold(t) { return String(t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") }
     function hlWordChar(c) { return /[0-9A-Za-z\u00C0-\uFFFF]/.test(c) && !/[\u2000-\u206F\u3000-\u303F\uFF00-\uFF0F]/.test(c) }
     function hlEsc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
     // `text` with its matches marked (rich text), or "" when it has none.
-    function hl(text) {
-        if (!hlTerms.length || !text) return ""
+    function hl(text, where) {
+        var terms = hlSets[where || "text"] || []
+        if (!terms.length || !text) return ""
         // The text's words: [start, end, folded].
         var toks = [], i = 0, n = text.length
         while (i < n) {
@@ -109,8 +113,8 @@ Item {
         // Marked spans: a word's start, or a phrase's words one after another.
         var spans = []
         for (var t = 0; t < toks.length; t++) {
-            for (var x = 0; x < hlTerms.length; x++) {
-                var term = hlTerms[x]
+            for (var x = 0; x < terms.length; x++) {
+                var term = terms[x]
                 if (term.length === 1) {
                     if (toks[t][2].indexOf(term[0]) !== 0) continue
                     // (As many letters as the word typed: accents count as one.)
@@ -2076,7 +2080,7 @@ Item {
                             Text {
                                 id: rowFrom
                                 Layout.fillWidth: true
-                                readonly property string marked: mail.hl(modelData.fromName)
+                                readonly property string marked: mail.hl(modelData.fromName, "from")
                                 text: marked || modelData.fromName
                                 textFormat: marked ? Text.RichText : Text.PlainText
                                 font.pixelSize: Theme.base + 1
@@ -2109,7 +2113,7 @@ Item {
                         Text {
                             id: rowSubject
                             width: parent.width
-                            readonly property string marked: mail.hl(modelData.subject)
+                            readonly property string marked: mail.hl(modelData.subject, "subject")
                             text: marked || modelData.subject
                             textFormat: marked ? Text.RichText : Text.PlainText
                             // (Marked text is rich text, which doesn't stop at two lines itself.)
