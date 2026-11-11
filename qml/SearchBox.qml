@@ -53,6 +53,46 @@ Rectangle {
         anchors.leftMargin: 9
         anchors.verticalCenter: parent.verticalCenter
     }
+    // Search operators (to:, is:unread, subject:"…") shown as such: a tinted
+    // bubble behind each (red when it's a "not"); while one's value is still
+    // being typed, just its operator. The text itself stays what's typed.
+    readonly property var bubbles: { input.text; input.width; input.cursorPosition; return field.findBubbles() }
+    function findBubbles() {
+        var t = input.text, out = [], m
+        var re = /(^|[\s(])(-?)(from|to|cc|bcc|subject|is|has|in|label|after|before|older_than|newer_than|older|newer|filename|list|deliveredto|rfc822msgid|larger|smaller|size):("[^"]*"?|\([^)]*\)?|[^\s()]*)/gi
+        while ((m = re.exec(t)) !== null) {
+            var start = m.index + m[1].length
+            var opEnd = start + m[2].length + m[3].length + 1
+            var end = opEnd + m[4].length
+            var quoted = /^"/.test(m[4]), grouped = /^\(/.test(m[4])
+            // Done: a closed quote or bracket, or something after it (or the cursor elsewhere).
+            var done = m[4].length > 0 && (quoted ? (m[4].length > 1 && /"$/.test(m[4])) : grouped ? /\)$/.test(m[4]) : (end < t.length || input.cursorPosition < end || !input.activeFocus))
+            var a = input.positionToRectangle(start), b = input.positionToRectangle(done ? end : opEnd)
+            out.push({ x: a.x, w: Math.max(0, b.x - a.x), neg: m[2] === "-" })
+            if (re.lastIndex === m.index) re.lastIndex++
+        }
+        return out
+    }
+    Item {
+        x: input.x; y: input.y; width: input.width; height: input.height
+        visible: input.visible
+        clip: true
+        Repeater {
+            model: field.bubbles
+            delegate: Rectangle {
+                required property var modelData
+                x: modelData.x - 3
+                width: modelData.w + 6
+                height: Math.min(parent.height + 2, input.contentHeight + 5)
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 5
+                readonly property color tint: modelData.neg ? Theme.red : Theme.accent
+                color: Qt.rgba(tint.r, tint.g, tint.b, 0.16)
+                border.color: Qt.rgba(tint.r, tint.g, tint.b, 0.35)
+                border.width: 1
+            }
+        }
+    }
     TextInput {
         id: input
         visible: !field.collapsed
