@@ -751,6 +751,25 @@ pub struct WindowPlan {
     /// Only rows with unread mail (or the one with this message).
     pub unread_or: Option<i64>,
     pub show_folder: bool,
+    /// A search of mailboxes (the folders) by date: its full-text words (see
+    /// `mailstore::search_rows`), read from the index rather than every row.
+    pub search: Option<String>,
+    /// The list's request (the window's count of lists asked for): one asked
+    /// for since is newer, and this one isn't worked out any more (see
+    /// `LIST_WANTED`). -1: always worked out.
+    pub token: i64,
+}
+
+/// The newest list the window asked for (its token): searches typed letter by
+/// letter ask for a list per letter, and those overtaken while waiting aren't
+/// worked out (they took turns, so the last letter's list came seconds late).
+pub static LIST_WANTED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+impl WindowPlan {
+    /// Whether a newer list has been asked for since this one.
+    pub fn overtaken(&self) -> bool {
+        self.token >= 0 && self.token < LIST_WANTED.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Reads rows `offset`… of a list (on any thread): the messages of each row
@@ -824,7 +843,7 @@ fn whole_list(plan: &WindowPlan) -> std::sync::Arc<WholeList> {
     use std::sync::{Arc, Mutex};
     static CACHE: Mutex<Option<(String, Arc<WholeList>)>> = Mutex::new(None);
     let Some((filter, args)) = &plan.filter else { return Arc::new(WholeList { rows: Vec::new(), unread: 0 }) };
-    let key = format!("{}|{}|{:?}|{}|{}|{}", plan.threaded, filter, args, plan.sort_by, plan.ascending, plan.generation);
+    let key = format!("{}|{}|{:?}|{}|{}|{}|{:?}", plan.threaded, filter, args, plan.sort_by, plan.ascending, plan.generation, plan.search);
     // (Worked out under the lock: two pages asked for at once wait for one reading.)
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((k, w)) = cache.as_ref() {
@@ -832,9 +851,20 @@ fn whole_list(plan: &WindowPlan) -> std::sync::Arc<WholeList> {
             return w.clone();
         }
     }
-    let _t = crate::Timed::new("working out a list whole");
+    // (Overtaken while waiting its turn: nothing, and nothing kept.)
+    if plan.overtaken() {
+        return Arc::new(WholeList { rows: Vec::new(), unread: 0 });
+    }
+    let _t = crate::Timed::new(if plan.search.is_some() { "working out a search whole" } else { "working out a list whole" });
     let (msg_order, conv_order) = crate::mailstore::list_orders(&plan.sort_by, plan.ascending);
-    let whole = if plan.threaded {
+    let whole = if let Some(expr) = &plan.search {
+        let (rows, unread) = crate::mailstore::search_rows(&plan.folders, expr, plan.unread_or, plan.threaded, plan.ascending);
+        let rows = match rows {
+            crate::mailstore::SearchRows::Messages(ids) => ids.into_iter().map(ListItem::Message).collect(),
+            crate::mailstore::SearchRows::Conversations(cs) => cs.into_iter().map(|(f, t)| ListItem::Conversation(f, t)).collect(),
+        };
+        WholeList { rows, unread }
+    } else if plan.threaded {
         let rows = crate::mailstore::filtered_conv_page(filter, args, &conv_order, 0, i64::MAX)
             .into_iter()
             .map(|(f, t)| ListItem::Conversation(f, t))
@@ -1409,7 +1439,10 @@ impl Db {
         use crate::mailstore::Arg;
         let kinds = self.folder_kinds();
         let q = lc(query.trim());
-        let hits = if q.is_empty() { None } else { self.text_hits(query) };
+        // (The full-text search's whole set of hits only if a message here needs it:
+        // read for every letter typed, it took most of a second on a big mailbox.)
+        let hits_once = std::cell::OnceCell::new();
+        let hits = || hits_once.get_or_init(|| if q.is_empty() { None } else { self.text_hits(query) });
         let fits = |m: &Message| {
             self.message_in_k(m, selection, Some(&kinds))
                 && (q.is_empty()
@@ -1417,7 +1450,7 @@ impl Db {
                     || lc(&m.from_name).contains(&q)
                     || lc(&m.from_email).contains(&q)
                     || lc(&m.to).contains(&q)
-                    || hits.as_ref().map(|h| h.contains(&m.id)).unwrap_or_else(|| lc(&m.body).contains(&q)))
+                    || hits().as_ref().map(|h| h.contains(&m.id)).unwrap_or_else(|| lc(&m.body).contains(&q)))
                 && unread_or.is_none_or(|k| !m.read || m.id == k)
         };
         let here: std::collections::HashSet<i64> = self.messages.iter().map(|m| m.id).collect();
@@ -2127,7 +2160,10 @@ impl Db {
     fn matching(&self, selection: &str, query: &str) -> Vec<&Message> {
         let q = lc(query.trim());
         let kinds = self.folder_kinds();
-        let hits = if q.is_empty() { None } else { self.text_hits(query) };
+        // (The full-text search's whole set of hits only if a message here needs it:
+        // read for every letter typed, it took most of a second on a big mailbox.)
+        let hits_once = std::cell::OnceCell::new();
+        let hits = || hits_once.get_or_init(|| if q.is_empty() { None } else { self.text_hits(query) });
         let mut list: Vec<&Message> = self
             .messages
             .iter()
@@ -2138,7 +2174,7 @@ impl Db {
                     || lc(&m.from_name).contains(&q)
                     || lc(&m.from_email).contains(&q)
                     || lc(&m.to).contains(&q)
-                    || hits.as_ref().map(|h| h.contains(&m.id)).unwrap_or_else(|| lc(&m.body).contains(&q))
+                    || hits().as_ref().map(|h| h.contains(&m.id)).unwrap_or_else(|| lc(&m.body).contains(&q))
             })
             .collect();
         list.sort_by(|a, b| b.date.cmp(&a.date));
@@ -2190,6 +2226,26 @@ impl Db {
         Some(self.folders_of_kind(&[k]))
     }
 
+    /// The folders of a search that the full-text index can answer alone (a
+    /// mailbox or a kind of mailbox, by date, with words to look for, once each
+    /// message's folder and date are in the small table), or None.
+    fn search_folders(&self, selection: &str, query: &str, sort_by: &str) -> Option<Vec<String>> {
+        if !self.backed || !(sort_by == "date" || sort_by.is_empty()) || crate::mailstore::match_expr(query).is_empty() {
+            return None;
+        }
+        if !crate::mailstore::conversations_ready() {
+            return None;
+        }
+        if let Some(f) = selection.strip_prefix("folder:") {
+            return Some(vec![f.to_string()]);
+        }
+        let k = selection.strip_prefix("kind:")?;
+        if ["vip", "flagged", "unread"].contains(&k) || k.starts_with("flag") {
+            return None;
+        }
+        Some(self.folders_of_kind(&[k]))
+    }
+
     /// How to read a list a page at a time (see `list_window`), or None when
     /// it can't be (a search, another order, a smart mailbox).
     #[allow(clippy::too_many_arguments)]
@@ -2205,11 +2261,18 @@ impl Db {
         let unread_or = unread_only.then_some(keep);
         let sort = if sort_by.is_empty() { "date".to_string() } else { sort_by.to_string() };
         if let Some(folders) = self.window_folders(selection, query, sort_by) {
-            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder });
+            return Some(WindowPlan { folders, filter: None, sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search: None, token: -1 });
         }
         // Anything else SQL can say (not a smart mailbox's conditions).
         let filter = self.list_filter(selection, query, unread_or)?;
-        Some(WindowPlan { folders: Vec::new(), filter: Some(filter), sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder })
+        // A search of mailboxes by date: from the full-text index (words
+        // starting with what's typed, in the subject, the people or the text).
+        let search = self.search_folders(selection, query, sort_by).map(|f| (f, crate::mailstore::search_expr(query)));
+        let (folders, search) = match search {
+            Some((f, expr)) => (f, Some(expr)),
+            None => (Vec::new(), None),
+        };
+        Some(WindowPlan { folders, filter: Some(filter), sort_by: sort, ascending, generation: self.generation, threaded, unread_or, show_folder, search, token: -1 })
     }
 
     /// The list's rows from what `fetch_window` read.
@@ -2378,7 +2441,10 @@ impl Db {
 
     fn messages_flat(&self, selection: &str, query: &str) -> Value {
         let q = lc(query.trim());
-        let hits = if q.is_empty() { None } else { self.text_hits(query) };
+        // (The full-text search's whole set of hits only if a message here needs it:
+        // read for every letter typed, it took most of a second on a big mailbox.)
+        let hits_once = std::cell::OnceCell::new();
+        let hits = || hits_once.get_or_init(|| if q.is_empty() { None } else { self.text_hits(query) });
         let mut list: Vec<&Message> = self
             .messages
             .iter()
@@ -2389,7 +2455,7 @@ impl Db {
                     || lc(&m.from_name).contains(&q)
                     || lc(&m.from_email).contains(&q)
                     || lc(&m.to).contains(&q)
-                    || hits.as_ref().map(|h| h.contains(&m.id)).unwrap_or_else(|| lc(&m.body).contains(&q))
+                    || hits().as_ref().map(|h| h.contains(&m.id)).unwrap_or_else(|| lc(&m.body).contains(&q))
             })
             .collect();
         list.sort_by(|a, b| b.date.cmp(&a.date));
@@ -5108,6 +5174,102 @@ mod backed_tests {
         assert_eq!(badge(&db), 0);
         crate::mailstore::remove(src, crate::mailstore::Gone::All);
     }
+
+    /// A search of a mailbox is read from the full-text index (words starting
+    /// with what's typed: subject, people, text), a page at a time, with and
+    /// without conversations; lists overtaken by a newer one aren't worked out.
+    #[test]
+    fn searches_come_from_the_index() {
+        let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::create_dir_all(data_dir());
+        let src = "live:fs";
+        let inbox = "live:fs:mail/INBOX";
+        let archive = "live:fs:mail/Archive";
+        crate::mailstore::remove(src, crate::mailstore::Gone::All);
+        let mut db = Db { backed: true, ..Default::default() };
+        db.accounts.push(Account { id: "live:fs:mail".into(), name: "FS".into(), email: "me@fs.example".into(), source: src.into() });
+        for (id, kind) in [(inbox, "inbox"), (archive, "archive")] {
+            db.folders.push(Folder { id: id.into(), account: "live:fs:mail".into(), name: kind.into(), kind: kind.into(), path: kind.into() });
+        }
+        db.next_id = 700_000;
+        for uid in 1..=40u32 {
+            let id = db.new_id();
+            let (subject, body) = match uid % 4 {
+                0 => (format!("Invoice {uid}"), "Amount due".to_string()),
+                1 => (format!("Lunch {uid}"), "The invoices are attached".to_string()),
+                _ => (format!("Hello {uid}"), "Nothing here".to_string()),
+            };
+            db.messages.push(Message {
+                id,
+                folder: if uid <= 30 { inbox.into() } else { archive.into() },
+                source: src.into(),
+                uid,
+                date: 1_710_000_000 + uid as i64 * 60,
+                from_name: if uid == 7 { "Invoicing Team".into() } else { format!("Sender {uid}") },
+                from_email: format!("s{uid}@example.org"),
+                subject,
+                body,
+                read: uid % 2 == 0,
+                message_id: format!("<m{uid}@fs.example>"),
+                // (Messages 2 and 3 answer message 1: one conversation.)
+                in_reply_to: if uid == 2 || uid == 3 { "<m1@fs.example>".into() } else { String::new() },
+                references: if uid == 2 || uid == 3 { "<m1@fs.example>".into() } else { String::new() },
+                ..Default::default()
+            });
+        }
+        assert!(db.save());
+        db.release_saved();
+        crate::mailstore::build_conversations();
+        assert!(crate::mailstore::conversations_ready());
+        let sel = format!("folder:{inbox}");
+        let plan = db.window_plan(&sel, "invoic", false, "date", false, false, 0).unwrap();
+        assert!(plan.search.is_some(), "a mailbox's search is read from the index");
+        // Inbox (1..=30): subjects 4, 8, …, 28 (7), texts 1, 5, …, 29 (8), sender 7 (1).
+        let w = db.list_window(&sel, "invoic", false, "date", false, false, 0, 0, 100).unwrap();
+        let ids: Vec<i64> = w["rows"].as_array().unwrap().iter().map(|r| r["id"].as_i64().unwrap()).collect();
+        assert_eq!(w["total"], 16);
+        assert_eq!(ids.len(), 16);
+        let dates: Vec<i64> = ids.iter().map(|id| db.get(*id).unwrap().date).collect();
+        assert!(dates.windows(2).all(|d| d[0] > d[1]), "newest first");
+        // Unread: the odd ones (texts 1, 5, … 29 and sender 7).
+        assert_eq!(w["unread"], 9);
+        // A page further down, and where a message is.
+        let second = db.list_window(&sel, "invoic", false, "date", false, false, 0, 10, 10).unwrap();
+        assert_eq!(second["rows"].as_array().unwrap().len(), 6);
+        assert_eq!(db.list_position(&sel, "invoic", false, "date", false, false, ids[12]), 12);
+        // Two words: both must be there (a single letter beside them waits for more).
+        let w = db.list_window(&sel, "invoice amount", false, "date", false, false, 0, 0, 100).unwrap();
+        assert_eq!(w["total"], 7);
+        let w = db.list_window(&sel, "invoice amount q", false, "date", false, false, 0, 0, 100).unwrap();
+        assert_eq!(w["total"], 7);
+        assert_eq!(crate::mailstore::search_expr("a"), "\"a\"*");
+        // Only unread.
+        let w = db.list_window(&sel, "invoic", false, "date", false, false, 0, 0, 100);
+        assert!(w.is_some());
+        let w = db.list_window(&sel, "invoic", false, "date", false, true, -1, 0, 100).unwrap();
+        assert_eq!(w["total"], 9);
+        // A kind of mailbox, and conversations (1, 2, 3 are one).
+        let w = db.list_window("kind:archive", "invoice", false, "date", false, false, 0, 0, 100).unwrap();
+        assert_eq!(w["total"], 5, "archive 31..=40: subjects 32, 36, 40, texts 33, 37");
+        let w = db.list_window(&sel, "hello", true, "date", false, false, 0, 0, 100).unwrap();
+        let rows = w["rows"].as_array().unwrap();
+        let both = rows.iter().find(|r| r["count"] == 3).expect("the conversation of 1, 2 and 3, all of it");
+        assert_eq!(both["ids"].as_array().unwrap().len(), 3);
+        // Hello: uid % 4 in {2, 3} for 1..=30 → 15 messages; 2 and 3 share a conversation.
+        assert_eq!(w["total"], 14);
+        // A newer list asked for: an older one isn't worked out.
+        let mut old = db.window_plan(&sel, "lunch", false, "date", false, false, 0).unwrap();
+        old.token = 5;
+        LIST_WANTED.store(6, std::sync::atomic::Ordering::Relaxed);
+        assert!(old.overtaken());
+        assert_eq!(fetch_window(&old, 0, 100, true).1, 0);
+        old.token = 6;
+        assert_eq!(fetch_window(&old, 0, 100, true).1, 8);
+        LIST_WANTED.store(-1, std::sync::atomic::Ordering::Relaxed);
+        // Smart lists (VIPs) still read as before.
+        assert!(db.window_plan("kind:vip", "invoice", false, "date", false, false, 0).is_none_or(|p| p.search.is_none()));
+        crate::mailstore::remove(src, crate::mailstore::Gone::All);
+    }
 }
 
 #[cfg(test)]
@@ -5155,6 +5317,54 @@ mod window_timings {
                     None => (-1, std::time::Duration::ZERO),
                 };
                 eprintln!("{sel} q={q:?} sort={sort} asc={asc} threaded={threaded}: total {total}, first {first_t:?}, middle {mid_t:?}, position {pos} (expected {at}) {pos_t:?}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_timings {
+    /// On a copy of real mail: a search typed a letter at a time, read the old
+    /// way (every row of the list's index) and from the full-text index, with
+    /// and without conversations. Prints only counts and times.
+    /// ALMANAC_WINDOW_TEST=1 XDG_DATA_HOME=<copy> cargo test search_timings -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn search_timings() {
+        if std::env::var_os("ALMANAC_WINDOW_TEST").is_none() {
+            return;
+        }
+        let mut db = super::Db::load();
+        db.backed = true;
+        crate::mailstore::build_conversations();
+        for sel in ["kind:inbox", "kind:archive"] {
+            for word in ["invoice", "github", "a", "meeting tomorrow"] {
+                for threaded in [false, true] {
+                    let mut line = format!("{sel} {threaded:5} {word:?}:");
+                    for n in 1..=word.len() {
+                        let q = &word[..n];
+                        if q.ends_with(' ') {
+                            continue;
+                        }
+                        let Some(plan) = db.window_plan(sel, q, threaded, "date", false, false, 0) else { continue };
+                        let mut old = plan.clone();
+                        old.search = None;
+                        old.folders = Vec::new();
+                        let t = std::time::Instant::now();
+                        let (_, before_total, _) = super::fetch_window(&old, 0, 100, true);
+                        let before = t.elapsed();
+                        let t = std::time::Instant::now();
+                        let (_, after_total, _) = super::fetch_window(&plan, 0, 100, true);
+                        let after = t.elapsed();
+                        line.push_str(&format!(
+                            " {q:?} {}→{} ms ({before_total}/{after_total}{})",
+                            before.as_millis(),
+                            after.as_millis(),
+                            if plan.search.is_some() { "" } else { " old way" }
+                        ));
+                    }
+                    eprintln!("{line}");
+                }
             }
         }
     }

@@ -578,6 +578,77 @@ fn filtered_convs(filter: &str, order: &str) -> String {
     )
 }
 
+/// A search of mailboxes, by date: driven from the full-text index (`expr`,
+/// see `match_expr`) and the small table of each message's folder, date and
+/// conversation, never the whole list's index (tens of ms on a mailbox of
+/// hundreds of thousands, where reading every row took a second).
+/// `unread_or`: only unread messages (or that one). Gives the rows in order
+/// (message ids, or conversations (folder, thread key) with `threaded`) and
+/// how many of them have unread mail.
+pub enum SearchRows {
+    Messages(Vec<i64>),
+    Conversations(Vec<(String, String)>),
+}
+
+pub fn search_rows(folders: &[String], expr: &str, unread_or: Option<i64>, threaded: bool, ascending: bool) -> (SearchRows, i64) {
+    let empty = || if threaded { SearchRows::Conversations(Vec::new()) } else { SearchRows::Messages(Vec::new()) };
+    let path = db_path();
+    if !path.exists() || folders.is_empty() || expr.is_empty() {
+        return (empty(), 0);
+    }
+    with_conn(&path, |c| {
+        let (sql, args) = search_rows_sql(folders, expr, unread_or, threaded, ascending);
+        let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let mut unread = 0i64;
+        if threaded {
+            let rows = st
+                .query_map(rusqlite::params_from_iter(args.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for (f, t, u) in rows.filter_map(Result::ok) {
+                unread += (u > 0) as i64;
+                out.push((f, t));
+            }
+            Ok((SearchRows::Conversations(out), unread))
+        } else {
+            let rows = st.query_map(rusqlite::params_from_iter(args.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for (id, read) in rows.filter_map(Result::ok) {
+                unread += (read == 0) as i64;
+                out.push(id);
+            }
+            Ok((SearchRows::Messages(out), unread))
+        }
+    })
+    .unwrap_or_else(|_| (empty(), 0))
+}
+
+fn search_rows_sql(folders: &[String], expr: &str, unread_or: Option<i64>, threaded: bool, ascending: bool) -> (String, Vec<Arg>) {
+    let mut args: Vec<Arg> = vec![Arg::Text(expr.to_string())];
+    let marks: Vec<String> = folders
+        .iter()
+        .map(|f| {
+            args.push(Arg::Text(f.clone()));
+            format!("?{}", args.len())
+        })
+        .collect();
+    let mut found = format!("t.id IN (SELECT rowid FROM search WHERE search MATCH ?1) AND t.folder IN ({})", marks.join(","));
+    if let Some(k) = unread_or {
+        args.push(Arg::Integer(k));
+        found.push_str(&format!(" AND (t.read = 0 OR t.id = ?{})", args.len()));
+    }
+    let dir = if ascending { "ASC" } else { "DESC" };
+    let sql = if threaded {
+        format!(
+            "SELECT c.folder, c.tkey, c.unread FROM convs c WHERE (c.folder, c.tkey) IN (SELECT t.folder, t.tk FROM msg_threads t WHERE {found})
+             ORDER BY c.latest {dir}, c.top_id {dir}"
+        )
+    } else {
+        format!("SELECT t.id, t.read FROM msg_threads t WHERE {found} ORDER BY t.date {dir}, t.id {dir}")
+    };
+    (sql, args)
+}
+
 /// A page of the conversations with a message the filter matches.
 pub fn filtered_conv_page(filter: &str, args: &[Arg], order: &str, offset: i64, limit: i64) -> Vec<(String, String)> {
     let path = db_path();
@@ -1327,6 +1398,21 @@ pub fn match_expr(query: &str) -> String {
     query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"*", w.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The full-text words for a search of mailboxes typed a letter at a time:
+/// as `match_expr`, but a single letter beside longer words is left out until
+/// it's more ("meeting t": every word starting with t took half a second, to
+/// narrow what "meeting" found to almost the same).
+pub fn search_expr(query: &str) -> String {
+    let words: Vec<&str> = query.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let longer = words.iter().any(|w| w.chars().count() > 1);
+    words
+        .into_iter()
+        .filter(|w| !longer || w.chars().count() > 1)
         .map(|w| format!("\"{}\"*", w.replace('"', "")))
         .collect::<Vec<_>>()
         .join(" ")

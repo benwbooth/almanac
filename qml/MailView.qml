@@ -1026,7 +1026,16 @@ Item {
                 Layout.minimumWidth: collapsed ? 30 : 84
                 readonly property real minW: 84
                 text: mail.query
-                onTextChanged: mail.query = text
+                // The list is searched once typing pauses (150 ms; a single
+                // letter, which matches nearly everything, after 600 ms), not
+                // for every letter typed. Cleared: at once.
+                onTextChanged: {
+                    if (text === mail.query) { queryPause.stop(); return }
+                    if (text.trim() === "") { queryPause.stop(); mail.query = text; return }
+                    queryPause.interval = text.trim().length < 2 ? 600 : 150
+                    queryPause.restart()
+                }
+                Timer { id: queryPause; onTriggered: mail.query = search.text }
                 Connections { target: mail; function onFocusSearch() { search.focusField() } }
             }
         }

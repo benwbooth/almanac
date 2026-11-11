@@ -2075,11 +2075,20 @@ impl qobject::Store {
         if self.db.backed && !self.db.messages.is_empty() {
             self.as_mut().flush();
         }
-        let Some(plan) = self.db.window_plan(&selection.to_string(), &query.to_string(), threaded, &sort_by.to_string(), ascending, unread_only, keep) else { return };
+        let Some(mut plan) = self.db.window_plan(&selection.to_string(), &query.to_string(), threaded, &sort_by.to_string(), ascending, unread_only, keep) else { return };
+        plan.token = token as i64;
+        crate::data::LIST_WANTED.fetch_max(token as i64, std::sync::atomic::Ordering::Relaxed);
         let thread = self.qt_thread();
         let (offset, count) = (offset.max(0) as usize, count.max(1) as usize);
         std::thread::spawn(move || {
+            // (Another list asked for since, a search's next letter say: not read.)
+            if plan.overtaken() {
+                return;
+            }
             let (groups, total, unread) = crate::data::fetch_window(&plan, offset, count, counted);
+            if plan.overtaken() {
+                return;
+            }
             let _ = thread.queue(move |mut store| {
                 let rows = store.db.window_rows(&plan, &groups);
                 let v = json!({"token": token, "offset": offset, "rows": rows, "total": total, "unread": unread});
@@ -2090,10 +2099,17 @@ impl qobject::Store {
 
     #[allow(clippy::too_many_arguments)]
     fn request_position(&self, token: i32, selection: &QString, query: &QString, threaded: bool, sort_by: &QString, ascending: bool, unread_only: bool, id: i64) {
-        let plan = self.db.window_plan(&selection.to_string(), &query.to_string(), threaded, &sort_by.to_string(), ascending, unread_only, id);
+        let mut plan = self.db.window_plan(&selection.to_string(), &query.to_string(), threaded, &sort_by.to_string(), ascending, unread_only, id);
+        if let Some(p) = plan.as_mut() {
+            p.token = token as i64;
+            crate::data::LIST_WANTED.fetch_max(token as i64, std::sync::atomic::Ordering::Relaxed);
+        }
         let msg = self.db.get(id).map(|m| (m.folder.clone(), m.date));
         let thread = self.qt_thread();
         std::thread::spawn(move || {
+            if plan.as_ref().is_some_and(|p| p.overtaken()) {
+                return;
+            }
             let at = plan.map(|p| crate::data::position_in(&p, id, msg)).unwrap_or(-1);
             let _ = thread.queue(move |mut store| {
                 let v = json!({"token": token, "locate": at, "id": id});
