@@ -145,7 +145,7 @@ Rectangle {
             }
             RowLayout {
                 visible: guide.store.busy
-                BusyIndicator { running: guide.store.busy; Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
+                Spinner { running: guide.store.busy; Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
                 Text { Layout.fillWidth: true; text: guide.store.statusText; color: Theme.secondary; font.pixelSize: 12; elide: Text.ElideRight }
             }
 

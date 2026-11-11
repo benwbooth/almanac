@@ -1637,7 +1637,8 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 0
                 z: 0
-                BusyIndicator {
+                Spinner {
+                    delay: 0
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: 26; height: 26
                     y: Math.max(4, (listMomentum.pull - height) / 2)

@@ -294,7 +294,7 @@ Popup {
                                 visible: !!pgpRow.job.op && pgpRow.job.op !== "unlock"
                                 Layout.fillWidth: true
                                 spacing: 8
-                                BusyIndicator { visible: pgpRow.busy; running: pgpRow.busy; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
+                                Spinner { visible: pgpRow.busy; running: pgpRow.busy; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
                                 Text {
                                     Layout.fillWidth: true
                                     wrapMode: Text.WordWrap
@@ -340,7 +340,7 @@ Popup {
                                 visible: smimeRow.info.available
                                 spacing: 8
                                 ToolButtonX { text: "Import Certificate…"; tip: "Your certificate and key from a .p12 / .pfx file (asks for its password, kept in the keychain)"; onClicked: p12File.open() }
-                                BusyIndicator { visible: !!smimeRow.job.busy && smimeRow.job.op === "smime-import"; running: visible; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
+                                Spinner { visible: !!smimeRow.job.busy && smimeRow.job.op === "smime-import"; running: visible; Layout.preferredWidth: 20; Layout.preferredHeight: 20 }
                                 Text {
                                     visible: smimeRow.job.op === "smime-import" && !smimeRow.job.busy
                                     text: (smimeRow.job.ok ? "" : "Couldn't import it: ") + (smimeRow.job.text || "")

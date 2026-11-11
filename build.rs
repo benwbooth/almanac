@@ -105,6 +105,7 @@ fn main() {
             cxx_qt_build::QmlFile::from("qml/AddressBox.qml"),
             cxx_qt_build::QmlFile::from("qml/FormatPickers.qml"),
             cxx_qt_build::QmlFile::from("qml/Momentum.qml"),
+            cxx_qt_build::QmlFile::from("qml/Spinner.qml"),
         ]),
     )
     // Headers come from include/ only. The default (the whole crate folder)

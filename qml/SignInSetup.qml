@@ -253,7 +253,7 @@ Popup {
                         width: parent.width - 28
                         spacing: 8
                         RowLayout {
-                            BusyIndicator { running: dlg.waiting; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
+                            Spinner { running: dlg.waiting; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
                             Text {
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
@@ -330,7 +330,7 @@ Popup {
                                 text: "Stop"
                                 onClicked: dlg.store.cancelSignIn()
                             }
-                            BusyIndicator { visible: dlg.store.registering === "google"; running: visible; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
+                            Spinner { visible: dlg.store.registering === "google"; running: visible; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
                             Text {
                                 visible: dlg.store.registering === "google"
                                 Layout.fillWidth: true
@@ -378,7 +378,7 @@ Popup {
                                 text: "Get the tool"
                                 onClicked: Qt.openUrlExternally(dlg.provider === "microsoft" ? "https://aka.ms/azcli" : "https://cloud.google.com/sdk/docs/install")
                             }
-                            BusyIndicator { visible: dlg.store.registering === dlg.provider; running: visible; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
+                            Spinner { visible: dlg.store.registering === dlg.provider; running: visible; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
                             Text {
                                 visible: dlg.store.registering === dlg.provider
                                 Layout.fillWidth: true

@@ -509,7 +509,7 @@ Popup {
             }
             RowLayout {
                 Layout.fillWidth: true
-                BusyIndicator { running: store.busy; visible: store.busy; Layout.preferredWidth: 26; Layout.preferredHeight: 26 }
+                Spinner { running: store.busy; visible: store.busy; Layout.preferredWidth: 26; Layout.preferredHeight: 26 }
                 Text {
                     Layout.fillWidth: true
                     text: store.statusText

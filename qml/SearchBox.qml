@@ -30,17 +30,19 @@ Rectangle {
     border.color: input.activeFocus ? Theme.accent : "transparent"
     border.width: input.activeFocus ? 2 : 0
 
-    BusyIndicator {
-        visible: field.busy && !field.collapsed
-        running: visible
-        width: 16; height: 16
-        padding: 0
+    Spinner {
+        id: busySpinner
+        visible: !field.collapsed
+        running: field.busy
+        width: 15; height: 15
         anchors.left: parent.left
         anchors.leftMargin: 8
         anchors.verticalCenter: parent.verticalCenter
     }
     Icon {
-        visible: !(field.busy && !field.collapsed)
+        // (The spinner in its place while searching, once it shows.)
+        opacity: busySpinner.shown ? 0 : 1
+        Behavior on opacity { NumberAnimation { duration: 150 } }
         name: "search"
         width: 15; height: 15
         color: Theme.tertiary
