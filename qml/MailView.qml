@@ -16,7 +16,24 @@ Item {
     property string selection: "kind:inbox"
     // New mail the junk filter thinks is junk (left in place): id → true.
     readonly property var junkSuspects: { var o = {}; JSON.parse(store.junkSuspectsJson || "[]").forEach(function(i) { o[i] = true }); return o }
-    onSelectionChanged: { selectedIds = []; resetPage(); serverSearchAgain() }
+    // Each mailbox keeps its own search (for this run): leaving one keeps what
+    // was searched there (and whether the bar was open), and the one you go to
+    // shows its own, or none.
+    property var searches: ({})
+    // (Which mailbox the search now shown belongs to: set here, not bound.)
+    property string searchedIn: ""
+    onSelectionChanged: {
+        var kept = searches
+        if (searchedIn !== "") kept[searchedIn] = { query: query, open: searchOpen }
+        var back = kept[selection] || { query: "", open: false }
+        searches = kept
+        searchedIn = selection
+        queryPause.stop()
+        searchField.text = back.query
+        query = back.query
+        searchOpen = back.open || back.query !== ""
+        selectedIds = []; resetPage(); serverSearchAgain()
+    }
     property string selectionName: "Inbox"
     property var selectedId: -1
     // More than one row picked (Ctrl-click, Shift-click, Ctrl+A); empty otherwise.
@@ -77,7 +94,7 @@ Item {
     property bool hasAccounts: { store.revision; return JSON.parse(store.liveAccounts()).length > 0 }
     // The shown mailbox is on a mail server: older mail and server search apply.
     property bool serverBox: { store.revision; return store.isServerMailbox(selection) }
-    Component.onCompleted: { threaded = prefs.conversations; formatted = prefs.show_formatted; Qt.callLater(winReset) }
+    Component.onCompleted: { searchedIn = selection; threaded = prefs.conversations; formatted = prefs.show_formatted; Qt.callLater(winReset) }
     // Settings changes apply straight away.
     readonly property bool prefConversations: prefs.conversations
     readonly property bool prefFormatted: prefs.show_formatted
