@@ -1485,15 +1485,12 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
                 color: Theme.window
-                // What fits (measured, not guessed): the words "Conversations"
-                // and the sort's name, else an icon for each, conversations first.
-                TextMetrics { id: convTM; font.pixelSize: 11; text: "Conversations" }
+                // What fits (measured, not guessed): the sort's name, else its icon alone.
                 TextMetrics { id: sortTM; font.pixelSize: 11; text: mail.sortNames[mail.sortBy] }
                 readonly property real sortFullW: sortTM.advanceWidth + 4 + 18 + 8
-                // margins 14 + 8, icons (filter, search) 24 each, gaps 4, and room to spare 8
-                readonly property real fixedW: 22 + 24 * 2 + 4 * 4 + 8
-                readonly property bool convIconOnly: width < fixedW + sortFullW + convTM.advanceWidth + 12
-                readonly property bool sortIconOnly: convIconOnly && width < fixedW + sortFullW + 24
+                // margins 14 + 8, icons (filter, conversations, search) 24 each, gaps 4, and room to spare 8
+                readonly property real fixedW: 22 + 24 * 3 + 4 * 4 + 8
+                readonly property bool sortIconOnly: width < fixedW + sortFullW
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 10
@@ -1559,23 +1556,10 @@ Item {
                         tip: mail.unreadOnly ? "Showing Only Unread (click for all)" : "Show Only Unread"
                         onClicked: mail.unreadOnly = !mail.unreadOnly
                     }
-                    // Conversations on or off: the word, highlighted when on (an icon
-                    // when the row is too narrow).
-                    Rectangle {
-                        visible: !hdr.convIconOnly
-                        implicitHeight: 22
-                        implicitWidth: convWord.implicitWidth + 12
-                        radius: 5
-                        color: mail.threaded ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, convHover.containsMouse ? 0.2 : 0.12) : (convHover.containsMouse ? Theme.hover : "transparent")
-                        Text { id: convWord; anchors.centerIn: parent; text: "Conversations"; font.pixelSize: 11; color: mail.threaded ? Theme.accent : Theme.secondary }
-                        MouseArea { id: convHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { mail.threaded = !mail.threaded; mail.selectedId = -1 } }
-                        ToolTip.visible: convHover.containsMouse
-                        ToolTip.delay: 600
-                        ToolTip.text: mail.threaded ? "Conversations: On" : "Conversations: Off"
-                    }
+                    // Conversations on or off (highlighted when on).
                     ToolButtonX {
-                        visible: hdr.convIconOnly
                         implicitHeight: 22; implicitWidth: 24
+                        Accessible.name: tip
                         icon: "chat"; checked: mail.threaded
                         tip: mail.threaded ? "Conversations: On" : "Conversations: Off"
                         onClicked: { mail.threaded = !mail.threaded; mail.selectedId = -1 }
