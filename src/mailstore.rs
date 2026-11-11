@@ -831,17 +831,39 @@ pub fn date_page(folders: &[String], unread_or: Option<i64>, ascending: bool, of
     .unwrap_or((Vec::new(), 0))
 }
 
-/// The text of these messages (those that have it here), by id.
-pub fn bodies(ids: &[i64]) -> HashMap<i64, String> {
+/// The text of these messages (those that have it here), by id: (plain text, HTML).
+pub fn bodies(ids: &[i64]) -> HashMap<i64, (String, String)> {
     let path = db_path();
     if !path.exists() || ids.is_empty() {
         return HashMap::new();
     }
     with_conn(&path, |c| {
         let marks = (1..=ids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
-        let mut st = c.prepare(&format!("SELECT id, body FROM messages WHERE id IN ({marks}) AND body <> ''")).map_err(|e| e.to_string())?;
-        let rows = st.query_map(rusqlite::params_from_iter(ids.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+        let mut st = c
+            .prepare(&format!("SELECT id, body, html FROM messages WHERE id IN ({marks}) AND (body <> '' OR html <> '')"))
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(ids.iter()), |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, String>(2)?))))
+            .map_err(|e| e.to_string())?;
         Ok(rows.flatten().collect())
+    })
+    .unwrap_or_default()
+}
+
+/// Which of these messages have their whole text here (not only headers).
+pub fn whole_here(ids: &[i64]) -> std::collections::HashSet<i64> {
+    let path = db_path();
+    if !path.exists() || ids.is_empty() {
+        return Default::default();
+    }
+    with_conn(&path, |c| {
+        let mut out = std::collections::HashSet::new();
+        for chunk in ids.chunks(500) {
+            let marks = (1..=chunk.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+            let mut st = c.prepare(&format!("SELECT id FROM messages WHERE id IN ({marks}) AND partial = 0")).map_err(|e| e.to_string())?;
+            out.extend(st.query_map(rusqlite::params_from_iter(chunk.iter()), |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?.flatten());
+        }
+        Ok(out)
     })
     .unwrap_or_default()
 }

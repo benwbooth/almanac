@@ -807,7 +807,26 @@ pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: boo
         let ids: Vec<i64> = groups.iter().flatten().map(|m| m.id).collect();
         let bodies = crate::mailstore::bodies(&ids);
         for g in groups.iter_mut() {
-            let found = g.iter().find_map(|m| bodies.get(&m.id).and_then(|b| crate::searchhl::snippet(b, &plan.words)));
+            // Its text, else the text of its HTML (what's shown, not its
+            // styles or links), else who it's to: wherever the words are.
+            let found = g.iter().find_map(|m| {
+                let (body, html) = bodies.get(&m.id)?;
+                crate::searchhl::snippet(body, &plan.words).or_else(|| {
+                    if html.is_empty() {
+                        None
+                    } else {
+                        crate::searchhl::snippet(&crate::mime::html_to_text(html), &plan.words)
+                    }
+                })
+            });
+            let found = found.or_else(|| {
+                g.iter().find_map(|m| {
+                    [("To", &m.to), ("Cc", &m.cc)]
+                        .iter()
+                        .find(|(_, v)| !crate::searchhl::matches(v, &plan.words).is_empty())
+                        .map(|(k, v)| format!("{k}: {v}"))
+                })
+            });
             if let (Some(s), Some(first)) = (found, g.first_mut()) {
                 first.preview = s;
             }

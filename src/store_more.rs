@@ -1986,6 +1986,14 @@ impl qobject::Store {
                     return;
                 }
             }
+            // What the server found among mail whose whole text is here counts
+            // only if the search here finds it too: Gmail's search also looks
+            // through a message's HTML source (its styles say "font-family").
+            if !hits.is_empty() {
+                let whole = crate::mailstore::whole_here(&hits);
+                let here = crate::mailstore::search(&q).unwrap_or_default();
+                hits.retain(|id| !whole.contains(id) || here.contains(id));
+            }
             let _ = thread.queue(move |mut store| {
                 if LATEST.load(std::sync::atomic::Ordering::SeqCst) != gen {
                     return;
