@@ -372,6 +372,72 @@ pub fn conversations_ready() -> bool {
     ok
 }
 
+/// Whether messages can be looked up by their conversation's key (the index
+/// `index_thread_keys` makes): a message's conversation is then found in ms,
+/// not by reading every message's References (seconds on a big mailbox).
+pub fn thread_keys_ready() -> bool {
+    THREAD_KEYS.load(std::sync::atomic::Ordering::Relaxed) && conversations_ready()
+}
+pub(crate) static THREAD_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes the index of conversations by key (once; a second or so on a few
+/// hundred thousand messages), after the conversations are worked out. Run on
+/// a thread of its own.
+pub fn index_thread_keys() {
+    let path = db_path();
+    if !path.exists() || !conversations_ready() {
+        return;
+    }
+    let done = with_conn(&path, |c| {
+        let there: bool = c
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'msg_threads_by_tk'", [], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+            > 0;
+        if !there {
+            let _t = crate::Timed::new("indexing conversations by key (once, in the background)");
+            c.execute_batch("CREATE INDEX IF NOT EXISTS msg_threads_by_tk ON msg_threads(tk, date)").map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    });
+    match done {
+        Ok(()) => THREAD_KEYS.store(true, std::sync::atomic::Ordering::Relaxed),
+        Err(e) => eprintln!("almanac: indexing conversations: {e}"),
+    }
+}
+
+/// The messages of the conversations with these keys (lower case), from
+/// `since` on, oldest first, at most `limit`.
+pub fn by_thread_keys(keys: &[String], since: i64, limit: i64) -> Vec<Message> {
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let mut args: Vec<Arg> = vec![Arg::Integer(since)];
+    let marks: Vec<String> = keys
+        .iter()
+        .map(|k| {
+            args.push(Arg::Text(k.to_lowercase()));
+            format!("?{}", args.len())
+        })
+        .collect();
+    let path = db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    // (Ids from the small table, then those messages by id: `rows` reads the
+    // whole list's index.)
+    let ids: Vec<i64> = with_conn(&path, |c| {
+        let sql = format!(
+            "SELECT id FROM msg_threads INDEXED BY msg_threads_by_tk WHERE tk IN ({}) AND date >= ?1 ORDER BY date ASC LIMIT {limit}",
+            marks.join(", ")
+        );
+        let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let found = st.query_map(rusqlite::params_from_iter(args.iter()), |r| r.get(0)).map_err(|e| e.to_string())?;
+        Ok(found.filter_map(Result::ok).collect())
+    })
+    .unwrap_or_default();
+    by_ids(&ids)
+}
+
 /// Works out the conversations of the mail already here (once), a couple of
 /// thousand messages at a time so nothing else waits on the database for
 /// long; then each folder's conversations, in one short step. Run on a

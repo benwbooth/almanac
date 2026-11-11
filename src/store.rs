@@ -2053,14 +2053,19 @@ impl qobject::Store {
 
     #[allow(clippy::too_many_arguments)]
     fn build_conversations(&self) {
-        if !self.db.backed || crate::mailstore::conversations_ready() {
+        if !self.db.backed {
             return;
         }
+        let was_ready = crate::mailstore::conversations_ready();
         let thread = self.qt_thread();
         std::thread::spawn(move || {
             crate::mailstore::build_conversations();
+            // (Then conversations by key: an open message's found at once.)
+            crate::mailstore::index_thread_keys();
             // (The list reads a page at a time from now on.)
-            let _ = thread.queue(|store| store.changed());
+            if !was_ready {
+                let _ = thread.queue(|store| store.changed());
+            }
         });
     }
 

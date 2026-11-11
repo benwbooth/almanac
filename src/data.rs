@@ -1806,6 +1806,24 @@ impl Db {
             }
             (format!("date >= ?1 AND ({})", ors.join(" OR ")), args)
         };
+        // The messages that refer to these (by their conversation's key, from
+        // the index once it's made: a message's key is the first it refers to,
+        // or its own Message-ID; before that, by reading their References).
+        let replies = |known: &[String], from: i64| -> Vec<Message> {
+            if known.is_empty() {
+                return Vec::new();
+            }
+            if crate::mailstore::thread_keys_ready() {
+                // (Not copies of this message itself in other folders: as before,
+                // only the messages that refer to it.)
+                let own = m.message_id.trim();
+                let mut found = crate::mailstore::by_thread_keys(known, from, 500);
+                found.retain(|x| x.id == m.id || own.is_empty() || x.message_id.trim() != own);
+                return found;
+            }
+            let (filter, args) = like(known, from);
+            crate::mailstore::rows(&filter, &args, "date ASC", 500, 0)
+        };
         let search_t = crate::Timed::new("thread: search");
         let cached = CACHE.lock().unwrap().clone().filter(|c| c.0 == selection && c.1 == id);
         let mut cands: Vec<Message>;
@@ -1821,10 +1839,7 @@ impl Db {
                 v.sort_by_key(|x| x.date);
                 v
             };
-            if !known.is_empty() {
-                let (filter, args) = like(&known, newest);
-                cands.extend(crate::mailstore::rows(&filter, &args, "date ASC", 500, 0));
-            }
+            cands.extend(replies(&known, newest));
         } else {
             let mut k: Vec<String> = ids_in(&m.references);
             k.extend(ids_in(&m.in_reply_to));
@@ -1855,10 +1870,7 @@ impl Db {
                 look.push(m.message_id.trim().trim_matches(['<', '>']).to_string());
             }
             look.dedup();
-            if !look.is_empty() {
-                let (filter, args) = like(&look, oldest);
-                cands.extend(crate::mailstore::rows(&filter, &args, "date ASC", 500, 0));
-            }
+            cands.extend(replies(&look, oldest));
             known = look;
         }
         drop(search_t);
@@ -5257,6 +5269,14 @@ mod backed_tests {
         assert_eq!(both["ids"].as_array().unwrap().len(), 3);
         // Hello: uid % 4 in {2, 3} for 1..=30 → 15 messages; 2 and 3 share a conversation.
         assert_eq!(w["total"], 14);
+        // A message's conversation, from the index of conversations by key.
+        crate::mailstore::index_thread_keys();
+        assert!(crate::mailstore::thread_keys_ready());
+        for uid in [1u32, 3] {
+            let id = crate::mailstore::id_at(src, inbox, uid).unwrap();
+            let thread = db.thread(&sel, id);
+            assert_eq!(thread.as_array().map(|a| a.len()), Some(3), "1 and its two replies, opened at {uid}");
+        }
         // A newer list asked for: an older one isn't worked out.
         let mut old = db.window_plan(&sel, "lunch", false, "date", false, false, 0).unwrap();
         old.token = 5;
@@ -5337,6 +5357,52 @@ mod search_timings {
         let mut db = super::Db::load();
         db.backed = true;
         crate::mailstore::build_conversations();
+        // Opening messages: their conversations found by reading References,
+        // then from the index by key.
+        if std::env::var_os("ALMANAC_THREAD_TEST").is_some() {
+            db.release_saved();
+            let sel = "kind:inbox";
+            let page = db.list_window(sel, "", false, "date", false, false, 0, 0, 100).unwrap();
+            let ids: Vec<i64> = page["rows"].as_array().unwrap().iter().filter_map(|r| r["id"].as_i64()).collect();
+            crate::mailstore::index_thread_keys();
+            for (i, id) in ids.iter().enumerate().take(40) {
+                let s = if i % 2 == 0 { sel } else { "kind:archive" };
+                let mut n = [0usize; 2];
+                let mut found = [Vec::new(), Vec::new()];
+                for (j, on) in [false, true].into_iter().enumerate() {
+                    crate::mailstore::THREAD_KEYS.store(on, std::sync::atomic::Ordering::Relaxed);
+                    let t = db.thread(s, *id);
+                    let a = t.as_array().cloned().unwrap_or_default();
+                    n[j] = a.len();
+                    found[j] = a.iter().filter_map(|x| x["id"].as_i64()).collect::<Vec<_>>();
+                    found[j].sort();
+                }
+                if n[0] != n[1] {
+                    let only_like = found[0].iter().filter(|x| !found[1].contains(x)).count();
+                    let only_idx = found[1].iter().filter(|x| !found[0].contains(x)).count();
+                    let m = db.get(*id).unwrap();
+                    eprintln!("differs at {i}: like {} index {} (only like {only_like}, only index {only_idx}) refs? {} irt? {} sel {s}", n[0], n[1], !m.references.is_empty(), !m.in_reply_to.is_empty());
+                }
+            }
+            for indexed in [false, true] {
+                if indexed {
+                    let t = std::time::Instant::now();
+                    crate::mailstore::index_thread_keys();
+                    eprintln!("index made in {} ms", t.elapsed().as_millis());
+                }
+                let mut times: Vec<u128> = Vec::new();
+                let mut sizes = 0usize;
+                for (i, id) in ids.iter().enumerate().take(40) {
+                    let s = if i % 2 == 0 { sel } else { "kind:archive" };
+                    let t = std::time::Instant::now();
+                    sizes += db.thread(s, *id).as_array().map(|a| a.len()).unwrap_or(0);
+                    times.push(t.elapsed().as_millis());
+                }
+                times.sort();
+                eprintln!("threads indexed={indexed}: median {} ms, max {} ms, {} messages in all", times[times.len() / 2], times.last().unwrap(), sizes);
+            }
+            return;
+        }
         for sel in ["kind:inbox", "kind:archive"] {
             for word in ["invoice", "github", "a", "meeting tomorrow"] {
                 for threaded in [false, true] {
