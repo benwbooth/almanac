@@ -159,6 +159,9 @@ pub mod qobject {
         /// Whether the shown mailbox is on a mail server (so the above apply).
         #[qinvokable]
         fn is_server_mailbox(self: &Store, selection: &QString) -> bool;
+        /// Whether message `id` can be archived (its account has an Archive).
+        #[qinvokable]
+        fn can_archive(self: &Store, id: i64) -> bool;
         /// Pictures and PDFs attached to a message, ready to show inside it
         /// ([{name, mime, data (base64)}]); missing ones are fetched in the background.
         #[qinvokable]

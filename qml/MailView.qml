@@ -1819,19 +1819,25 @@ Item {
                     property color main: strong ? Theme.accentInk : Theme.text
                     property color sub: strong ? "#e8f1ff" : Theme.secondary
 
-                    // Swiped sideways (two fingers on a trackpad, or a finger on a
-                    // touch screen), as in Apple Mail: left a little shows Archive
-                    // and Trash buttons (the row stays open on them), left all the
-                    // way moves it to the Trash; right marks it read or unread.
+                    // Swiped sideways (dragged, or two fingers on a trackpad), as in
+                    // Apple Mail: left a little shows Trash and Archive buttons (the
+                    // row stays open on them), left all the way archives it (Archive
+                    // grows to take the row first; the Trash where there's no
+                    // Archive); right marks it read or unread.
                     property real swipe: 0
                     property bool swiping: false
                     readonly property real swipeLimit: Math.min(130, width * 0.35)
                     readonly property real buttonsWidth: 2 * 76
                     readonly property real swipeAll: Math.max(buttonsWidth + 60, width * 0.55)
                     property real swipeFrom: 0
+                    // All the way left: to the Archive (the Trash where there's none).
+                    // (Asked once as a swipe begins.)
+                    property bool archivable: false
+                    readonly property string fullSwipe: archivable ? "archive" : "delete"
+                    function beginSwipe() { swiping = true; archivable = store.canArchive(modelData.id) }
                     Behavior on swipe { enabled: !row.swiping; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                     function swipeBy(dx) {
-                        swiping = true
+                        if (!swiping) beginSwipe()
                         swipe = Math.max(-width * 0.8, Math.min(width * 0.6, swipe + dx))
                         swipeEnd.restart()
                     }
@@ -1840,7 +1846,7 @@ Item {
                         swiping = false
                         var id = modelData.id
                         console.warn("ALMANAC-SWIPE end at " + Math.round(swipe) + " of " + Math.round(width))
-                        if (swipe <= -swipeAll) { swipe = 0; mail.select(id); mail.removeCurrent("delete") }
+                        if (swipe <= -swipeAll) { var act = fullSwipe; swipe = 0; mail.select(id); mail.removeCurrent(act) }
                         else if (swipe <= -50) { swipe = -buttonsWidth; mail.openSwipe = row }
                         else if (swipe >= swipeLimit) { swipe = 0; store.setRead(id, !modelData.read) }
                         else swipe = 0
@@ -1865,29 +1871,36 @@ Item {
                             text: row.modelData.read ? "Unread" : "Read"
                             color: "white"; font.pixelSize: Theme.base; font.weight: Font.DemiBold
                         }
-                        Text {
-                            visible: row.swipe < 0 && row.swipe <= -row.swipeAll
-                            anchors.right: parent.right; anchors.rightMargin: 18; anchors.verticalCenter: parent.verticalCenter
-                            text: "Trash"
-                            color: "white"; font.pixelSize: Theme.base; font.weight: Font.DemiBold
-                        }
+
                     }
                     // Swiped part way left: Archive and Trash, to tap.
                     Row {
                         z: -1.5
-                        visible: row.swipe < 0 && row.swipe > -row.swipeAll
+                        visible: row.swipe < 0
                         anchors.right: parent.right
                         height: parent.height
                         Repeater {
-                            model: [{ act: "archive", label: "Archive", icon: "archive", color: Theme.accent }, { act: "delete", label: "Trash", icon: "trash", color: Theme.red }]
+                            // (Trash inside, the full swipe's at the edge: it's the one that
+                            // grows to take the row.)
+                            model: row.fullSwipe === "archive"
+                                   ? [{ act: "delete", label: "Trash", icon: "trash", color: Theme.red }, { act: "archive", label: "Archive", icon: "archive", color: Theme.accent }]
+                                   : [{ act: "archive", label: "Archive", icon: "archive", color: Theme.accent }, { act: "delete", label: "Trash", icon: "trash", color: Theme.red }]
                             delegate: Rectangle {
                                 required property var modelData
-                                width: Math.max(0, Math.min(76, -row.swipe / 2))
+                                // Part way: the two share what's shown. Far enough that
+                                // letting go moves it to the Trash: Trash takes it all.
+                                readonly property bool trash: modelData.act === row.fullSwipe
+                                readonly property bool past: row.swipe <= -row.swipeAll
+                                width: Math.max(0, past ? (trash ? -row.swipe : 0) : -row.swipe / 2)
+                                Behavior on width { enabled: row.swipe <= -row.swipeAll + 40 && row.swipe >= -row.swipeAll - 40; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
                                 height: parent.height
                                 color: modelData.color
                                 clip: true
                                 Column {
-                                    anchors.centerIn: parent
+                                    // (Filling the row: the label rides along by its edge.)
+                                    x: past && trash ? 20 : (parent.width - width) / 2
+                                    Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+                                    anchors.verticalCenter: parent.verticalCenter
                                     spacing: 4
                                     Icon { anchors.horizontalCenter: parent.horizontalCenter; name: modelData.icon; width: 20; height: 20; color: "white" }
                                     Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.label; color: "white"; font.pixelSize: 12; font.weight: Font.DemiBold }
@@ -2058,7 +2071,7 @@ Item {
                             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.TouchScreen
                             grabPermissions: PointerHandler.CanTakeOverFromAnything
                             onActiveChanged: {
-                                if (active) { row.swiping = true; row.swipeFrom = row.swipe; console.warn("ALMANAC-SWIPE begin drag") }
+                                if (active) { row.beginSwipe(); row.swipeFrom = row.swipe; console.warn("ALMANAC-SWIPE begin drag") }
                                 else row.finishSwipe()
                             }
                             onTranslationChanged: if (active) row.swipe = Math.max(-row.width * 0.8, Math.min(row.width * 0.6, row.swipeFrom + translation.x))

@@ -1902,6 +1902,12 @@ impl qobject::Store {
         q(&Value::Array(out))
     }
 
+    pub(super) fn can_archive(&self, id: i64) -> bool {
+        let Some(m) = self.db.get(id) else { return false };
+        let Some(account) = self.db.folders.iter().find(|f| f.id == m.folder).map(|f| f.account.clone()) else { return false };
+        self.db.folders.iter().any(|f| f.account == account && f.kind == "archive" && f.id != m.folder)
+    }
+
     pub(super) fn is_server_mailbox(&self, selection: &QString) -> bool {
         let _timed = crate::Timed::new("is_server_mailbox");
         !self.db.live_folders_for(&selection.to_string()).is_empty()
