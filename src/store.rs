@@ -2083,6 +2083,8 @@ impl qobject::Store {
             crate::mailstore::build_conversations();
             // (Then conversations by key: an open message's found at once.)
             crate::mailstore::index_thread_keys();
+            // (Then hidden text out of the search, once.)
+            crate::mailstore::drop_hidden_text();
             // (The list reads a page at a time from now on.)
             if !was_ready {
                 let _ = thread.queue(|store| store.changed());

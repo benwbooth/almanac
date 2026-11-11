@@ -372,6 +372,85 @@ pub fn conversations_ready() -> bool {
     ok
 }
 
+/// Takes hidden parts (preview lines, comments) out of the text of mail
+/// already here whose text came from its HTML (and so out of the search),
+/// once, in the background: a few hundred messages at a time with pauses
+/// between, carrying on where it stopped after a restart.
+pub fn drop_hidden_text() {
+    let path = db_path();
+    if !path.exists() {
+        return;
+    }
+    let state: Option<String> = with_conn(&path, |c| Ok(c.query_row("SELECT value FROM meta WHERE key = 'hidden_text_2'", [], |r| r.get(0)).ok())).unwrap_or(None);
+    if state.as_deref() == Some("done") {
+        return;
+    }
+    let _t = crate::Timed::new("taking hidden text out of the search (once, in the background)");
+    let started = std::time::Instant::now();
+    let mut last: i64 = state.and_then(|s| s.parse().ok()).unwrap_or(0);
+    let (mut looked, mut changed) = (0usize, 0usize);
+    loop {
+        let step = with_conn(&path, |c| {
+            let rows: Vec<(i64, String, String, String, String, String)> = {
+                let mut st = c
+                    .prepare_cached(
+                        "SELECT id, body, html, preview, subject, from_name || ' ' || from_email || ' ' || to_addr || ' ' || cc
+                         FROM messages WHERE id > ?1 AND html <> '' ORDER BY id LIMIT 300",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = st
+                    .query_map(params![last], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+                    .map_err(|e| e.to_string())?;
+                rows.flatten().collect()
+            };
+            let Some(end) = rows.last().map(|r| r.0) else { return Ok(None) };
+            let mut fixes = Vec::new();
+            for (id, body, html, preview, subject, people) in &rows {
+                let shown = crate::mime::html_text(html, true);
+                // (Also text left empty by the first, too eager version of this.)
+                if shown != *body && (crate::mime::html_text(html, false) == *body || (body.trim().is_empty() && !shown.trim().is_empty())) {
+                    let was = crate::data::strip_preview(body);
+                    let preview = if *preview == was { crate::data::strip_preview(&shown) } else { preview.clone() };
+                    fixes.push((*id, shown, preview, subject.clone(), people.clone()));
+                }
+            }
+            let tx = c.transaction().map_err(|e| e.to_string())?;
+            {
+                let mut up = tx.prepare_cached("UPDATE messages SET body = ?2, preview = ?3 WHERE id = ?1").map_err(|e| e.to_string())?;
+                let mut unindex = tx.prepare_cached("DELETE FROM search WHERE rowid = ?1").map_err(|e| e.to_string())?;
+                let mut index = tx.prepare_cached("INSERT INTO search(rowid, subject, people, body) VALUES(?1, ?2, ?3, ?4)").map_err(|e| e.to_string())?;
+                for (id, body, preview, subject, people) in &fixes {
+                    up.execute(params![id, body, preview]).map_err(|e| e.to_string())?;
+                    unindex.execute(params![id]).map_err(|e| e.to_string())?;
+                    index.execute(params![id, subject, people, body]).map_err(|e| e.to_string())?;
+                }
+            }
+            tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('hidden_text_2', ?1)", params![end.to_string()]).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(Some((end, rows.len(), fixes.len())))
+        });
+        match step {
+            Ok(Some((end, n, f))) => {
+                last = end;
+                looked += n;
+                changed += f;
+                if looked % 30_000 < 300 {
+                    eprintln!("almanac: hidden text: {looked} looked at, {changed} changed ({}s)", started.elapsed().as_secs());
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                eprintln!("almanac: taking hidden text out: {e}");
+                return;
+            }
+        }
+        // (Mail checks and searches go first.)
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    let _ = with_conn(&path, |c| c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('hidden_text_2', 'done')", []).map_err(|e| e.to_string()));
+    eprintln!("almanac: hidden text taken out of the search: {looked} looked at, {changed} changed, in {}s", started.elapsed().as_secs());
+}
+
 /// Whether messages can be looked up by their conversation's key (the index
 /// `index_thread_keys` makes): a message's conversation is then found in ms,
 /// not by reading every message's References (seconds on a big mailbox).

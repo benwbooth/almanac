@@ -226,7 +226,9 @@ fn hidden_element_end(lower: &str, at: usize) -> Option<usize> {
         return None;
     }
     let squeezed: String = tag.chars().filter(|c| !c.is_whitespace()).collect();
-    let hidden = ["display:none", "visibility:hidden", "mso-hide:all", "opacity:0;", "opacity:0\"", "font-size:0;", "font-size:0px", "font-size:0\"", "max-height:0;", "max-height:0px"]
+    // (Only what's never shown: a layout's font-size:0 or max-height:0 wraps
+    // text that sets its own size inside, and mso-hide only hides in Outlook.)
+    let hidden = ["display:none", "visibility:hidden"]
         .iter()
         .any(|h| squeezed.contains(h))
         || tag.split(|c: char| c.is_whitespace() || c == '>' || c == '/').any(|w| w == "hidden" || w.starts_with("hidden="));
@@ -259,8 +261,16 @@ fn hidden_element_end(lower: &str, at: usize) -> Option<usize> {
 }
 
 pub fn html_to_text(html: &str) -> String {
+    html_text(html, true)
+}
+
+/// The text of HTML (`shown_only`: without comments and hidden parts; false:
+/// as it was taken before, to tell which stored texts came from their HTML).
+pub fn html_text(html: &str, shown_only: bool) -> String {
     let mut out = String::new();
-    let lower = html.to_lowercase();
+    // (ASCII only: the same length as the HTML, so a place in one is the same
+    // place in the other; tag names and styles are ASCII.)
+    let lower = html.to_ascii_lowercase();
     let mut i = 0;
     let bytes = html.as_bytes();
     while i < bytes.len() {
@@ -268,11 +278,11 @@ pub fn html_to_text(html: &str) -> String {
             let rest = &lower[i..];
             // Comments, and what isn't shown (hidden preview lines and the
             // like): not the email's text, so not searched either.
-            if rest.starts_with("<!--") {
+            if shown_only && rest.starts_with("<!--") {
                 i += rest.find("-->").map(|e| e + 3).unwrap_or(rest.len());
                 continue;
             }
-            if let Some(end) = hidden_element_end(&lower, i) {
+            if let Some(end) = shown_only.then(|| hidden_element_end(&lower, i)).flatten() {
                 i = end;
                 continue;
             }
@@ -770,6 +780,11 @@ mod numbered_character_tests {
                     <div hidden>family too</div><p style=\"font-family: Helvetica\">Hello <a href=\"https://x.example/family\">there</a></p></body></html>";
         let text = html_to_text(page);
         assert!(!text.to_lowercase().contains("family"), "{text}");
+        // A layout's zero-size wrapper keeps what's in it.
+        let layout = "<table><tr><td style=\"font-size:0;max-height:0\"><div style=\"font-size:14px\">Kept family text</div></td></tr></table>";
+        assert!(html_to_text(layout).contains("Kept family text"));
+        // (Letters whose lower case is longer, before tags: no panic.)
+        assert!(html_to_text("<p>İİİ <b>x</b> ẞ</p><div>ok</div>").contains("ok"));
         assert!(text.contains("Hello") && text.contains("there"), "{text}");
     }
 }

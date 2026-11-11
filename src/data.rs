@@ -5428,6 +5428,12 @@ mod search_timings {
         crate::mailstore::build_conversations();
         // Opening messages: their conversations found by reading References,
         // then from the index by key.
+        if std::env::var_os("ALMANAC_HIDDEN_TEST").is_some() {
+            let t = std::time::Instant::now();
+            crate::mailstore::drop_hidden_text();
+            eprintln!("hidden text pass: {} s", t.elapsed().as_secs());
+            return;
+        }
         if std::env::var_os("ALMANAC_TICK_TEST").is_some() {
             db.release_saved();
             for i in 0..3 {
