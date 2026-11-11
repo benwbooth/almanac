@@ -1617,6 +1617,17 @@ Item {
                         Layout.preferredHeight: 24
                         implicitHeight: 24
                         placeholderText: "Search mail"
+                        // Finished operators as tokens ("To: Jane Doe", "Unread").
+                        tokens: true
+                        property var names: ({})
+                        labelFor: function(op, value) {
+                            if (["from", "to", "cc", "bcc"].indexOf(op) < 0 || value.indexOf("@") < 0) return ""
+                            if (names[value] === undefined) {
+                                var hit = JSON.parse(store.emailSuggestions(value)).filter(function(p) { return (p.email || "").toLowerCase() === value.toLowerCase() })[0]
+                                names[value] = hit && hit.name ? hit.name : ""
+                            }
+                            return names[value]
+                        }
                         busy: mail.searchBusy
                         text: mail.query
                         // The list is searched once typing pauses (150 ms; a single
