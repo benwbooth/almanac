@@ -155,7 +155,8 @@ WebEngineView {
             + "})(" + JSON.stringify(highlightWords || []) + "," + JSON.stringify(hlColor) + ")")
     }
     // ---- Find in this message (Ctrl+F while reading it, Ctrl+G anywhere, or the
-    // page's right-click menu): a small bar at the top right. Every match is
+    // page's right-click menu): a small bar at the top right. Closed messages of
+    // a conversation that hold the words are opened. Every match is
     // marked (the browser engine's own find, which also looks inside each email's
     // sealed frame), the current one in orange; Enter / Ctrl+G go to the next,
     // Shift+Enter / Ctrl+Shift+G to the one before, Escape or × closes it.
@@ -193,7 +194,61 @@ WebEngineView {
         var q = findField.text
         if (fresh) web.findText("")
         if (q === "") { web.findCount = 0; web.findIndex = 0; web.findDone = false; return }
-        web.findText(q, back ? WebEngineView.FindBackward : 0)
+        // A fresh search first opens the closed messages of a conversation that
+        // hold it (their text isn't on the page while closed), then finds.
+        if (fresh) web.openMatching(q, function() { if (findField.text === q) web.findText(q, back ? WebEngineView.FindBackward : 0) })
+        else web.findText(q, back ? WebEngineView.FindBackward : 0)
+    }
+    // Text folded for matching: lower case, no accents, spaces collapsed.
+    function findFold(t) { return String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ") }
+    // Each message's searchable text, worked out once per message.
+    property var findTexts: ({})
+    function findTextOf(m) {
+        var t = web.findTexts[m.id]
+        if (t !== undefined) return t
+        var html = String(m.html || "").replace(/<(style|script|head|title)\b[\s\S]*?<\/\1\s*>/gi, " ").replace(/<[^>]*>/g, " ")
+            .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+            .replace(/&#(\d+);/g, function(a, n) { return String.fromCharCode(parseInt(n)) })
+        t = web.findFold([m.fromName, m.fromEmail, m.to, m.cc, m.subject, m.body, html].join(" \n "))
+        web.findTexts[m.id] = t
+        return t
+    }
+    property var findAfter: null
+    function openMatching(q, done) {
+        var fq = web.findFold(q).trim(), want = []
+        for (var i = 0; fq !== "" && i < web.messages.length; i++)
+            if (web.findTextOf(web.messages[i]).indexOf(fq) >= 0) want.push(i)
+        if (!want.length) { done(); return }
+        web.runJavaScript("(function(ix){var opened=[];ix.forEach(function(i){var el=document.querySelector('.msg[data-i=\"'+i+'\"]');"
+            + "if(!el||!el.classList.contains('col'))return;el.classList.remove('col');"
+            + "[].forEach.call(el.querySelectorAll('iframe[data-doc]'),function(f){f.srcdoc=f.getAttribute('data-doc');f.removeAttribute('data-doc')});opened.push(i)});return opened})("
+            + JSON.stringify(want) + ")", function(opened) {
+            opened = opened || []
+            // (Kept open when the page is next drawn, as if opened by hand.)
+            for (var k = 0; k < opened.length; k++) { var m = web.messages[opened[k]]; if (m) web.expandedState[m.id] = true }
+            if (!opened.length) { done(); return }
+            // Their frames filled in and sized first (a new srcdoc can look "complete" before it loads: at least ~1/4 s), so the engine's find sees them.
+            web.findAfter = done
+            findSettle.tries = 0
+            findSettle.restart()
+        })
+    }
+    Timer {
+        id: findSettle
+        property int tries: 0
+        interval: 80; repeat: true
+        onTriggered: {
+            tries++
+            web.runJavaScript("[].every.call(document.querySelectorAll('iframe[srcdoc]'),function(f){try{return f.contentDocument&&f.contentDocument.readyState==='complete'}catch(e){return true}})", function(ready) {
+                if (!findSettle.running) return
+                if ((!ready || findSettle.tries < 3) && findSettle.tries < 20) return
+                findSettle.stop()
+                var go = web.findAfter
+                web.findAfter = null
+                // (One more frame for the page to size the opened frames.)
+                if (go) Qt.callLater(go)
+            })
+        }
     }
     function findStep(back) {
         if (!web.finding) { web.openFind(); return }
@@ -681,7 +736,7 @@ WebEngineView {
     settings.navigateOnDropEnabled: false
     settings.showScrollBars: true
 
-    onMessagesChanged: Qt.callLater(render)
+    onMessagesChanged: { web.findTexts = ({}); Qt.callLater(render) }
     onFormattedChanged: { web.formatState = ({}); Qt.callLater(render) }
     onRemoteLoadedChanged: Qt.callLater(render)
     onLoadRemoteAlwaysChanged: Qt.callLater(render)
