@@ -477,6 +477,74 @@ pub fn drop_hidden_text() {
     eprintln!("almanac: hidden text taken out of the search: {looked} looked at, {changed} changed, in {}s", started.elapsed().as_secs());
 }
 
+/// Summaries in the list made again without web addresses (see
+/// `data::without_links`) or a forwarded message's headers, once, in the background: a few hundred at a time,
+/// carrying on where it stopped after a restart.
+pub fn unlink_previews() -> usize {
+    let path = db_path();
+    if !path.exists() {
+        return 0;
+    }
+    let key = "previews_redone_2";
+    let state: Option<String> = with_conn(&path, |c| Ok(c.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| r.get(0)).ok())).unwrap_or(None);
+    if state.as_deref() == Some("done") {
+        return 0;
+    }
+    let _t = crate::Timed::new("taking web addresses out of summaries (once, in the background)");
+    let mut last: i64 = state.and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut changed = 0usize;
+    loop {
+        let step = with_conn(&path, |c| {
+            let end: Option<i64> = c
+                .query_row("SELECT max(id) FROM (SELECT id FROM messages WHERE id > ?1 ORDER BY id LIMIT 2000)", params![last], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            let Some(end) = end else { return Ok(None) };
+            let rows: Vec<(i64, String, String, String)> = {
+                let mut st = c
+                    .prepare_cached(
+                        "SELECT id, body, html, preview FROM messages WHERE id > ?1 AND id <= ?2
+                         AND (preview LIKE '%http%' OR preview LIKE '%www.%' OR preview LIKE '%mailto:%'
+                              OR preview LIKE '%Forwarded message%' OR preview LIKE '%Original Message%')",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = st.query_map(params![last, end], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(|e| e.to_string())?;
+                rows.flatten().collect()
+            };
+            let tx = c.transaction().map_err(|e| e.to_string())?;
+            let mut n = 0;
+            {
+                let mut up = tx.prepare_cached("UPDATE messages SET preview = ?2 WHERE id = ?1").map_err(|e| e.to_string())?;
+                for (id, body, html, preview) in &rows {
+                    let made = if body.trim().is_empty() { crate::data::fetched_preview(body, html) } else { crate::data::strip_preview(body) };
+                    if made != *preview && !made.trim().is_empty() {
+                        up.execute(params![id, made]).map_err(|e| e.to_string())?;
+                        n += 1;
+                    }
+                }
+            }
+            tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)", params![key, end.to_string()]).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(Some((end, n)))
+        });
+        match step {
+            Ok(Some((end, n))) => {
+                last = end;
+                changed += n;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                eprintln!("almanac: taking web addresses out of summaries: {e}");
+                return changed;
+            }
+        }
+        // (Mail checks and searches go first.)
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    let _ = with_conn(&path, |c| c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?1, 'done')", params![key]).map_err(|e| e.to_string()));
+    eprintln!("almanac: web addresses taken out of {changed} summaries");
+    changed
+}
+
 /// Whether messages can be looked up by their conversation's key (the index
 /// `index_thread_keys` makes): a message's conversation is then found in ms,
 /// not by reading every message's References (seconds on a big mailbox).

@@ -2089,8 +2089,10 @@ impl qobject::Store {
             crate::mailstore::index_thread_keys();
             // (Then hidden text out of the search, once.)
             crate::mailstore::drop_hidden_text();
+            // (Then web addresses out of the list's summaries, once.)
+            let unlinked = crate::mailstore::unlink_previews();
             // (The list reads a page at a time from now on.)
-            if !was_ready {
+            if !was_ready || unlinked > 0 {
                 let _ = thread.queue(|store| store.changed());
             }
         });

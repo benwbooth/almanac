@@ -1195,9 +1195,28 @@ pub fn strip_preview(body: &str) -> String {
         return strip_preview(&crate::mime::html_to_text(body));
     }
     let mut out = String::new();
+    // In the header block of a forwarded or quoted message ("---------- Forwarded
+    // message ---------" then From:, Date:, Subject:, To:): left out.
+    let mut in_forward_head = false;
     for line in body.lines() {
-        let l = line.trim();
-        if l.is_empty() || l.starts_with('>') {
+        let t = line.trim();
+        if t.starts_with('>') {
+            continue;
+        }
+        if is_forward_mark(t) {
+            in_forward_head = true;
+            continue;
+        }
+        if in_forward_head {
+            let field = t.split_once(':').map(|(k, _)| k.trim().to_ascii_lowercase()).unwrap_or_default();
+            if t.is_empty() || ["from", "date", "sent", "subject", "to", "cc", "bcc", "reply-to"].contains(&field.as_str()) {
+                continue;
+            }
+            in_forward_head = false;
+        }
+        let unlinked = without_links(line);
+        let l = unlinked.trim();
+        if l.is_empty() {
             continue;
         }
         if !out.is_empty() {
@@ -1209,6 +1228,44 @@ pub fn strip_preview(body: &str) -> String {
         }
     }
     out.chars().take(200).collect()
+}
+
+/// The line that starts a forwarded or quoted message's headers in its text.
+fn is_forward_mark(t: &str) -> bool {
+    let l = t.trim_matches(|c: char| c == '-' || c == '_' || c == '=' || c.is_whitespace()).to_ascii_lowercase();
+    (t.starts_with("--") || t.starts_with("__") || l == "begin forwarded message:")
+        && matches!(l.trim_end_matches(':'), "forwarded message" | "original message" | "begin forwarded message" | "message transféré" | "weitergeleitete nachricht" | "mensaje reenviado")
+}
+
+/// A line of a summary without web addresses: "Google AI Studio<https://…>"
+/// reads "Google AI Studio", and a line that's only a link goes. (The
+/// summary is for reading; the open message keeps its links.)
+fn without_links(line: &str) -> String {
+    let is_link = |w: &str| {
+        let w = w.trim_matches(|c: char| "<>()[]{}\"'.,;:!?".contains(c)).to_ascii_lowercase();
+        w.starts_with("http://") || w.starts_with("https://") || w.starts_with("www.") || w.starts_with("mailto:")
+    };
+    // A link in angle brackets right after a word ("Studio<https://…>"): the word kept.
+    let mut spaced = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(i) = rest.find('<') {
+        spaced.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        match after.find('>') {
+            Some(j) if is_link(&after[..j]) && !after[..j].contains(char::is_whitespace) => {
+                spaced.push(' ');
+                rest = &after[j + 1..];
+            }
+            _ => {
+                spaced.push('<');
+                rest = after;
+            }
+        }
+    }
+    spaced.push_str(rest);
+    let words: Vec<&str> = spaced.split_whitespace().filter(|w| !is_link(w)).collect();
+    // (Words left around a link that was only bracketed: "(see )" → no stray brackets.)
+    words.into_iter().filter(|w| !matches!(*w, "()" | "[]" | "<>")).collect::<Vec<_>>().join(" ")
 }
 
 fn lc(s: &str) -> String {
@@ -5695,5 +5752,27 @@ mod fetched_text_tests {
         db.fill_texts(vec![crate::live::Text { id: 9001, body: String::new(), html: "<div dir=\"ltr\"><br></div>".into(), invite: String::new(), attachments: vec!["photo.jpg".into()], complete: false }]);
         assert!(db.partial_messages("live:x").is_empty(), "fetched: not asked for again");
         assert!(db.messages.iter().any(|m| m.id == 9001 && !m.preview.is_empty() && m.partial), "kept partial (the rest comes when opened), preview set");
+    }
+}
+
+#[cfg(test)]
+mod preview_link_tests {
+    #[test]
+    fn summaries_leave_out_web_addresses() {
+        assert_eq!(
+            super::strip_preview("Google AI Studio<https://c.gle/AGSJxQz5l8m8>\n\nIntroducing Gemini, now in the API."),
+            "Google AI Studio Introducing Gemini, now in the API."
+        );
+        assert_eq!(super::strip_preview("View online: https://x.example/a?b=c\nHello (https://y.example) there"), "View online: Hello there");
+        assert_eq!(super::strip_preview("Mail me <mailto:a@b.example> or see www.example.com."), "Mail me or see");
+        // Not links: kept.
+        assert_eq!(super::strip_preview("a < b and c > d, - and | stay"), "a < b and c > d, - and | stay");
+        // A forwarded message's headers: left out.
+        assert_eq!(
+            super::strip_preview("---------- Forwarded message ---------\nFrom: A <a@x.example>\nDate: Tue, Nov 10\nSubject: Tickets\nTo: <b@x.example>\n\n\nHi families,\nOur play is soon."),
+            "Hi families, Our play is soon."
+        );
+        assert_eq!(super::strip_preview("FYI\n\n-----Original Message-----\nFrom: C\nSent: Monday\nHello"), "FYI Hello");
+        assert_eq!(super::strip_preview("Begin forwarded message:\n\nFrom: D\nSubject: S\n\nBody"), "Body");
     }
 }
