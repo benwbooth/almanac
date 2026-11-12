@@ -164,6 +164,8 @@ Popup {
         flags: Qt.platform.os === "osx" ? (Qt.Window | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint)
                                         : (Qt.Window | Qt.FramelessWindowHint)
         color: Theme.window
+        // (A thousandth of a pixel down, as the main window's: see Main.qml.)
+        Binding { target: ownWindow.contentItem; property: "y"; value: 0.001 }
         ResizeEdges { visible: Qt.platform.os !== "osx" && ownWindow.visibility !== Window.Maximized; window: ownWindow }
         onClosing: function(ev) { ev.accepted = false; sheet.requestClose() }
     }

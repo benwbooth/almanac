@@ -12,6 +12,11 @@ Window {
     // CraftExposeWatch in include/craft_shot.h.
     signal reexposed()
     id: w
+    // A thousandth of a pixel down. At 130% scaling, text that lands exactly
+    // on a half device pixel has its letters rounded up or down one by one,
+    // so round ones (e, o, s) sit a pixel below the rest. Off the exact half,
+    // they all agree. (As in Earshot.)
+    Binding { target: w.contentItem; property: "y"; value: 0.001 }
     property var store
     // The Mail view: replies, forwards and the reading settings come from it.
     property var mail
