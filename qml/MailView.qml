@@ -1223,6 +1223,15 @@ Item {
                 enabled: mail.currentRow !== null
                 onClicked: mail.setCurrentRead(!mail.currentRow.read)
             }
+            Item { width: 6 }
+            // Find in Message (Ctrl+G; Ctrl+F while reading): lit while its bar is open.
+            ToolButtonX {
+                readonly property var pg: mail.shownPage()
+                priority: 1; icon: "findInPage"; tip: "Find in Message (Ctrl+G)"
+                enabled: mail.current !== null
+                checked: !!pg && pg.finding
+                onClicked: if (pg) { if (pg.finding) pg.closeFind(); else pg.openFind() }
+            }
         }
     }
 

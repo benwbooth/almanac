@@ -77,6 +77,12 @@ Canvas {
             line([14.5, 5, 8, 12, 14.5, 19]); break
         case "chevronRight":
             line([9.5, 5, 16, 12, 9.5, 19]); break
+        case "findInPage":
+            // A page with a magnifier over its corner: find in this message.
+            rr(4, 3, 12, 16, 2); c.stroke(); line([7, 7.5, 13, 7.5]); line([7, 11, 10.5, 11])
+            // (A gap cut round the magnifier, so the page's corner doesn't run through it.)
+            c.save(); c.globalCompositeOperation = "destination-out"; circle(15, 15, 5.4, true); c.restore()
+            circle(15, 15, 3.6); line([17.6, 17.6, 21, 21]); break
         case "chevronUp":
             line([6, 14.5, 12, 8.5, 18, 14.5]); break
         case "chevronDown":

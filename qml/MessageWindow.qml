@@ -162,6 +162,12 @@ Window {
                     elide: Text.ElideRight
                     horizontalAlignment: Text.AlignHCenter
                 }
+                ToolButtonX {
+                    readonly property var pg: w.onMessage && w.page ? w.page.page : null
+                    icon: "findInPage"; tip: "Find in Message (Ctrl+F)"; visible: w.onMessage; enabled: w.current !== null
+                    checked: !!pg && pg.finding
+                    onClicked: if (pg) { if (pg.finding) pg.closeFind(); else pg.openFind() }
+                }
                 ToolButtonX { icon: "printer"; tip: "Print (Ctrl+P)"; visible: w.onMessage && !!w.mail.printMessages; enabled: w.current !== null; onClicked: w.mail.printMessages(w.messages) }
                 WindowControls { visible: !w.macOS; window: w; Layout.leftMargin: 6; Layout.fillHeight: true }
             }

@@ -81,6 +81,7 @@ Item {
                 }
                 Item { Layout.fillWidth: true }
                 ToolButtonX { icon: "popOut"; tip: "Open in a Separate Window"; enabled: t.current !== null; onClicked: t.popOutRequested() }
+                ToolButtonX { icon: "findInPage"; tip: "Find in Message (Ctrl+F)"; enabled: t.current !== null; checked: tabPage.finding; onClicked: tabPage.finding ? tabPage.closeFind() : tabPage.openFind() }
                 ToolButtonX { icon: "printer"; tip: "Print"; enabled: t.current !== null; onClicked: t.view.printMessages(t.messages) }
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.borderSoft }
