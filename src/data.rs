@@ -1189,6 +1189,8 @@ pub fn parse_dt(s: &str) -> Option<NaiveDateTime> {
 }
 
 pub fn strip_preview(body: &str) -> String {
+    let unwrapped = crate::mime::drop_stray_headers(body);
+    let body = unwrapped.as_str();
     if crate::mime::looks_like_html(body) {
         return strip_preview(&crate::mime::html_to_text(body));
     }

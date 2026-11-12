@@ -495,7 +495,7 @@ fn part_text(h: &[(String, String)], body: &[u8], depth: usize) -> Option<(Strin
     } else {
         body.to_vec()
     };
-    let text = decode_charset(&raw, param(&params, "charset"));
+    let text = drop_stray_headers(&decode_charset(&raw, param(&params, "charset")));
     if mime == "text/html" {
         Some((html_to_text(&text), false))
     } else if mime == "text/plain" {
@@ -503,6 +503,49 @@ fn part_text(h: &[(String, String)], body: &[u8], depth: usize) -> Option<(Strin
     } else {
         None
     }
+}
+
+/// A part's text without a second set of part headers at its start: some
+/// senders (USPS Informed Delivery) wrap a part's headers in the part again,
+/// so its text begins "Content-Type: text/plain; ...", then a blank line.
+/// Only a block made all of MIME headers (Content-*, MIME-Version) counts;
+/// the text after it is decoded as those headers say when they name an
+/// encoding.
+pub fn drop_stray_headers(text: &str) -> String {
+    let start = text.trim_start_matches(['\r', '\n']);
+    let mut lines = start.split_inclusive('\n');
+    let mut used = 0;
+    let mut heads = Vec::new();
+    let mut ended = false;
+    for line in lines.by_ref() {
+        used += line.len();
+        let l = line.trim_end_matches(['\r', '\n']);
+        if l.is_empty() {
+            ended = true;
+            break;
+        }
+        if (l.starts_with(' ') || l.starts_with('\t')) && !heads.is_empty() {
+            continue;
+        }
+        let Some((name, _)) = l.split_once(':') else { return text.to_string() };
+        let name = name.trim().to_ascii_lowercase();
+        if !(name.starts_with("content-") || name == "mime-version") || name.contains(' ') {
+            return text.to_string();
+        }
+        heads.push(l);
+    }
+    if !ended || heads.is_empty() {
+        return text.to_string();
+    }
+    let rest = &start[used..];
+    let h = headers(heads.join("\n").as_bytes());
+    let cte = get(&h, "content-transfer-encoding").to_lowercase();
+    if cte.contains("base64") || cte.contains("quoted-printable") {
+        let (_, params) = content_type(&h);
+        let charset = param(&params, "charset");
+        return decode_charset(&decode_part(&h, rest.as_bytes()), if charset.is_empty() { "utf-8" } else { charset });
+    }
+    rest.to_string()
 }
 
 fn decode_part(h: &[(String, String)], body: &[u8]) -> Vec<u8> {
@@ -537,7 +580,7 @@ fn find_text(h: &[(String, String)], body: &[u8], depth: usize, want: &str) -> O
         if want == "text/html" && get(h, "content-disposition").to_lowercase().starts_with("attachment") {
             return None;
         }
-        return Some(decode_charset(&decode_part(h, body), param(&params, "charset")));
+        return Some(drop_stray_headers(&decode_charset(&decode_part(h, body), param(&params, "charset"))));
     }
     None
 }
@@ -929,6 +972,26 @@ mod robustness {
             for cut in (0..raw.len()).step_by(37) {
                 let _ = super::parse_whole(&raw.as_bytes()[..cut]);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stray_header_tests {
+    #[test]
+    fn part_headers_repeated_inside_the_part_are_not_text() {
+        // As USPS Informed Delivery sends it: the plain part starts with its headers again.
+        let raw = "From: USPS <u@usps.example>\r\nSubject: Daily Digest\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
+--b\r\nContent-Transfer-Encoding: 7bit\r\nContent-Type: text/plain; charset=ascii\r\n\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\nInformed Delivery(TM)\r\n\r\nToday's Deliveries\r\n\
+--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body><p>Hi</p></body></html>\r\n--b--\r\n";
+        let p = super::parse(raw.as_bytes());
+        assert!(p.body.starts_with("Informed Delivery(TM)"), "{}", p.body);
+        assert_eq!(crate::data::strip_preview("Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 7bit\n\nHello there"), "Hello there");
+        // Encoded inside: decoded as the inner headers say.
+        assert_eq!(super::drop_stray_headers("Content-Transfer-Encoding: base64\n\nSGVsbG8="), "Hello");
+        // Ordinary text that merely starts like a header is kept.
+        for t in ["Content: what we'll cover\n\nAgenda", "Content-Type: text/plain is the default", "Subject: hi\n\nbody"] {
+            assert_eq!(super::drop_stray_headers(t), t);
         }
     }
 }

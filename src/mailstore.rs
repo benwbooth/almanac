@@ -237,6 +237,32 @@ fn open_at(path: &Path) -> Result<Connection, String> {
         tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('html_text', '1')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
+    // Mail whose text began with a second copy of its part headers (USPS
+    // Informed Delivery: "Content-Type: text/plain; ..." in the list's
+    // preview): the headers taken off the text and the preview, once. Found
+    // by the preview, which the list's index holds (no reading every body).
+    let unwrapped: Option<String> = c.query_row("SELECT value FROM meta WHERE key = 'stray_headers'", [], |r| r.get(0)).ok();
+    if unwrapped.as_deref() != Some("1") {
+        let wrong: Vec<(i64, String)> = {
+            let mut st = c
+                .prepare("SELECT id, body FROM messages WHERE preview LIKE 'Content-%' OR preview LIKE 'MIME-Version%'")
+                .map_err(|e| e.to_string())?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok).collect()
+        };
+        let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+        {
+            let mut up = tx.prepare("UPDATE messages SET body = ?1, preview = ?2 WHERE id = ?3").map_err(|e| e.to_string())?;
+            for (id, body) in &wrong {
+                let text = crate::mime::drop_stray_headers(body).trim().to_string();
+                if text != *body {
+                    up.execute(params![text, crate::data::strip_preview(&text), id]).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('stray_headers', '1')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     // Each folder's counts (all, unread, flagged) in a small table the
     // database keeps right itself as messages are added, changed or deleted:
     // the sidebar reads a few rows, however much mail there is. Counted once.
