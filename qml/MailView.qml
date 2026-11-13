@@ -2160,7 +2160,7 @@ Item {
                         }
                         Text {
                             width: parent.width
-                            readonly property string plain: (modelData.account ? modelData.account + " — " : "") + modelData.preview
+                            readonly property string plain: modelData.preview
                             readonly property string marked: mail.hl(plain)
                             text: marked || plain
                             textFormat: marked ? Text.RichText : Text.PlainText
