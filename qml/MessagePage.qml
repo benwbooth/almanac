@@ -1073,7 +1073,7 @@ WebEngineView {
            // colours stay, only darker, and the lightened text on top stays readable.
            + 'var DARK=' + (web.darkify ? 'true' : 'false') + ';'
            + 'function tint(d){if(!DARK||!d||!d.body)return;var win=d.defaultView,els=[d.body].concat([].slice.call(d.body.getElementsByTagName("*")));'
-           + 'for(var i=0;i<els.length;i++){var el=els[i],cs=win.getComputedStyle(el),bi=cs.backgroundImage;if(!bi||bi.indexOf("url(")<0)continue;'
+           + 'for(var i=0;i<els.length;i++){var el=els[i],cs=win.getComputedStyle(el),bi=cs.backgroundImage;if(!bi||bi.indexOf("url(")<0||el.hasAttribute("data-almanac-logo"))continue;'
            + 'var n=bi.split(/,(?![^(]*\\))/).length,modes=[];for(var k=0;k<n;k++)modes.push("multiply");'
            + 'el.style.setProperty("background-blend-mode",modes.join(","),"important");'
            + 'if(/rgba\\(0, 0, 0, 0\\)|transparent/.test(cs.backgroundColor))el.style.setProperty("background-color","#26262b","important")}}'
@@ -1081,6 +1081,11 @@ WebEngineView {
            // once shown, is looked at by Almanac (store.imageStats); a dark one-colour
            // logo is lightened (its hue kept), others get a light backdrop. Only
            // where it's too dark for the background behind it (contrast under 3:1).
+           // The engine's dark mode darkens backgrounds brighter than 205 (of 255,
+           // its default BackgroundBrightnessThreshold) and leaves the rest, so
+           // that's the line lgBack draws. The backdrop is a picture (a light
+           // rectangle), not a background colour: pictures are drawn as they are
+           // (ImagePolicy=1) while a light colour would be darkened with the rest.
            + 'var LOGOS=' + (web.readableLogos ? 'true' : 'false') + ',PANE=' + JSON.stringify(web.rgbOf(Theme.window)) + ';'
            + 'window.__lgAsk=[];window.__lgImgs={};window.__lgStats={};'
            + 'function lgLin(c){c/=255;return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}'
@@ -1088,7 +1093,7 @@ WebEngineView {
            + 'function lgCon(a,b){var x=Math.max(a,b),y=Math.min(a,b);return (x+0.05)/(y+0.05)}'
            + 'function lgBack(im){var d=im.ownerDocument,win=d.defaultView,el=im.parentElement;while(el){var cs=win.getComputedStyle(el);if(cs.backgroundImage&&cs.backgroundImage!=="none")return null;'
            + 'var c=cs.backgroundColor,m=c&&c.match(/rgba?\\(([\\d.]+), ([\\d.]+), ([\\d.]+)(?:, ([\\d.]+))?\\)/);if(m&&(m[4]===undefined||parseFloat(m[4])>0.5)){var r=+m[1],g=+m[2],b=+m[3],br=0.299*r+0.587*g+0.114*b;'
-           + 'if(br>150&&br<=230)return null;if(br>230){var Y=lgLum(r,g,b),L=Y>0.008856?116*Math.cbrt(Y)-16:903.3*Y;L=100-L;var f=(L+16)/116;return L>8?f*f*f:L/903.3}return lgLum(r,g,b)}el=el.parentElement}'
+           + 'if(br>205){var Y=lgLum(r,g,b),L=Y>0.008856?116*Math.cbrt(Y)-16:903.3*Y;L=100-L;var f=(L+16)/116;return L>8?f*f*f:L/903.3}return lgLum(r,g,b)}el=el.parentElement}'
            + 'return lgLum(PANE[0],PANE[1],PANE[2])}'
            + 'function lgSay(s,why){console.log("ALMANAC-LOGO "+why+" | "+s.slice(0,90))}'
            + 'function lgLift(d,t){var id="almanac-lift-"+Math.round(t*10);if(!d.getElementById(id)){var ns="http://www.w3.org/2000/svg",sv=d.createElementNS(ns,"svg");sv.setAttribute("width","0");sv.setAttribute("height","0");sv.style.position="absolute";'
@@ -1099,7 +1104,8 @@ WebEngineView {
            + 'var reads=(st.pct||[]).filter(function(l){return lgCon(l,bg)>=3}).length/9,base="see-through "+Math.round(st.transparent*100)+"%, median luminance "+st.lum.toFixed(3)+", background "+bg.toFixed(3)+", contrast "+lgCon(st.lum,bg).toFixed(2);'
            + 'if(reads>=0.5)return lgSay(src,"left: already reads ("+base+", "+Math.round(reads*100)+"% at 3:1)");if(st.light>=0.15&&st.dark>=0.15)return lgSay(src,"left: carries its own contrast (light "+Math.round(st.light*100)+"%, dark "+Math.round(st.dark*100)+"%)");'
            + 'if(st.mono){for(var k=0;k<(st.lift||[]).length;k++){if(lgCon(st.lift[k],bg)>=3.5){var t=(k+1)/10;im.style.setProperty("filter",lgLift(im.ownerDocument,t),"important");im.setAttribute("data-almanac-logo","lighter "+t);return lgSay(src,"lightened by "+t+": one colour, too dark ("+base+")")}}}'
-           + 'im.style.setProperty("background-color","#f2f2f2","important");im.style.setProperty("padding","4px","important");im.style.setProperty("border-radius","6px","important");im.setAttribute("data-almanac-logo","backdrop");'
+           + 'im.style.setProperty("background-image","url(data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%3E%3Crect%20width=%27100%25%27%20height=%27100%25%27%20fill=%27%23f2f2f2%27/%3E%3C/svg%3E)","important");'
+           + '["background-size:100% 100%","background-repeat:no-repeat","background-origin:border-box","background-blend-mode:normal"].forEach(function(p){var i=p.indexOf(":");im.style.setProperty(p.slice(0,i),p.slice(i+1),"important")});im.style.setProperty("padding","4px","important");im.style.setProperty("border-radius","6px","important");im.setAttribute("data-almanac-logo","backdrop");'
            + 'lgSay(src,"light backdrop: "+(st.mono?"one colour, lightening not enough":"several colours")+", too dark ("+base+")")})}'
            + 'function lgOne(im){if(im.__lg||!im.complete||!im.naturalWidth||im.naturalWidth<16||im.naturalHeight<16)return;var s=im.currentSrc||im.src||"";'
            + 'if(!/^(https?:|data:image\\/(png|gif|webp|svg))/i.test(s)||/\\.jpe?g(\\?|$)/i.test(s))return;im.__lg=1;(window.__lgImgs[s]=window.__lgImgs[s]||[]).push(im);'
