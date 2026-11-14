@@ -1215,7 +1215,8 @@ pub fn strip_preview(body: &str) -> String {
             in_forward_head = false;
         }
         let unlinked = without_links(line);
-        let l = unlinked.trim();
+        let tidied = tidy_preview(&unlinked);
+        let l = tidied.as_str();
         if l.is_empty() {
             continue;
         }
@@ -1228,6 +1229,16 @@ pub fn strip_preview(body: &str) -> String {
         }
     }
     out.chars().take(200).collect()
+}
+
+/// A summary with only real text: runs of separator marks ("-----",
+/// "=====", "_____", "*****", "━━━━") left out, and spaces collapsed to one.
+/// Applied to summaries stored before this too, when they're shown.
+pub fn tidy_preview(s: &str) -> String {
+    let is_rule = |w: &str| {
+        w.chars().count() >= 3 && w.chars().all(|c| "-_=*~#+.·•–—―─━═┄┅┈┉╌╍<>|/\\".contains(c)) && !w.chars().all(|c| c == '.')
+    };
+    s.split_whitespace().filter(|w| !is_rule(w)).collect::<Vec<_>>().join(" ")
 }
 
 /// The line that starts a forwarded or quoted message's headers in its text.
@@ -1431,7 +1442,7 @@ impl Db {
 
     /// What the list shows under the subject.
     fn preview_of(&self, m: &Message) -> String {
-        if m.preview.is_empty() { strip_preview(&m.body) } else { m.preview.clone() }
+        if m.preview.is_empty() { strip_preview(&m.body) } else { tidy_preview(&m.preview) }
     }
 
     /// Messages whose text matches `query` (the database's search index; the
@@ -5767,6 +5778,11 @@ mod preview_link_tests {
         assert_eq!(super::strip_preview("Mail me <mailto:a@b.example> or see www.example.com."), "Mail me or see");
         // Not links: kept.
         assert_eq!(super::strip_preview("a < b and c > d, - and | stay"), "a < b and c > d, - and | stay");
+        assert_eq!(
+            super::strip_preview("Nov 13 Digest\n\nDaily digest created for B\n----------------------------------------\nFirst  item\n==== ____ ━━━━\nWait... ok"),
+            "Nov 13 Digest Daily digest created for B First item Wait... ok"
+        );
+        assert_eq!(super::tidy_preview("Hi -- there ----- ok ... "), "Hi -- there ok ...");
         // A forwarded message's headers: left out.
         assert_eq!(
             super::strip_preview("---------- Forwarded message ---------\nFrom: A <a@x.example>\nDate: Tue, Nov 10\nSubject: Tickets\nTo: <b@x.example>\n\n\nHi families,\nOur play is soon."),
