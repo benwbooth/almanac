@@ -152,15 +152,33 @@ pub fn setup_json() -> Value {
                  "done": "The page shows an Overview instead of a Get started button. If you already see the Overview, this step was done earlier.",
                  "url": gq("auth/overview")},
                 {"title": "Add yourself as a test user",
-                 "detail": "Your copy of Almanac stays in Google's Testing mode, so only people you list here can sign in. This prevents Google's “Access blocked” message.",
+                 "detail": "Until the next step is done, only people you list here can sign in. This prevents Google's “Access blocked” message.",
                  "substeps": [
                      "Press Open page. It opens the Audience page.",
-                     "Leave Publishing status as Testing. Don't press Publish app.",
                      "Scroll down to Test users and press + Add users.",
                      "Type the Gmail address you'll use in Almanac. Have more than one Google account? Add each one, separated by commas.",
                      "Press Save."],
                  "done": "Your address is listed under Test users.",
-                 "trouble": "Seeing “Valid app name, support email, homepage url, and privacy policy url are required for switching the app to external production mode”? That appears when you press Publish app. You don't need to publish. Close that message, press Cancel or Back to testing, and add yourself under Test users instead. While in Testing, Google signs Almanac out after 7 days. When that happens, sign in again from Accounts. It takes one click and keeps all your mail.",
+                 "url": gq("auth/audience")},
+                {"title": "Give the app a homepage and privacy policy",
+                 "detail": "Google needs these before the app can be published (next step). Almanac's own pages work for your copy too.",
+                 "substeps": [
+                     "Press Open page. It opens the Branding page.",
+                     "Under App domain, in Application home page type https://benwbooth.github.io/almanac/",
+                     "In Application privacy policy link type https://benwbooth.github.io/almanac/privacy.html",
+                     "Under Authorized domains press + Add domain and type benwbooth.github.io",
+                     "Press Save at the bottom."],
+                 "done": "The Branding page shows both links after you reload it.",
+                 "url": gq("auth/branding")},
+                {"title": "Publish the app so it stays signed in",
+                 "detail": "While an app is in Google's Testing mode, Google signs it out every 7 days. Published, it stays signed in. You don't need Google to verify it: it's your own copy.",
+                 "substeps": [
+                     "Press Open page. It opens the Audience page.",
+                     "Under Publishing status press Publish app.",
+                     "Press Confirm. If Google says the app needs verification, that's fine: leave it unverified, it still works for you.",
+                     "Already signed in to Almanac before publishing? Sign in once more from Accounts (Sign In Again), so the new sign-in doesn't expire."],
+                 "done": "Publishing status says In production.",
+                 "trouble": "Seeing “Valid app name, support email, homepage url, and privacy policy url are required”? Do the step before this one, then press Publish app again.",
                  "url": gq("auth/audience")},
                 {"title": "Create the sign-in key and download it",
                  "detail": "The key is a small file that identifies your copy of Almanac to Google. It isn't your password.",
@@ -445,7 +463,7 @@ fn post_form(url: &str, body: &str, basic: Option<(&str, &str)>) -> Result<Value
         let code = err.as_str().unwrap_or("error");
         let hint = match code {
             "invalid_client" | "unauthorized_client" => " (check the app's client ID and secret in Sign-in Setup)",
-            "invalid_grant" => " (the sign-in expired: open Accounts and sign in with this account again; it keeps all your mail. Google signs apps in Testing mode out every 7 days)",
+            "invalid_grant" => " (signed out: press Sign In Again; all your mail is kept)",
             "access_denied" => " (Google: add your address under Test users on the project's Audience page, then sign in again)",
             _ => "",
         };
@@ -640,7 +658,7 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
                 let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len());
                 if let Some(err) = q.get("error") {
                     let hint = if provider == GOOGLE && err == "access_denied" {
-                        " — if Google said “Access blocked”, add your Gmail address under Test users on the project's Audience page (leave it in Testing), then sign in again."
+                        " — if Google said “Access blocked”, add your Gmail address under Test users on the project's Audience page (or publish the app there), then sign in again."
                     } else {
                         ""
                     };
@@ -761,6 +779,13 @@ pub fn access_token(account_id: &str, provider: &str, client_id: &str, client_se
     Ok(tok)
 }
 
+/// Whether a sync error means the account's sign-in has run out (the
+/// provider refused its refresh token, or none is kept), so only signing in
+/// again fixes it.
+pub fn is_signed_out(error: &str) -> bool {
+    error.contains("invalid_grant") || error.contains("the sign-in has expired")
+}
+
 /// Drop cached access tokens for an account (after signing in again).
 pub fn forget_tokens(account_id: &str) {
     if let Some(m) = TOKENS.lock().unwrap().as_mut() {
@@ -844,6 +869,14 @@ mod tests {
 
     fn query_of(url: &str) -> HashMap<String, String> {
         url.split_once('?').map(|(_, q)| q).unwrap_or("").split('&').filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), dec(v)))).collect()
+    }
+
+    #[test]
+    fn signed_out_errors_are_recognised() {
+        assert!(is_signed_out("Sign-in failed: invalid_grant Token has been expired or revoked. (signed out: press Sign In Again; all your mail is kept)"));
+        assert!(is_signed_out("Sign in again in Accounts (the sign-in has expired)."));
+        assert!(!is_signed_out("Could not reach the sign-in service: timeout"));
+        assert!(!is_signed_out(""));
     }
 
     #[test]

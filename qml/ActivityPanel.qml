@@ -10,7 +10,11 @@ Rectangle {
     property var store
     readonly property bool working: store.busy || store.progressTotal > 0
     property bool recent: false
-    readonly property bool shown: store.statusText !== "" && (working || recent)
+    readonly property bool busyShown: store.statusText !== "" && (working || recent)
+    // Accounts the provider signed out (Google does every 7 days while the
+    // app is in Testing mode): shown until signed in again, with the button.
+    readonly property var signedOut: { store.revision; return JSON.parse(store.signedOutAccounts()) }
+    readonly property bool shown: busyShown || signedOut.length > 0
     visible: shown
     height: shown ? col.implicitHeight + 18 : 0
     color: Theme.sidebarBottom
@@ -29,8 +33,31 @@ Rectangle {
         anchors.margins: 10
         anchors.topMargin: 9
         spacing: 6
+        Repeater {
+            model: act.signedOut
+            delegate: Column {
+                required property var modelData
+                width: col.width
+                spacing: 4
+                Text {
+                    width: parent.width
+                    text: (modelData.provider === "google" ? "Google" : modelData.provider === "microsoft" ? "Microsoft" : "Your provider")
+                          + " signed out " + modelData.email + "."
+                    color: Theme.red
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
+                ToolButtonX {
+                    text: "Sign In Again"
+                    primary: true
+                    enabled: act.store.signingIn === ""
+                    onClicked: act.store.signInWith(modelData.provider, modelData.clientId, modelData.clientSecret, modelData.tenant)
+                }
+            }
+        }
         // "Work: downloading messages (40 of 1200)…" → "Work — Downloading messages"
         Text {
+            visible: act.busyShown
             width: parent.width
             property var parts: /^(.*) \((\d+) of (\d+)\)…$/.exec(act.store.statusText)
             text: (parts ? parts[1] : act.store.statusText).replace(/^([^:]+): (.)/, function(all, who, c) { return who + " — " + c.toUpperCase() })

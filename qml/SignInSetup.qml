@@ -213,11 +213,11 @@ Popup {
                         Repeater {
                             model: [
                                 "Press Open the Audience Page below. It opens the project Almanac's key came from. If you made more than one project, this may not be the one you added yourself to.",
-                                "Publishing status should say Testing. Don't press Publish app, which asks for a homepage and privacy policy.",
+                                "Publishing status says Testing or In production. In production lets every account sign in and stays signed in; Testing only lets the Test users in, and signs out every 7 days.",
                                 "Under Test users, your exact Gmail address must be listed. If it isn't, press + Add users, type it and press Save. Watch for typos, and use the full address with @gmail.com.",
                                 "Press Sign In Again. Google now always asks which account to use. Pick the address you just listed, not another account that's signed in.",
                                 "When Google says it hasn't verified the app, press Advanced, then Go to Almanac (unsafe).",
-                                "Still blocked? Let Almanac do it all with Set Up in My Browser (above), or press Load Another Key and do steps 5 to 8 of the guide in the project where you added yourself."
+                                "Still blocked? Let Almanac do it all with Set Up in My Browser (above), or press Load Another Key and do steps 5 to 10 of the guide in the project where you added yourself."
                             ]
                             delegate: RowLayout {
                                 required property string modelData

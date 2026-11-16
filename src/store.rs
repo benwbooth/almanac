@@ -263,6 +263,10 @@ pub mod qobject {
         // live accounts (IMAP / SMTP / CalDAV / CardDAV)
         #[qinvokable]
         fn live_accounts(self: &Store) -> QString;
+        /// Google / Microsoft accounts whose sign-in has run out (their
+        /// refresh token was refused), for a "Sign In Again" button (JSON list).
+        #[qinvokable]
+        fn signed_out_accounts(self: &Store) -> QString;
         #[qinvokable]
         fn account_preset(self: &Store, email: &QString) -> QString;
         /// The mail providers offered when adding an account (JSON list).
@@ -1905,6 +1909,22 @@ impl qobject::Store {
     fn live_accounts(&self) -> QString {
         let _timed = crate::Timed::new("live_accounts");
         q(&self.db.live_json())
+    }
+
+    fn signed_out_accounts(&self) -> QString {
+        let list: Vec<serde_json::Value> = self
+            .db
+            .live
+            .iter()
+            .filter(|a| !a.provider.is_empty() && crate::oauth::is_signed_out(&a.last_error))
+            .map(|a| {
+                serde_json::json!({
+                    "id": a.id, "email": a.email, "provider": a.provider,
+                    "clientId": a.client_id, "clientSecret": a.client_secret, "tenant": a.tenant,
+                })
+            })
+            .collect();
+        q(&serde_json::Value::Array(list))
     }
 
     fn discover_account(&self, email: &QString) {

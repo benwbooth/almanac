@@ -848,6 +848,9 @@ impl qobject::Store {
             a.client_id = cid;
             a.client_secret = secret;
             a.tenant = tenant;
+            // The old "signed out" error goes now (the sync started below
+            // sets a new one if something else is wrong).
+            a.last_error.clear();
             store.as_mut().db_mut().upsert_live(a.clone());
             store.as_mut().set_status_text(QString::from(
                 if no_drive {

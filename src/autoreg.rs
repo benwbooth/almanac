@@ -178,7 +178,7 @@ pub fn ai_prompt(provider: &str) -> String {
         crate::oauth::GOOGLE => "In the Google Cloud console (console.cloud.google.com), using my signed-in Google account:\n\
 1. Create a project named \"Almanac\".\n\
 2. Enable these APIs for it: Gmail API, Google Calendar API, People API.\n\
-3. Set up the OAuth consent screen (Google Auth Platform): app name \"Almanac\", user type External, my email as support and developer contact. Then on the Audience page leave it in Testing (do NOT press Publish app; that needs a homepage and privacy policy) and under Test users add my Gmail address (ask me for it if you don't know it), then Save.\n\
+3. Set up the OAuth consent screen (Google Auth Platform): app name \"Almanac\", user type External, my email as support and developer contact. On the Branding page set Application home page to https://benwbooth.github.io/almanac/, Application privacy policy link to https://benwbooth.github.io/almanac/privacy.html, add the authorized domain benwbooth.github.io, and Save. On the Audience page add my Gmail address under Test users (ask me for it if you don't know it), then press Publish app and Confirm (leave it unverified), so Google doesn't sign it out every 7 days.\n\
 4. Create an OAuth client ID of type \"Desktop app\" named \"Almanac\".",
         crate::oauth::MICROSOFT => "In the Microsoft Entra admin center (entra.microsoft.com), using my signed-in Microsoft account:\n\
 1. App registrations › New registration. Name \"Almanac\".\n\
