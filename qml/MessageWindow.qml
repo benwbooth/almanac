@@ -53,14 +53,22 @@ Window {
         tabIndex = to
     }
     function closeTab(i) {
+        if (i < 0 || i >= tabs.length) return
         var l = tabs.slice(); l.splice(i, 1)
-        pages.remove(i)
         if (tabIndex > i || tabIndex >= l.length) tabIndex = Math.max(0, tabIndex - 1)
         tabs = l
+        // (After the above: removing the page destroys it, and it may be what asked.)
+        if (i < pages.count) pages.remove(i)
         // The last one gone: so is the window.
         if (!l.length) Qt.callLater(w.close)
     }
     function takeTab(i) { var t = tabs[i]; closeTab(i); return t }
+    // A page asking to go: done afterwards, found by what it shows.
+    function closeTabOf(id, att) {
+        Qt.callLater(function() {
+            for (var i = 0; i < tabs.length; i++) if (mail.sameTab(tabs[i], { id: id, att: att })) { closeTab(i); return }
+        })
+    }
     function closeOtherTabs(i) { var keep = tabs[i]; for (var j = tabs.length - 1; j >= 0; j--) if (tabs[j] !== keep) closeTab(j); tabIndex = 0 }
     function closeAllTabs() { w.close() }
     // (A window's only tab is already on its own.)
@@ -216,7 +224,7 @@ Window {
                             selection: pg.sel
                             messageId: pg.messageId
                             threaded: pg.thr
-                            onCloseRequested: w.closeTab(pg.index)
+                            onCloseRequested: w.closeTabOf(pg.messageId, pg.att)
                             onComposing: w.toMainWindow()
                         }
                     }
@@ -228,7 +236,7 @@ Window {
                             messageId: pg.messageId
                             name: pg.att
                             inWindow: w.tabs.length < 2
-                            onCloseRequested: w.closeTab(pg.index)
+                            onCloseRequested: w.closeTabOf(pg.messageId, pg.att)
                             onPopOutRequested: w.tearOut(pg.index)
                         }
                     }

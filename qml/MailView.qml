@@ -935,8 +935,13 @@ Item {
     property var tabs: []
     // The tabs' pages (a list model, so closing one tab leaves the others' pages alone).
     ListModel { id: tabPages }
-    function closeAllTabs() { tabIndex = 0; tabPages.clear(); tabs = [] }
+    function closeAllTabs() { tabIndex = 0; tabs = []; tabPages.clear() }
     property int tabIndex: 0
+    // Never pointing past the last tab: that would hide the panes with no tab
+    // in their place (and no tab bar to get back with).
+    onTabIndexChanged: if (tabIndex < 0 || tabIndex > tabs.length) Qt.callLater(fixTabIndex)
+    onTabsChanged: if (tabIndex > tabs.length) Qt.callLater(fixTabIndex)
+    function fixTabIndex() { if (tabIndex < 0 || tabIndex > tabs.length) tabIndex = tabs.length }
     // A tab: a message (and its conversation) or a picture / PDF from one.
     function messageTab(id) {
         var m = JSON.parse(store.message(id))
@@ -994,12 +999,22 @@ Item {
         raiseWindow()
     }
     function closeTab(i) {
+        if (i < 0 || i >= tabs.length) return
         var l = tabs.slice(); l.splice(i, 1)
-        // Only that tab's page goes; the others stay as they are (no reloading).
-        tabPages.remove(i)
+        // The tabs and the open one are settled before the page goes: removing
+        // it destroys the page, which may be what asked for the close.
         if (tabIndex > i + 1) tabIndex--
         else if (tabIndex === i + 1) tabIndex = Math.min(i, l.length)
         tabs = l
+        // Only that tab's page goes; the others stay as they are (no reloading).
+        if (i < tabPages.count) tabPages.remove(i)
+    }
+    // A tab's page asking to go: done afterwards (not inside the page's own
+    // handler), and found by what it shows, as its place may have changed.
+    function closeTabOf(id, att) {
+        Qt.callLater(function() {
+            for (var i = 0; i < tabs.length; i++) if (sameTab(tabs[i], { id: id, att: att })) { closeTab(i); return }
+        })
     }
     Shortcut { sequence: "Ctrl+W"; enabled: mail.visible && mail.tabIndex > 0; onActivated: mail.closeTab(mail.tabIndex - 1) }
     Shortcut { sequence: "Ctrl+Tab"; enabled: mail.visible && mail.tabs.length > 0; onActivated: mail.tabIndex = (mail.tabIndex + 1) % (mail.tabs.length + 1) }
@@ -1114,7 +1129,14 @@ Item {
     TextEdit { id: copyHelper; visible: false }
     RulesDialog { id: rulesDialog; store: mail.store }
     SignaturesDialog { id: signaturesDialog; store: mail.store }
-    OutboxDialog { id: outboxDialog; store: mail.store; onEditRequested: function(p) { compose.openWith(p) } }
+    OutboxDialog {
+        id: outboxDialog; store: mail.store
+        // (A message already being written in its own window: this one goes to Drafts rather than nowhere.)
+        onEditRequested: function(p) {
+            if (compose.detached) { mail.store.saveDraft(JSON.stringify(p)); mail.store.statusText = "Saved in Drafts: finish the message in its own window first." }
+            else compose.openWith(p)
+        }
+    }
     SmartMailboxDialog {
         id: smartDialog
         store: mail.store
@@ -1278,7 +1300,7 @@ Item {
             required property int index
             anchors.left: parent.left; anchors.right: parent.right
             anchors.top: tabStrip.bottom; anchors.bottom: parent.bottom
-            visible: mail.tabIndex === index + 1
+            visible: mail.tabIndex === index + 1 && mail.tabIndex <= mail.tabs.length
             Loader {
                 id: tabLoader
                 anchors.fill: parent
@@ -1292,7 +1314,7 @@ Item {
                     selection: page.sel
                     messageId: page.messageId
                     threaded: page.thr
-                    onCloseRequested: mail.closeTab(page.index)
+                    onCloseRequested: mail.closeTabOf(page.messageId, page.att)
                     onPopOutRequested: mail.tearOut(page.index)
                 }
             }
@@ -1303,7 +1325,7 @@ Item {
                     view: mail
                     messageId: page.messageId
                     name: page.att
-                    onCloseRequested: mail.closeTab(page.index)
+                    onCloseRequested: mail.closeTabOf(page.messageId, page.att)
                     onPopOutRequested: mail.tearOut(page.index)
                 }
             }
@@ -1315,7 +1337,8 @@ Item {
         id: mainSplit
         anchors.left: parent.left; anchors.right: parent.right
         anchors.top: tabStrip.bottom; anchors.bottom: parent.bottom
-        visible: mail.tabIndex === 0
+        // (Also when the open tab is somehow gone: never a blank window.)
+        visible: mail.tabIndex === 0 || mail.tabIndex > mail.tabs.length
         orientation: Qt.Horizontal
         handle: Rectangle {
             implicitWidth: 1

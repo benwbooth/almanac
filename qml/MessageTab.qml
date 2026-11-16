@@ -35,7 +35,14 @@ Item {
     }
     readonly property var current: messages.length ? messages[messages.length - 1] : null
     readonly property var ids: messages.map(function(m) { return m.id })
-    onMessagesChanged: if (!messages.length) Qt.callLater(t.closeRequested)
+    // Only once it has shown something: while the tab is being made its message
+    // isn't set yet, and that empty moment mustn't close it.
+    property bool hadMessages: false
+    onMessagesChanged: {
+        if (messages.length) hadMessages = true
+        else if (hadMessages) Qt.callLater(t.closeIfEmpty)
+    }
+    function closeIfEmpty() { if (!t.messages.length) t.closeRequested() }
 
     function act(m, action) {
         if (action === "delete") { store.deleteMessages(JSON.stringify([m.id])); return }

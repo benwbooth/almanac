@@ -839,8 +839,8 @@ ApplicationWindow {
         })
     }
     // Closing the window quits (the tray icon is how to hide it and keep it running).
-    onClosing: { saveState(); Qt.callLater(Qt.quit) }
-    Connections { target: Qt.application; function onAboutToQuit() { win.saveState(); store.flush() } }
+    onClosing: { mailView.composer.saveIfUnsaved(); saveState(); Qt.callLater(Qt.quit) }
+    Connections { target: Qt.application; function onAboutToQuit() { mailView.composer.saveIfUnsaved(); win.saveState(); store.flush() } }
     // Size and position are saved a moment after the window is moved or
     // resized, so even a crash or a forced quit keeps them.
     Timer { id: geometrySave; interval: 1000; onTriggered: { win.noteNormalSize(); win.saveState() } }

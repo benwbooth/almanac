@@ -8,6 +8,15 @@ Popup {
     property var store
     property var items: { store.revision; return visible ? JSON.parse(store.outbox()) : [] }
     signal editRequested(var payload)
+    // Edit: done here, not in the row's own handler. Taking the message out of
+    // the outbox rebuilds the list and destroys that row, and the message went
+    // with it (it never reached the compose window).
+    function edit(id) {
+        var p = store.cancelOutbox(id)
+        close()
+        var v = p ? JSON.parse(p) : null
+        if (v) editRequested(v)
+    }
     modal: true
     anchors.centerIn: Overlay.overlay
     width: 560
@@ -43,7 +52,7 @@ Popup {
                         Text { text: modelData.subject || "(No Subject)"; color: Theme.text; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
                         Text { text: "To " + modelData.to + " · " + Theme.fmtLongDate(modelData.sendAt); color: Theme.secondary; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
                     }
-                    ToolButtonX { text: "Edit"; onClicked: { var p = store.cancelOutbox(modelData.id); dlg.close(); dlg.editRequested(JSON.parse(p)) } }
+                    ToolButtonX { text: "Edit"; onClicked: dlg.edit(modelData.id) }
                     ToolButtonX { icon: "trash"; tip: "Don't send"; onClicked: store.cancelOutbox(modelData.id) }
                 }
             }

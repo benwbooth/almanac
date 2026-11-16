@@ -429,6 +429,9 @@ Popup {
         draftId = store.saveDraft(JSON.stringify(payload()))
         savedSnapshot = snapshot()
     }
+    // Almanac quitting (or its window closed) with a message being written:
+    // kept in Drafts, not lost.
+    function saveIfUnsaved() { if (active && hasContent() && snapshot() !== savedSnapshot) saveDraftNow() }
     Timer {
         interval: 30000
         repeat: true
