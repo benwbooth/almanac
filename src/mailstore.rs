@@ -477,34 +477,35 @@ pub fn drop_hidden_text() {
     eprintln!("almanac: hidden text taken out of the search: {looked} looked at, {changed} changed, in {}s", started.elapsed().as_secs());
 }
 
-/// Summaries in the list made again without web addresses (see
-/// `data::without_links`) or a forwarded message's headers, once, in the background: a few hundred at a time,
+/// Summaries in the list made again (`data::fetched_preview`: from the HTML's
+/// text when there is HTML, without web addresses or a forwarded message's
+/// headers), once, in the background: a few hundred at a time,
 /// carrying on where it stopped after a restart.
 pub fn unlink_previews() -> usize {
     let path = db_path();
     if !path.exists() {
         return 0;
     }
-    let key = "previews_redone_2";
+    let key = "previews_redone_3";
     let state: Option<String> = with_conn(&path, |c| Ok(c.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| r.get(0)).ok())).unwrap_or(None);
     if state.as_deref() == Some("done") {
         return 0;
     }
-    let _t = crate::Timed::new("taking web addresses out of summaries (once, in the background)");
+    let _t = crate::Timed::new("making the list's summaries again (once, in the background)");
     let mut last: i64 = state.and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut changed = 0usize;
     loop {
         let step = with_conn(&path, |c| {
             let end: Option<i64> = c
-                .query_row("SELECT max(id) FROM (SELECT id FROM messages WHERE id > ?1 ORDER BY id LIMIT 2000)", params![last], |r| r.get(0))
+                .query_row("SELECT max(id) FROM (SELECT id FROM messages WHERE id > ?1 ORDER BY id LIMIT 400)", params![last], |r| r.get(0))
                 .map_err(|e| e.to_string())?;
             let Some(end) = end else { return Ok(None) };
             let rows: Vec<(i64, String, String, String)> = {
                 let mut st = c
                     .prepare_cached(
-                        "SELECT id, body, html, preview FROM messages WHERE id > ?1 AND id <= ?2
-                         AND (preview LIKE '%http%' OR preview LIKE '%www.%' OR preview LIKE '%mailto:%'
-                              OR preview LIKE '%Forwarded message%' OR preview LIKE '%Original Message%')",
+                        "SELECT id, body, html, preview FROM messages WHERE id > ?1 AND id <= ?2 AND preview <> ''
+                         AND (html <> '' OR preview LIKE '%<%' OR preview LIKE '%http%' OR preview LIKE '%www.%'
+                              OR preview LIKE '%mailto:%' OR preview LIKE '%Forwarded message%' OR preview LIKE '%Original Message%')",
                     )
                     .map_err(|e| e.to_string())?;
                 let rows = st.query_map(params![last, end], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(|e| e.to_string())?;
@@ -515,7 +516,7 @@ pub fn unlink_previews() -> usize {
             {
                 let mut up = tx.prepare_cached("UPDATE messages SET preview = ?2 WHERE id = ?1").map_err(|e| e.to_string())?;
                 for (id, body, html, preview) in &rows {
-                    let made = if body.trim().is_empty() { crate::data::fetched_preview(body, html) } else { crate::data::strip_preview(body) };
+                    let made = crate::data::fetched_preview(body, html);
                     if made != *preview && !made.trim().is_empty() {
                         up.execute(params![id, made]).map_err(|e| e.to_string())?;
                         n += 1;
@@ -541,7 +542,7 @@ pub fn unlink_previews() -> usize {
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
     let _ = with_conn(&path, |c| c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?1, 'done')", params![key]).map_err(|e| e.to_string()));
-    eprintln!("almanac: web addresses taken out of {changed} summaries");
+    eprintln!("almanac: {changed} summaries made again");
     changed
 }
 
@@ -1467,7 +1468,7 @@ fn save_to(path: &Path, messages: &[Message], saved: &mut HashMap<i64, u64>) -> 
                 let attachments = serde_json::to_string(&m.attachments).unwrap_or_else(|_| "[]".into());
                 let fresh = !saved.contains_key(&m.id);
                 if has_text(m) {
-                    let preview = if m.preview.is_empty() { crate::data::strip_preview(&m.body) } else { m.preview.clone() };
+                    let preview = if m.preview.is_empty() { crate::data::preview_from(&m.body, &m.html) } else { m.preview.clone() };
                     full.execute(params![
                         m.id, m.folder, m.source, m.uid as i64, m.date, m.from_name, m.from_email, m.to, m.cc, m.subject,
                         m.body, m.html, m.invite, m.read, m.flagged, attachments, m.raw_ref, m.remind_at, m.message_id,

@@ -435,21 +435,31 @@ pub struct Db {
 /// `Db::messages`, newest first), sorted; with the number of rows and of unread ones.
 /// A live account's messages still waiting for their text, from the database
 /// (inbox first, newest first), for the download on the sync's thread.
-    /// The preview of a message whose text just arrived: from its plain text,
-    /// else its HTML, else an invisible mark. Never empty: an empty preview
-    /// means "text not fetched yet", and messages with no text of their own
-    /// (photos with an empty line of HTML) were fetched again on every check
-    /// for new mail, ahead of the new mail itself.
+    /// The preview of a message whose text just arrived (see `preview_from`),
+    /// else an invisible mark. Never empty: an empty preview means "text not
+    /// fetched yet", and messages with no text of their own (photos with an
+    /// empty line of HTML) were fetched again on every check for new mail,
+    /// ahead of the new mail itself.
     pub fn fetched_preview(body: &str, html: &str) -> String {
-        let p = strip_preview(body);
+        let p = preview_from(body, html);
         if !p.trim().is_empty() {
             return p;
         }
-        let h = strip_preview(&crate::mime::html_to_text(html));
-        if !h.trim().is_empty() {
-            return h;
-        }
         "\u{200B}".into()
+    }
+
+    /// The line under the subject: the text the email shows, taken from its
+    /// HTML when it has some (the plain-text copy senders add is often junk:
+    /// Outlook's <!--[if mso]> blocks, table pipes, Markdown), else from its
+    /// plain text.
+    pub fn preview_from(body: &str, html: &str) -> String {
+        if !html.trim().is_empty() {
+            let h = strip_preview(&crate::mime::html_to_text(html));
+            if !h.trim().is_empty() {
+                return h;
+            }
+        }
+        strip_preview(body)
     }
 
 pub fn partial_wanted(source: &str, folders: &[Folder]) -> Vec<crate::live::Wanted> {
@@ -1191,7 +1201,9 @@ pub fn parse_dt(s: &str) -> Option<NaiveDateTime> {
 pub fn strip_preview(body: &str) -> String {
     let unwrapped = crate::mime::drop_stray_headers(body);
     let body = unwrapped.as_str();
-    if crate::mime::looks_like_html(body) {
+    // (HTML, or plain text with HTML left in it, such as Outlook's
+    // <!--[if mso]> blocks: the text it shows.)
+    if crate::mime::looks_like_html(body) || body.contains("<!--") {
         return strip_preview(&crate::mime::html_to_text(body));
     }
     let mut out = String::new();
@@ -1239,6 +1251,23 @@ pub fn tidy_preview(s: &str) -> String {
         w.chars().count() >= 3 && w.chars().all(|c| "-_=*~#+.·•–—―─━═┄┅┈┉╌╍<>|/\\".contains(c)) && !w.chars().all(|c| c == '.')
     };
     s.split_whitespace().filter(|w| !is_rule(w)).collect::<Vec<_>>().join(" ")
+}
+
+/// A summary without the subject at its start (many emails open with their
+/// title, which the list already shows on the line above).
+pub fn without_subject(preview: &str, subject: &str) -> String {
+    let subject = subject.trim();
+    let mut rest = preview.trim_start();
+    if subject.chars().count() >= 4 {
+        let head: String = rest.chars().take(subject.chars().count()).collect();
+        if head.to_lowercase() == subject.to_lowercase() {
+            let after = rest[head.len()..].trim_start_matches(|c: char| c.is_whitespace() || ":-–—|·".contains(c));
+            if !after.is_empty() {
+                rest = after;
+            }
+        }
+    }
+    rest.to_string()
 }
 
 /// The line that starts a forwarded or quoted message's headers in its text.
@@ -1428,7 +1457,7 @@ impl Db {
     pub fn forget_saved_text(&mut self) {
         for m in self.messages.iter_mut().filter(|m| crate::mailstore::has_text(m)) {
             if m.preview.is_empty() {
-                m.preview = strip_preview(&m.body);
+                m.preview = preview_from(&m.body, &m.html);
             }
             m.body = String::new();
             m.html = String::new();
@@ -1442,7 +1471,8 @@ impl Db {
 
     /// What the list shows under the subject.
     fn preview_of(&self, m: &Message) -> String {
-        if m.preview.is_empty() { strip_preview(&m.body) } else { tidy_preview(&m.preview) }
+        let p = if m.preview.is_empty() { preview_from(&m.body, &m.html) } else { tidy_preview(&m.preview) };
+        without_subject(&p, &m.subject)
     }
 
     /// Messages whose text matches `query` (the database's search index; the
@@ -5789,6 +5819,15 @@ mod preview_link_tests {
             "Hi families, Our play is soon."
         );
         assert_eq!(super::strip_preview("FYI\n\n-----Original Message-----\nFrom: C\nSent: Monday\nHello"), "FYI Hello");
+        // Outlook's conditional blocks left in a plain-text copy: only the words.
+        assert_eq!(
+            super::strip_preview("School news\n\n<!--[if gte mso 9]>\n<v:background xmlns:v=\"urn:x\" fill=\"t\">\n</v:background>\n<![endif]-->\nHello families"),
+            "School news Hello families"
+        );
+        // From the HTML when there is some.
+        assert_eq!(super::preview_from("|<!--[if mso]> junk", "<html><body><p>Real <b>words</b></p></body></html>"), "Real words");
+        assert_eq!(super::without_subject("School Safety Update and Appreciation Dear families", "School Safety Update and Appreciation"), "Dear families");
+        assert_eq!(super::without_subject("Hi", "Hi"), "Hi");
         assert_eq!(super::strip_preview("Begin forwarded message:\n\nFrom: D\nSubject: S\n\nBody"), "Body");
     }
 }
