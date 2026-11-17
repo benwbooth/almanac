@@ -486,7 +486,7 @@ pub fn unlink_previews() -> usize {
     if !path.exists() {
         return 0;
     }
-    let key = "previews_redone_3";
+    let key = "previews_redone_4";
     let state: Option<String> = with_conn(&path, |c| Ok(c.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| r.get(0)).ok())).unwrap_or(None);
     if state.as_deref() == Some("done") {
         return 0;
