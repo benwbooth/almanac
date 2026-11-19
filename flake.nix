@@ -5,6 +5,8 @@
   # own nixpkgs (/etc/nixos). Keep the two together: Almanac then uses the very
   # Qt build the desktop's plugins (Breeze style, Plasma theme) were made for.
   # On a newer Qt they can't load and menus and dialogs lose the desktop look.
+  # It still starts when the two drift apart: the desktop's plugins from
+  # another Qt release are kept out at start (include/craft_plugins.h).
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs = { self, nixpkgs }:

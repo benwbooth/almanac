@@ -28,6 +28,7 @@ inline bool craftPrintPdf(const QString& html, const QString& path)
 }
 
 #include <QtWidgets/QApplication>
+#include "craft_plugins.h"
 #include <QtPrintSupport/QPrintDialog>
 #include <QtPrintSupport/QPrinter>
 
@@ -99,6 +100,8 @@ inline void craftCreateApp(const QString& plugins, const QString& session)
         argv[2] = id.data();
         argc = 3;
     }
+    // The desktop's plugins from another Qt release would stop it starting.
+    craftKeepForeignQtPluginsOut(plugins);
     new QApplication(argc, argv);
     qApp->installEventFilter(new CraftExposeWatch(qApp));
     QCoreApplication::setApplicationName(QStringLiteral("Almanac"));
