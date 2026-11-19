@@ -1291,7 +1291,7 @@ Item {
         model: tabPages
         // A message (and its conversation), or a picture / PDF from one.
         delegate: Item {
-            id: page
+            id: tabSlot
             readonly property var content: tabLoader.item
             required property var messageId
             required property string sel
@@ -1304,18 +1304,18 @@ Item {
             Loader {
                 id: tabLoader
                 anchors.fill: parent
-                sourceComponent: page.att !== "" ? attachmentPage : messagePage
+                sourceComponent: tabSlot.att !== "" ? attachmentPage : messagePage
             }
             Component {
                 id: messagePage
                 MessageTab {
                     store: mail.store
                     view: mail
-                    selection: page.sel
-                    messageId: page.messageId
-                    threaded: page.thr
-                    onCloseRequested: mail.closeTabOf(page.messageId, page.att)
-                    onPopOutRequested: mail.tearOut(page.index)
+                    selection: tabSlot.sel
+                    messageId: tabSlot.messageId
+                    threaded: tabSlot.thr
+                    onCloseRequested: mail.closeTabOf(tabSlot.messageId, tabSlot.att)
+                    onPopOutRequested: mail.tearOut(tabSlot.index)
                 }
             }
             Component {
@@ -1323,10 +1323,10 @@ Item {
                 AttachmentView {
                     store: mail.store
                     view: mail
-                    messageId: page.messageId
-                    name: page.att
-                    onCloseRequested: mail.closeTabOf(page.messageId, page.att)
-                    onPopOutRequested: mail.tearOut(page.index)
+                    messageId: tabSlot.messageId
+                    name: tabSlot.att
+                    onCloseRequested: mail.closeTabOf(tabSlot.messageId, tabSlot.att)
+                    onPopOutRequested: mail.tearOut(tabSlot.index)
                 }
             }
         }
