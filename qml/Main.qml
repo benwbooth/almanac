@@ -875,7 +875,7 @@ ApplicationWindow {
         Qt.callLater(store.buildConversations)
         store.startupMark("window set up")
         // Window buttons drawn like the desktop's own (Plasma's round Breeze ones here).
-        if (Qt.platform.os === "linux") Theme.windowButtons = /KDE/i.test(store.desktopName()) ? "breeze" : "adwaita"
+        if (Qt.platform.os === "linux") Theme.windowButtons = /GNOME|Unity|Pantheon|Budgie|Cinnamon|MATE|XFCE/i.test(store.desktopName()) ? "adwaita" : "breeze"
         if (store.arg("--buttons") !== "") Theme.windowButtons = store.arg("--buttons")
         restoreState()
         // --width N (for pictures of narrow windows)
