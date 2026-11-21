@@ -136,6 +136,7 @@ fn main() {
     .qt_module("PrintSupport")
     .qt_module("Pdf")
     .qt_module("WebEngineQuick")
+    .cpp_file("include/craft_text.h")
     .files(["src/store.rs", "src/rows.rs"])
     .build();
 }

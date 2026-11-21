@@ -3,6 +3,7 @@ import QtQuick.Controls.Basic
 // The system's own menus (desktop style on Linux, native on macOS and Windows)
 import Qt.labs.platform as P
 import QtQuick.Layouts
+import org.craft.text
 
 // The writing area of a message (and of an event's notes): the formatting bar
 // over the text, which scrolls to keep the cursor in view. Markdown as you
@@ -33,9 +34,26 @@ ColumnLayout {
     signal formatRequested(bool plain)
 
     property bool converting: false
+    // The gap under a paragraph (Enter starts a new one; Shift+Enter is a line
+    // break inside it). Pixels, as sent in the HTML (the same as a <p>'s).
+    property int paragraphGap: 12
+    function enterPressed(ev) {
+        // Shift+Enter: Qt's own line break, within the paragraph.
+        if (ev.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) { ev.accepted = false; return }
+        if (blockMarkdown() || splitQuote()) { ev.accepted = true; return }
+        if (!plain) {
+            var at = CraftText.newParagraph(body, paragraphGap)
+            if (at >= 0) { body.cursorPosition = at; ev.accepted = true; return }
+        }
+        ev.accepted = false
+    }
     // The text as plain text (tables, code blocks among them, have marks of
     // their own in the editor's text: line breaks in the plain version).
-    function plainText() { return body.getText(0, body.length).replace(/\u200b/g, "").replace(/[\ufdd0\ufdd1]/g, "\n") }
+    function plainText() {
+        // (a blank line after each paragraph, where the HTML has its gap)
+        if (!plain) return CraftText.plainText(body).replace(/\u200b/g, "")
+        return body.getText(0, body.length).replace(/\u200b/g, "").replace(/[\ufdd0\ufdd1]/g, "\n")
+    }
     function esc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }
     // Text of the current paragraph up to the cursor: [start, text].
     function lineBeforeCursor() {
@@ -713,8 +731,8 @@ ColumnLayout {
                     spellMenu.open()
                 }
             }
-            Keys.onReturnPressed: function(ev) { ev.accepted = sheet.blockMarkdown() || sheet.splitQuote() }
-            Keys.onEnterPressed: function(ev) { ev.accepted = sheet.blockMarkdown() || sheet.splitQuote() }
+            Keys.onReturnPressed: function(ev) { sheet.enterPressed(ev) }
+            Keys.onEnterPressed: function(ev) { sheet.enterPressed(ev) }
             onWidthChanged: barTimer.restart()
             Repeater {
                 model: sheet.quoteBars

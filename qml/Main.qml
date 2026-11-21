@@ -900,6 +900,21 @@ ApplicationWindow {
         // One message by its id (--id N), for pictures and checks against a copy of real mail.
         else if (p === "message") Qt.callLater(function() { mailView.openMessageById(parseInt(store.arg("--id"))) })
         else if (p === "compose") mailView.composeNew()
+        // Paragraphs (Enter) and line breaks (Shift+Enter) in a new message: logs what's sent.
+        else if (p === "compose-paragraphs") {
+            mailView.composer.openWith({ to: "riley@example.org", subject: "Paragraphs" })
+            Qt.callLater(function() {
+                var c = mailView.composer
+                c.typeForCheck("Hi Riley,")
+                c.enterForCheck(false); c.typeForCheck("Here are my notes for the kickoff.", true)
+                c.enterForCheck(false); c.typeForCheck("First line", true)
+                c.enterForCheck(true); c.typeForCheck("second line of the same paragraph.", true)
+                c.enterForCheck(false); c.typeForCheck("Thanks,", true)
+                var m = c.payload()
+                console.log("PARAGRAPHS-HTML", m.html)
+                console.log("PARAGRAPHS-TEXT", JSON.stringify(m.body))
+            })
+        }
         // Send Again on a message with pictures attached.
         else if (p === "send-again") { mailView.selectSubject("Photos from the trip"); Qt.callLater(function() { mailView.sendAgain() }) }
         // A new message with a file attached (--attach <path>), e.g. a big one.

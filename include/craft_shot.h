@@ -29,6 +29,7 @@ inline bool craftPrintPdf(const QString& html, const QString& path)
 
 #include <QtWidgets/QApplication>
 #include "craft_plugins.h"
+#include "craft_text.h"
 #include <QtPrintSupport/QPrintDialog>
 #include <QtPrintSupport/QPrinter>
 
@@ -104,6 +105,7 @@ inline void craftCreateApp(const QString& plugins, const QString& session)
     craftKeepForeignQtPluginsOut(plugins);
     new QApplication(argc, argv);
     qApp->installEventFilter(new CraftExposeWatch(qApp));
+    craftRegisterText();
     QCoreApplication::setApplicationName(QStringLiteral("Almanac"));
     QCoreApplication::setOrganizationName(QStringLiteral("Craft Anything"));
     // Inside a Flatpak the desktop file is named after the app ID.

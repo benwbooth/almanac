@@ -190,6 +190,12 @@ Popup {
             else { body.insert(body.cursorPosition, text[i] === " " ? "\u00a0" : esc(text[i])); inlineMarkdown() }
         }
     }
+    // Enter (or Shift+Enter) for checks: what the key does.
+    function enterForCheck(shift) {
+        var ev = { modifiers: shift ? Qt.ShiftModifier : Qt.NoModifier, accepted: false }
+        editor.enterPressed(ev)
+        if (!ev.accepted) body.insert(body.cursorPosition, "<br>")
+    }
     // Done with the message (sent, saved or thrown away).
     function finish() { if (detached) putBack(); else if (inline) fromInline(); else close() }
 
@@ -290,7 +296,7 @@ Popup {
         else { body.forceActiveFocus(); body.cursorPosition = 0 }
     }
     // (Tables, code blocks among them, have marks of their own in the editor's text: line breaks in the plain version.)
-    function plainText() { return body.getText(0, body.length).replace(/\u200b/g, "").replace(/[\ufdd0\ufdd1]/g, "\n") }
+    function plainText() { return editor.plainText() }
     function payload() {
         var p = { to: toRow.field.text, cc: ccRow.field.text, bcc: bccRow.field.text, subject: subjectRow.field.text,
                   body: plainText() + cloudCard(false), html: plain ? "" : withCard(store.restoreColours(body.text.replace(/\u200b|&#8203;/g, ""), JSON.stringify(colourBack))),
