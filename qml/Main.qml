@@ -348,8 +348,11 @@ ApplicationWindow {
         // The menu's shortcuts take the keys first, so they must also reach the
         // email's page (the browser engine), whose focus sits on an item inside
         // the view: walk up to whatever offers the action.
-        for (var f = win.activeFocusItem; f; f = f.parent)
+        for (var f = win.activeFocusItem; f; f = f.parent) {
+            // (The message editor pastes formatted text in its own colours.)
+            if (name === "paste" && typeof f.pasteFormatted === "function") { f.pasteFormatted(); return }
             if (typeof f[name] === "function") { f[name](); return }
+        }
     }
     P.Menu {
         id: appMenu

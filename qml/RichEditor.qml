@@ -236,6 +236,14 @@ ColumnLayout {
         codeSpot.restart()
         return true
     }
+    // Paste: formatted text (copied from an email or a page) in the message's
+    // own colours and font; Markdown as formatting; anything else as Qt pastes it.
+    function paste() {
+        if (plain) { pastePlain(false); return }
+        var at = CraftText.pasteClean(body)
+        if (at >= 0) { body.cursorPosition = at; return }
+        if (!pasteMarkdown()) body.paste()
+    }
     // Pasting text written in Markdown: as formatting (and code blocks).
     function pasteMarkdown() {
         if (!markdown || plain) return false
@@ -696,9 +704,11 @@ ColumnLayout {
             // Markdown pasted: as formatting.
             Keys.onPressed: function(ev) {
                 if (!ev.matches(StandardKey.Paste)) return
-                if (sheet.plain) { sheet.pastePlain(false); ev.accepted = true }
-                else if (sheet.pasteMarkdown()) ev.accepted = true
+                sheet.paste()
+                ev.accepted = true
             }
+            // The Edit menu's Paste (and its Ctrl+V) come here rather than to Qt's own paste.
+            function pasteFormatted() { sheet.paste() }
             // The underlines (they move with the text; hidden while it's being changed).
             Repeater {
                 model: sheet.lintsFresh ? sheet.lints : []
