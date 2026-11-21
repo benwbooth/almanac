@@ -81,6 +81,14 @@ Item {
         }
         WebEngineView {
             id: page
+
+            // Edit menu actions (Main.qml's editAction finds these from the focused item).
+            function copy() { page.triggerWebAction(WebEngineView.Copy) }
+            function cut() { page.triggerWebAction(WebEngineView.Cut) }
+            function paste() { page.triggerWebAction(WebEngineView.Paste) }
+            function undo() { page.triggerWebAction(WebEngineView.Undo) }
+            function redo() { page.triggerWebAction(WebEngineView.Redo) }
+            function selectAll() { page.triggerWebAction(WebEngineView.SelectAll) }
             Layout.fillWidth: true
             Layout.fillHeight: true
             backgroundColor: Theme.window

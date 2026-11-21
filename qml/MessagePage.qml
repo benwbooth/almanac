@@ -15,6 +15,14 @@ import Qt.labs.platform as P
 // message here).
 WebEngineView {
     id: web
+
+    // Edit menu actions (Main.qml's editAction finds these from the focused item).
+    function copy() { web.triggerWebAction(WebEngineView.Copy) }
+    function cut() { web.triggerWebAction(WebEngineView.Cut) }
+    function paste() { web.triggerWebAction(WebEngineView.Paste) }
+    function undo() { web.triggerWebAction(WebEngineView.Undo) }
+    function redo() { web.triggerWebAction(WebEngineView.Redo) }
+    function selectAll() { web.triggerWebAction(WebEngineView.SelectAll) }
     // Back from the desktop's overview, or after the window lost and got back the
     // focus, the page could draw black until clicked: the browser engine stopped
     // drawing meanwhile. Hiding and showing it right away wasn't always enough (it
