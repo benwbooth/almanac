@@ -173,9 +173,11 @@ Popup {
         // (see Main.qml). The keys are the sheet's and the editor's Shortcuts.
         GlobalMenuBar { id: globalMenu; window: ownWindow; model: sheet.menuModel; onTriggered: id => sheet.menuAction(id) }
         onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
-        NativeAppMenu {
+        AppMenu {
             id: appMenu
-            minimumWidth: 150
+            accent: Theme.accentFill
+            dark: Theme.dark
+            popupType: Popup.Item
             model: sheet.menuModel
             onTriggered: id => { sheet.fromAppMenu = true; sheet.menuAction(id); sheet.fromAppMenu = false }
         }
@@ -187,10 +189,10 @@ Popup {
         if (!detached) return []
         var canSend = toRow.field.text.trim() !== "", fmt = !editor.plain
         return [
-            { title: "Almanac", items: [
+            { title: "Almanac", icon: "almanac", items: [
                 { id: "quit", text: "Quit Almanac", icon: "application-exit" }
             ] },
-            { title: "File", items: [
+            { title: "File", icon: "folder-open", items: [
                 { id: "send", text: "Send", icon: "mail-send", shortcut: "Ctrl+Return", enabled: canSend },
                 { id: "sendLater", text: "Send Later…", icon: "view-calendar-day", enabled: canSend },
                 { id: "saveDraft", text: "Save Draft", icon: "document-save", shortcut: "Ctrl+S" },
@@ -200,18 +202,18 @@ Popup {
                 { id: "discard", text: "Throw Away…", icon: "edit-delete" },
                 { id: "close", text: "Close", icon: "window-close", shortcut: "Esc" }
             ] },
-            { title: "Edit", items: [
+            { title: "Edit", icon: "document-edit", items: [
                 { id: "undo", text: "Undo", icon: "edit-undo", shortcut: "Ctrl+Z" },
                 { id: "redo", text: "Redo", icon: "edit-redo", shortcut: "Ctrl+Shift+Z" },
                 { separator: true },
                 { id: "cut", text: "Cut", icon: "edit-cut", shortcut: "Ctrl+X" },
                 { id: "copy", text: "Copy", icon: "edit-copy", shortcut: "Ctrl+C" },
                 { id: "paste", text: "Paste", icon: "edit-paste", shortcut: "Ctrl+V" },
-                { id: "pastePlain", text: "Paste as Plain Text", icon: "edit-paste", shortcut: "Ctrl+Shift+V" },
+                { id: "pastePlain", text: "Paste as Plain Text", icon: "text-plain", shortcut: "Ctrl+Shift+V" },
                 { id: "pasteQuote", text: "Paste as Quotation", icon: "format-text-blockquote", shortcut: "Ctrl+Alt+Shift+V" },
                 { id: "selectAll", text: "Select All", icon: "edit-select-all", shortcut: "Ctrl+A" }
             ] },
-            { title: "Format", items: [
+            { title: "Format", icon: "preferences-desktop-font", items: [
                 { id: "bold", text: "Bold", icon: "format-text-bold", shortcut: "Ctrl+B", enabled: fmt },
                 { id: "italic", text: "Italic", icon: "format-text-italic", shortcut: "Ctrl+I", enabled: fmt },
                 { id: "underline", text: "Underline", icon: "format-text-underline", shortcut: "Ctrl+U", enabled: fmt },
@@ -221,7 +223,7 @@ Popup {
                 { id: "quoteMore", text: "Increase Quote Level", icon: "format-indent-more", shortcut: "Ctrl+'", enabled: fmt },
                 { id: "quoteLess", text: "Decrease Quote Level", icon: "format-indent-less", shortcut: "Ctrl+Alt+'", enabled: fmt }
             ] },
-            { title: "Window", items: [
+            { title: "Window", icon: "window", items: [
                 { id: "minimize", text: "Minimize", icon: "window-minimize" },
                 { id: "zoom", text: "Zoom", icon: "window-maximize" }
             ] }

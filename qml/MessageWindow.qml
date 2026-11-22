@@ -119,15 +119,15 @@ Window {
         if (!menusReady) return []
         var cur = w.current, many = w.tabs.length > 1
         return [
-            { title: "Almanac", items: [
+            { title: "Almanac", icon: "almanac", items: [
                 { id: "quit", text: "Quit Almanac", icon: "application-exit" }
             ] },
-            { title: "File", items: [
+            { title: "File", icon: "folder-open", items: [
                 { id: "close", text: many ? "Close Tab" : "Close Window", icon: "window-close", shortcut: "Ctrl+W" },
                 { separator: true },
                 { id: "print", text: "Print…", icon: "document-print", enabled: cur !== null && !!w.mail && !!w.mail.printMessages }
             ] },
-            { title: "Edit", items: [
+            { title: "Edit", icon: "document-edit", items: [
                 { id: "copy", text: "Copy", icon: "edit-copy", shortcut: "Ctrl+C" },
                 { id: "selectAll", text: "Select All", icon: "edit-select-all", shortcut: "Ctrl+A" },
                 { separator: true },
@@ -135,7 +135,7 @@ Window {
                 { id: "findNext", text: "Find Next", icon: "go-down-search", shortcut: "Ctrl+G", enabled: cur !== null && !!w.findPage },
                 { id: "findPrevious", text: "Find Previous", icon: "go-up-search", shortcut: "Ctrl+Shift+G", enabled: cur !== null && !!w.findPage }
             ] },
-            { title: "Message", items: [
+            { title: "Message", icon: "mail-message", items: [
                 { id: "reply", text: "Reply", icon: "mail-reply-sender", shortcut: "Ctrl+R", enabled: cur !== null },
                 { id: "replyAll", text: "Reply All", icon: "mail-reply-all", shortcut: "Ctrl+Shift+R", enabled: cur !== null },
                 { id: "forward", text: "Forward", icon: "mail-forward", shortcut: "Ctrl+Shift+F", enabled: cur !== null },
@@ -148,7 +148,7 @@ Window {
                 { id: "junk", text: "Move to Junk", icon: "mail-mark-junk", shortcut: "Ctrl+Shift+J", enabled: cur !== null },
                 { id: "delete", text: "Delete", icon: "edit-delete", shortcut: "Del", enabled: cur !== null }
             ] },
-            { title: "Window", items: [
+            { title: "Window", icon: "window", items: [
                 { id: "minimize", text: "Minimize", icon: "window-minimize" },
                 { id: "zoom", text: "Zoom", icon: "window-maximize" },
                 { separator: true },
@@ -199,9 +199,11 @@ Window {
     }
     GlobalMenuBar { id: globalMenu; window: w; model: w.menuModel; onTriggered: id => w.menuAction(id) }
     onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
-    NativeAppMenu {
+    AppMenu {
         id: appMenu
-        minimumWidth: 150
+        accent: Theme.accentFill
+        dark: Theme.dark
+        popupType: Popup.Item
         model: w.menuModel
         onTriggered: id => { w.fromAppMenu = true; w.menuAction(id); w.fromAppMenu = false }
     }

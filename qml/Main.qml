@@ -370,15 +370,19 @@ ApplicationWindow {
     readonly property var menuModel: {
         if (!menusReady) return []
         var cur = mailView.current, row = mailView.currentRow
+        var sortIcons = { date: "clock", from: "im-user", subject: "sort-name", to: "mail-sent", attachments: "mail-attachment", flags: "flag", unread: "mail-unread" }
         var sortItems = ["date", "from", "subject", "to", "attachments", "flags", "unread"].map(function(k) {
-            return { id: "sortBy:" + k, text: mailView.sortNames[k], icon: "view-sort", checkable: true, checked: mailView.sortBy === k }
+            return { id: "sortBy:" + k, text: mailView.sortNames[k], icon: sortIcons[k], checkable: true, checked: mailView.sortBy === k }
         })
+        // (The icon theme has no orange or purple flag: those get the plain one.)
+        var flagIcons = ["flag-red", "flag", "flag-yellow", "flag-green", "flag-blue", "flag", "flag-black"]
         var flagItems = []
-        for (var c = 0; c < 7; c++) flagItems.push({ id: "flagColour:" + c, text: Theme.flagNames[c] })
-        flagItems.push({ separator: true }, { id: "flagColour:-1", text: "Clear Flag" })
+        for (var c = 0; c < 7; c++) flagItems.push({ id: "flagColour:" + c, text: Theme.flagNames[c], icon: flagIcons[c] })
+        flagItems.push({ separator: true }, { id: "flagColour:-1", text: "Clear Flag", icon: "edit-clear" })
         var many = mailView.sidebar.accounts.length > 1
+        var folderIcons = { inbox: "mail-folder-inbox", drafts: "document-edit", sent: "mail-folder-sent", archive: "archive-insert", junk: "mail-mark-junk", trash: "user-trash" }
         var moveItems = (mailView.folders || []).map(function(f) {
-            return { id: "moveTo:" + f.id, text: (many ? f.account + " › " : "") + f.name, icon: "folder" }
+            return { id: "moveTo:" + f.id, text: (many ? f.account + " › " : "") + f.name, icon: folderIcons[f.kind] || "folder" }
         })
         var fullScreen = win.visibility === Window.FullScreen
         var view = win.views[win.section]
@@ -417,9 +421,9 @@ ApplicationWindow {
                 { id: "selectAll", text: "Select All", icon: "edit-select-all", shortcut: "Ctrl+A" },
                 { separator: true },
                 { id: "find", text: "Find…", icon: "edit-find", shortcut: "Ctrl+F" },
-                { id: "findInMessage", text: "Find in Message…", icon: "edit-find", shortcut: "Ctrl+G", enabled: win.section === 0 && cur !== null },
+                { id: "findInMessage", text: "Find in Message…", icon: "edit-find-mail", shortcut: "Ctrl+G", enabled: win.section === 0 && cur !== null },
                 { id: "spelling", text: "Spelling and Grammar", icon: "tools-check-spelling", items: [
-                    { id: "spellCheck", text: "Check Spelling While Typing", icon: "tools-check-spelling", checkable: true, checked: mailView.composer.spellOn },
+                    { id: "spellCheck", text: "Check Spelling While Typing", icon: "checkmark", checkable: true, checked: mailView.composer.spellOn },
                     { id: "grammarCheck", text: "Check Grammar With Spelling", icon: "story-editor", checkable: true, checked: mailView.composer.grammarOn, enabled: mailView.composer.spellOn }
                 ] }
             ] },
@@ -430,7 +434,7 @@ ApplicationWindow {
                 { separator: true },
                 { id: "toggleSidebar", text: view.sidebarShown ? "Hide Mailbox List" : "Show Mailbox List", icon: "view-sidetree", shortcut: "Ctrl+Alt+S" },
                 { id: "threaded", text: "Organize by Conversation", icon: "view-list-tree", shortcut: "Ctrl+Shift+O", checkable: true, checked: mailView.threaded },
-                { id: "layout", text: "Layout", icon: "view-split-left-right", items: [
+                { id: "layout", text: "Layout", icon: "view-choose", items: [
                     { id: "layoutStandard", text: "Standard (List Beside Message)", icon: "view-split-left-right", shortcut: "Ctrl+Alt+H", checkable: true, checked: !mailView.classic },
                     { id: "layoutClassic", text: "Classic (List Above Message)", icon: "view-split-top-bottom", shortcut: "Ctrl+Alt+K", checkable: true, checked: mailView.classic },
                     { separator: true },
@@ -441,11 +445,11 @@ ApplicationWindow {
                     { id: "sortAscending", text: "Ascending", icon: "view-sort-ascending", shortcut: "Ctrl+Alt+Up", checkable: true, checked: mailView.sortAscending },
                     { id: "sortDescending", text: "Descending", icon: "view-sort-descending", shortcut: "Ctrl+Alt+Down", checkable: true, checked: !mailView.sortAscending }
                 ]) },
-                { id: "filter", text: "Filter", icon: "view-filter", items: [
+                { id: "filter", text: "Filter", icon: "filter-symbolic", items: [
                     { id: "allMessages", text: "All Messages", icon: "view-list-details", shortcut: "Ctrl+Alt+M", checkable: true, checked: !mailView.unreadOnly },
                     { id: "onlyUnread", text: "Only Unread", icon: "mail-mark-unread", shortcut: "Ctrl+Alt+U", checkable: true, checked: mailView.unreadOnly }
                 ] },
-                { id: "messageView", text: "Message", icon: "text-html", items: [
+                { id: "messageView", text: "Message", icon: "document-preview", items: [
                     { id: "formatted", text: "Formatted", icon: "text-html", shortcut: "Ctrl+Alt+F", checkable: true, checked: mailView.formatted },
                     { id: "plainText", text: "Plain Text Alternative", icon: "text-plain", shortcut: "Ctrl+Alt+P", checkable: true, checked: !mailView.formatted },
                     { separator: true },
@@ -496,17 +500,17 @@ ApplicationWindow {
                 { separator: true },
                 { id: "archive", text: "Archive", icon: "archive-insert", shortcut: "Ctrl+Shift+A", enabled: cur !== null },
                 { id: "junk", text: "Move to Junk", icon: "mail-mark-junk", shortcut: "Ctrl+Shift+J", enabled: cur !== null },
-                { id: "moveTo", text: "Move to", icon: "folder-move", enabled: cur !== null && moveItems.length > 0, items: moveItems },
+                { id: "moveTo", text: "Move to", icon: "edit-move", enabled: cur !== null && moveItems.length > 0, items: moveItems },
                 { separator: true },
                 { id: "applyRules", text: "Apply Rules", icon: "system-run", shortcut: "Ctrl+Alt+Shift+A" },
                 { id: "vip", text: cur && cur.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs", icon: "emblem-favorite", shortcut: "Ctrl+Alt+V", enabled: cur !== null },
                 { id: "block", text: cur && cur.blocked ? "Unblock Sender" : "Block Sender", icon: "im-ban-user", shortcut: "Ctrl+Alt+B", enabled: cur !== null },
                 { separator: true },
-                { id: "remind", text: "Remind Me", icon: "chronometer", enabled: cur !== null, items: [
+                { id: "remind", text: "Remind Me", icon: "appointment-reminder", enabled: cur !== null, items: [
                     { id: "remind:hour", text: "In 1 Hour", icon: "chronometer", shortcut: "Ctrl+Alt+Shift+H", enabled: cur !== null },
-                    { id: "remind:tonight", text: "Tonight", icon: "chronometer", shortcut: "Ctrl+Alt+Shift+T", enabled: cur !== null },
-                    { id: "remind:tomorrow", text: "Tomorrow", icon: "chronometer", shortcut: "Ctrl+Alt+Shift+O", enabled: cur !== null },
-                    { id: "remind:week", text: "Next Week", icon: "chronometer", shortcut: "Ctrl+Alt+Shift+W", enabled: cur !== null },
+                    { id: "remind:tonight", text: "Tonight", icon: "weather-clear-night", shortcut: "Ctrl+Alt+Shift+T", enabled: cur !== null },
+                    { id: "remind:tomorrow", text: "Tomorrow", icon: "view-calendar-upcoming-days", shortcut: "Ctrl+Alt+Shift+O", enabled: cur !== null },
+                    { id: "remind:week", text: "Next Week", icon: "view-calendar-week", shortcut: "Ctrl+Alt+Shift+W", enabled: cur !== null },
                     { separator: true },
                     { id: "remind:none", text: "Remove Reminder", icon: "edit-clear-history", shortcut: "Ctrl+Alt+Shift+X", enabled: cur !== null }
                 ] },
@@ -644,11 +648,12 @@ ApplicationWindow {
     }
     GlobalMenuBar { id: globalMenu; window: win; model: win.menuModel; onTriggered: id => win.menuAction(id) }
     onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
-    // The ☰ menu: the same model as a native menu, as it always was.
-    NativeAppMenu {
+    // The ☰ menu: the same model in the shared glass look, in Almanac's colours.
+    AppMenu {
         id: appMenu
-        // The top level has short names: a narrow menu, each section with its icon.
-        minimumWidth: 150
+        accent: Theme.accentFill
+        dark: Theme.dark
+        popupType: Popup.Item
         model: win.menuModel
         onTriggered: id => { win.fromAppMenu = true; win.menuAction(id); win.fromAppMenu = false }
     }
