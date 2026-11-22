@@ -173,14 +173,11 @@ Popup {
         // (see Main.qml). The keys are the sheet's and the editor's Shortcuts.
         GlobalMenuBar { id: globalMenu; window: ownWindow; model: sheet.menuModel; onTriggered: id => sheet.menuAction(id) }
         onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
-        AppMenu {
+        NativeAppMenu {
             id: appMenu
-            // (The window's palette has no hover colour for menu items.)
-            palette.light: Theme.hover
-            palette.midlight: Theme.pressed
+            minimumWidth: 150
             model: sheet.menuModel
             onTriggered: id => { sheet.fromAppMenu = true; sheet.menuAction(id); sheet.fromAppMenu = false }
-            onClosed: sheet.focusBeforeMenu = null
         }
     }
     property bool fromAppMenu: false
@@ -642,7 +639,7 @@ Popup {
                     text: "☰"
                     textSize: 19
                     tip: "Menu: every command for this message"
-                    onClicked: { sheet.focusBeforeMenu = ownWindow.activeFocusItem; appMenu.openAt(menuButton, 0, menuButton.height + 4) }
+                    onClicked: { sheet.focusBeforeMenu = ownWindow.activeFocusItem; appMenu.openBelow(menuButton) }
                 }
                 ToolButtonX {
                     id: sendButton

@@ -199,14 +199,11 @@ Window {
     }
     GlobalMenuBar { id: globalMenu; window: w; model: w.menuModel; onTriggered: id => w.menuAction(id) }
     onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
-    AppMenu {
+    NativeAppMenu {
         id: appMenu
-        // (The window's palette has no hover colour for menu items.)
-        palette.light: Theme.hover
-        palette.midlight: Theme.pressed
+        minimumWidth: 150
         model: w.menuModel
         onTriggered: id => { w.fromAppMenu = true; w.menuAction(id); w.fromAppMenu = false }
-        onClosed: w.focusBeforeMenu = null
     }
 
     Shortcut { sequences: [StandardKey.Close, "Escape"]; onActivated: w.tabs.length > 1 ? w.closeTab(w.tabIndex) : w.close() }
@@ -247,7 +244,7 @@ Window {
                     text: "☰"
                     textSize: 19
                     tip: "Menu: every command for this window"
-                    onClicked: { w.focusBeforeMenu = w.activeFocusItem; appMenu.openAt(menuButton, 0, menuButton.height + 4) }
+                    onClicked: { w.focusBeforeMenu = w.activeFocusItem; appMenu.openBelow(menuButton) }
                 }
                 RowLayout {
                     visible: w.onMessage

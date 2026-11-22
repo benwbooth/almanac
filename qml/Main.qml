@@ -383,7 +383,7 @@ ApplicationWindow {
         var fullScreen = win.visibility === Window.FullScreen
         var view = win.views[win.section]
         return [
-            { title: "Almanac", items: [
+            { title: "Almanac", icon: "almanac", iconSource: store.iconUrl("almanac"), items: [
                 { id: "about", text: "About Almanac", icon: "help-about", shortcut: "Shift+F1" },
                 { separator: true },
                 { id: "settings", text: "Settings…", icon: "configure", shortcut: "Ctrl+," },
@@ -393,7 +393,7 @@ ApplicationWindow {
                 { separator: true },
                 { id: "quit", text: "Quit Almanac", icon: "application-exit", shortcut: "Ctrl+Q" }
             ] },
-            { title: "File", items: [
+            { title: "File", icon: "folder-open", items: [
                 { id: "newMessage", text: "New Message", icon: "mail-message-new", shortcut: "Ctrl+N" },
                 { id: "newEvent", text: "New Event", icon: "appointment-new", shortcut: "Ctrl+Shift+E" },
                 { id: "newContact", text: "New Contact", icon: "contact-new", shortcut: "Ctrl+Shift+C" },
@@ -406,7 +406,7 @@ ApplicationWindow {
                 { separator: true },
                 { id: "print", text: "Print…", icon: "document-print", shortcut: "Ctrl+P" }
             ] },
-            { title: "Edit", items: [
+            { title: "Edit", icon: "document-edit", items: [
                 { id: "undo", text: !win.typing && store.mailUndoText !== "" ? store.mailUndoText : "Undo", icon: "edit-undo", shortcut: "Ctrl+Z" },
                 { id: "redo", text: "Redo", icon: "edit-redo", shortcut: "Ctrl+Shift+Z" },
                 { separator: true },
@@ -423,7 +423,7 @@ ApplicationWindow {
                     { id: "grammarCheck", text: "Check Grammar With Spelling", icon: "story-editor", checkable: true, checked: mailView.composer.grammarOn, enabled: mailView.composer.spellOn }
                 ] }
             ] },
-            { title: "View", items: [
+            { title: "View", icon: "view-visible", items: [
                 { id: "showMail", text: "Mail", icon: "mail-message", shortcut: "Ctrl+1", checkable: true, checked: win.section === 0 },
                 { id: "showCalendar", text: "Calendar", icon: "view-calendar", shortcut: "Ctrl+2", checkable: true, checked: win.section === 1 },
                 { id: "showContacts", text: "Contacts", icon: "x-office-address-book", shortcut: "Ctrl+3", checkable: true, checked: win.section === 2 },
@@ -458,7 +458,7 @@ ApplicationWindow {
                 { separator: true },
                 { id: "fullScreen", text: fullScreen ? "Exit Full Screen" : "Enter Full Screen", icon: "view-fullscreen", shortcut: "F11" }
             ] },
-            { title: "Mailbox", items: [
+            { title: "Mailbox", icon: "mail-folder-inbox", items: [
                 { id: "getMail", text: "Get All New Mail", icon: "mail-receive", shortcut: "Ctrl+Shift+N" },
                 { separator: true },
                 { id: "eraseTrash", text: "Erase Deleted Items", icon: "edit-delete", shortcut: "Ctrl+Shift+Del" },
@@ -479,7 +479,7 @@ ApplicationWindow {
                 { id: "rules", text: "Rules…", icon: "view-filter", shortcut: "Ctrl+Alt+R" },
                 { id: "signatures", text: "Signatures…", icon: "mail-signed", shortcut: "Ctrl+Alt+Shift+G" }
             ] },
-            { title: "Message", items: [
+            { title: "Message", icon: "mail-message", items: [
                 { id: "sendAgain", text: "Send Again", icon: "mail-send", shortcut: "Ctrl+Shift+D", enabled: cur !== null },
                 { separator: true },
                 { id: "reply", text: "Reply", icon: "mail-reply-sender", shortcut: "Ctrl+R", enabled: cur !== null },
@@ -512,7 +512,7 @@ ApplicationWindow {
                 ] },
                 { id: "outbox", text: "Outbox (Send Later)…", icon: "mail-folder-outbox", shortcut: "Ctrl+Alt+O" }
             ] },
-            { title: "Calendar", items: [
+            { title: "Calendar", icon: "view-calendar", items: [
                 { id: "newEvent#2", text: "New Event", icon: "appointment-new", shortcut: "Ctrl+Shift+E" },
                 { id: "newCalendar", text: "New Calendar…", icon: "view-calendar-list", shortcut: "Ctrl+Alt+N" },
                 { id: "newSubscription", text: "New Calendar Subscription…", icon: "view-calendar-upcoming-events", shortcut: "Ctrl+Alt+Shift+S" },
@@ -525,7 +525,7 @@ ApplicationWindow {
                 { separator: true },
                 { id: "refreshSubscriptions", text: "Refresh Subscriptions", icon: "view-refresh", shortcut: "Ctrl+Alt+Shift+F" }
             ] },
-            { title: "Contacts", items: [
+            { title: "Contacts", icon: "x-office-address-book", items: [
                 { id: "newContact#2", text: "New Contact", icon: "contact-new", shortcut: "Ctrl+Shift+C" },
                 { id: "newGroup", text: "New Group…", icon: "user-group-new", shortcut: "Ctrl+Alt+Shift+K" },
                 { id: "newSmartGroup", text: "New Smart Group…", icon: "user-group-properties", shortcut: "Ctrl+Alt+Shift+J" },
@@ -533,14 +533,14 @@ ApplicationWindow {
                 { id: "duplicates", text: "Look for Duplicates…", icon: "edit-duplicate", shortcut: "Ctrl+Alt+D" },
                 { id: "myCard", text: "Go to My Card", icon: "user-identity", shortcut: "Ctrl+Alt+Shift+I" }
             ] },
-            { title: "Window", items: [
+            { title: "Window", icon: "window", items: [
                 { id: "minimize", text: "Minimize", icon: "window-minimize", shortcut: "Ctrl+M" },
                 { id: "zoom", text: "Zoom", icon: "window-maximize", shortcut: "Ctrl+Alt+Z" },
                 { separator: true },
                 { id: "messageViewer", text: "Message Viewer", icon: "mail-message", shortcut: "Ctrl+Alt+0" },
                 { id: "outbox#2", text: "Outbox", icon: "mail-folder-outbox", shortcut: "Ctrl+Alt+O" }
             ] },
-            { title: "Help", items: [
+            { title: "Help", icon: "help-contents", items: [
                 { id: "keys", text: "Keyboard Shortcuts", icon: "help-keybord-shortcuts", shortcut: "F1" },
                 { id: "setupGuide#2", text: "Setup Guide", icon: "help-contents", shortcut: "Ctrl+F1" }
             ] }
@@ -644,18 +644,17 @@ ApplicationWindow {
     }
     GlobalMenuBar { id: globalMenu; window: win; model: win.menuModel; onTriggered: id => win.menuAction(id) }
     onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
-    AppMenu {
+    // The ☰ menu: the same model as a native menu, as it always was.
+    NativeAppMenu {
         id: appMenu
-        // (The window's palette has no hover colour for menu items.)
-        palette.light: Theme.hover
-        palette.midlight: Theme.pressed
+        // The top level has short names: a narrow menu, each section with its icon.
+        minimumWidth: 150
         model: win.menuModel
         onTriggered: id => { win.fromAppMenu = true; win.menuAction(id); win.fromAppMenu = false }
-        onClosed: win.focusBeforeMenu = null
     }
     function openAppMenu() {
         win.focusBeforeMenu = win.activeFocusItem
-        appMenu.openAt(menuButton, 0, menuButton.height + 4)
+        appMenu.openBelow(menuButton)
     }
 
     // The menus' keys (the menus only show them). Delete, Archive, Junk and
