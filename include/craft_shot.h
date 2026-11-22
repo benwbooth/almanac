@@ -28,6 +28,8 @@ inline bool craftPrintPdf(const QString& html, const QString& path)
 }
 
 #include <QtWidgets/QApplication>
+#include <QtQml/qqml.h>
+#include "global_menu.h"
 #include "craft_plugins.h"
 #include "craft_text.h"
 #include <QtPrintSupport/QPrintDialog>
@@ -106,7 +108,12 @@ inline void craftCreateApp(const QString& plugins, const QString& session)
     new QApplication(argc, argv);
     qApp->installEventFilter(new CraftExposeWatch(qApp));
     craftRegisterText();
+    // The menus in the desktop's global menu bar (hearth, Plasma's Global Menu).
+    qmlRegisterType<GlobalMenuBar>("GlobalMenu", 1, 0, "GlobalMenuBar");
     QCoreApplication::setApplicationName(QStringLiteral("Almanac"));
+#ifdef ALMANAC_VERSION
+    QCoreApplication::setApplicationVersion(QStringLiteral(ALMANAC_VERSION));
+#endif
     QCoreApplication::setOrganizationName(QStringLiteral("Craft Anything"));
     // Inside a Flatpak the desktop file is named after the app ID.
     QGuiApplication::setDesktopFileName(qEnvironmentVariableIsSet("FLATPAK_ID")

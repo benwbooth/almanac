@@ -106,6 +106,7 @@ fn main() {
             cxx_qt_build::QmlFile::from("qml/FormatPickers.qml"),
             cxx_qt_build::QmlFile::from("qml/Momentum.qml"),
             cxx_qt_build::QmlFile::from("qml/Spinner.qml"),
+            cxx_qt_build::QmlFile::from("qml/AppMenu.qml"),
         ]),
     )
     // Headers come from include/ only. The default (the whole crate folder)
@@ -129,6 +130,13 @@ fn main() {
     for dir in private_includes {
         builder = builder.include_dir(dir);
     }
+    // Shown in About Almanac.
+    // SAFETY: only adds a define for our own code; Qt's ABI flags are untouched.
+    builder = unsafe {
+        builder.cc_builder(|cc| {
+            cc.define("ALMANAC_VERSION", Some(format!("{:?}", env!("CARGO_PKG_VERSION")).as_str()));
+        })
+    };
     builder
     .qt_module("Quick")
     .qt_module("QuickControls2")
@@ -137,6 +145,9 @@ fn main() {
     .qt_module("Pdf")
     .qt_module("WebEngineQuick")
     .cpp_file("include/craft_text.h")
+    // The menus in the desktop's global menu bar (QPA private headers).
+    .cpp_file("include/global_menu.h")
+    .cpp_file("include/global_menu.cpp")
     .files(["src/store.rs", "src/rows.rs"])
     .build();
 }

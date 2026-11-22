@@ -5,6 +5,7 @@ import Qt.labs.platform as P
 import QtQuick.Layouts
 import QtQuick.Window
 import QtQuick.Dialogs
+import GlobalMenu
 
 // Writing a new message, reply or forward — a sheet inside the main window,
 // a window of its own, or (replies and forwards from the buttons on a
@@ -168,6 +169,94 @@ Popup {
         Binding { target: ownWindow.contentItem; property: "y"; value: 0.001 }
         ResizeEdges { visible: Qt.platform.os !== "osx" && ownWindow.visibility !== Window.Maximized; window: ownWindow }
         onClosing: function(ev) { ev.accepted = false; sheet.requestClose() }
+        // Its menus: in the desktop's global menu bar and in its ☰ button
+        // (see Main.qml). The keys are the sheet's and the editor's Shortcuts.
+        GlobalMenuBar { id: globalMenu; window: ownWindow; model: sheet.menuModel; onTriggered: id => sheet.menuAction(id) }
+        onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
+        AppMenu {
+            id: appMenu
+            // (The window's palette has no hover colour for menu items.)
+            palette.light: Theme.hover
+            palette.midlight: Theme.pressed
+            model: sheet.menuModel
+            onTriggered: id => { sheet.fromAppMenu = true; sheet.menuAction(id); sheet.fromAppMenu = false }
+            onClosed: sheet.focusBeforeMenu = null
+        }
+    }
+    property bool fromAppMenu: false
+    property Item focusBeforeMenu: null
+    // (Only while it's a window of its own.)
+    readonly property var menuModel: {
+        if (!detached) return []
+        var canSend = toRow.field.text.trim() !== "", fmt = !editor.plain
+        return [
+            { title: "Almanac", items: [
+                { id: "quit", text: "Quit Almanac", icon: "application-exit" }
+            ] },
+            { title: "File", items: [
+                { id: "send", text: "Send", icon: "mail-send", shortcut: "Ctrl+Return", enabled: canSend },
+                { id: "sendLater", text: "Send Later…", icon: "view-calendar-day", enabled: canSend },
+                { id: "saveDraft", text: "Save Draft", icon: "document-save", shortcut: "Ctrl+S" },
+                { id: "attach", text: "Attach Files…", icon: "mail-attachment" },
+                { separator: true },
+                { id: "putBack", text: "Back into the Main Window", icon: "window-new" },
+                { id: "discard", text: "Throw Away…", icon: "edit-delete" },
+                { id: "close", text: "Close", icon: "window-close", shortcut: "Esc" }
+            ] },
+            { title: "Edit", items: [
+                { id: "undo", text: "Undo", icon: "edit-undo", shortcut: "Ctrl+Z" },
+                { id: "redo", text: "Redo", icon: "edit-redo", shortcut: "Ctrl+Shift+Z" },
+                { separator: true },
+                { id: "cut", text: "Cut", icon: "edit-cut", shortcut: "Ctrl+X" },
+                { id: "copy", text: "Copy", icon: "edit-copy", shortcut: "Ctrl+C" },
+                { id: "paste", text: "Paste", icon: "edit-paste", shortcut: "Ctrl+V" },
+                { id: "pastePlain", text: "Paste as Plain Text", icon: "edit-paste", shortcut: "Ctrl+Shift+V" },
+                { id: "pasteQuote", text: "Paste as Quotation", icon: "format-text-blockquote", shortcut: "Ctrl+Alt+Shift+V" },
+                { id: "selectAll", text: "Select All", icon: "edit-select-all", shortcut: "Ctrl+A" }
+            ] },
+            { title: "Format", items: [
+                { id: "bold", text: "Bold", icon: "format-text-bold", shortcut: "Ctrl+B", enabled: fmt },
+                { id: "italic", text: "Italic", icon: "format-text-italic", shortcut: "Ctrl+I", enabled: fmt },
+                { id: "underline", text: "Underline", icon: "format-text-underline", shortcut: "Ctrl+U", enabled: fmt },
+                { separator: true },
+                { id: "link", text: "Add Link…", icon: "insert-link", shortcut: "Ctrl+K", enabled: fmt },
+                { separator: true },
+                { id: "quoteMore", text: "Increase Quote Level", icon: "format-indent-more", shortcut: "Ctrl+'", enabled: fmt },
+                { id: "quoteLess", text: "Decrease Quote Level", icon: "format-indent-less", shortcut: "Ctrl+Alt+'", enabled: fmt }
+            ] },
+            { title: "Window", items: [
+                { id: "minimize", text: "Minimize", icon: "window-minimize" },
+                { id: "zoom", text: "Zoom", icon: "window-maximize" }
+            ] }
+        ]
+    }
+    // Cut, copy, paste…: whatever had the focus (a field, or the message's text).
+    function editAction(name) {
+        for (var f = fromAppMenu ? focusBeforeMenu : ownWindow.activeFocusItem; f; f = f.parent) {
+            if (name === "paste" && typeof f.pasteFormatted === "function") { f.pasteFormatted(); return }
+            if (typeof f[name] === "function") { f[name](); return }
+        }
+    }
+    function menuAction(id) {
+        switch (id) {
+        case "quit": Qt.quit(); break
+        case "send": if (toRow.field.text.trim() !== "") send(0); break
+        case "sendLater": if (toRow.field.text.trim() !== "") laterPicker.open(); break
+        case "saveDraft": saveDraftNow(); break
+        case "attach": attachFiles(); break
+        case "putBack": windowOrBack(); break
+        case "discard": discard(); break
+        case "close": requestClose(); break
+        case "undo": case "redo": case "cut": case "copy": case "paste": case "selectAll": editAction(id); break
+        case "pastePlain": editor.pastePlain(false); break
+        case "pasteQuote": editor.pastePlain(true); break
+        case "bold": case "italic": case "underline": if (!editor.plain) editor.toggleFont(id); break
+        case "link": if (!editor.plain) editor.openLinkPrompt(); break
+        case "quoteMore": if (!editor.plain) editor.quoteMore(); break
+        case "quoteLess": if (!editor.plain) editor.quoteLess(); break
+        case "minimize": ownWindow.showMinimized(); break
+        case "zoom": ownWindow.visibility === Window.Maximized ? ownWindow.showNormal() : ownWindow.showMaximized(); break
+        }
     }
     function popOut() {
         if (inline) { inline = false; inlineHost = null }
@@ -547,6 +636,14 @@ Popup {
                 anchors.fill: parent
                 anchors.leftMargin: sheet.detached && Qt.platform.os === "osx" ? 78 : 12
                 anchors.rightMargin: sheet.detached && Qt.platform.os !== "osx" ? 0 : 12
+                ToolButtonX {
+                    id: menuButton
+                    visible: sheet.detached
+                    text: "☰"
+                    textSize: 19
+                    tip: "Menu: every command for this message"
+                    onClicked: { sheet.focusBeforeMenu = ownWindow.activeFocusItem; appMenu.openAt(menuButton, 0, menuButton.height + 4) }
+                }
                 ToolButtonX {
                     id: sendButton
                     icon: "send"; text: "Send"; primary: true

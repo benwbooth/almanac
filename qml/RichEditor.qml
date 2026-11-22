@@ -553,6 +553,8 @@ ColumnLayout {
     }
 
     // Formatting helpers on the current selection.
+    // Add Link (Ctrl+K), for the compose window's Format menu.
+    function openLinkPrompt() { linkPrompt.open() }
     function toggleFont(prop) {
         var f = body.cursorSelection.font
         f[prop] = !f[prop]

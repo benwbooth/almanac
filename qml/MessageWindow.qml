@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtCore
+import GlobalMenu
 
 // Messages (each with its whole conversation) and pictures / PDFs from them in
 // a window of their own, opened by Shift + double-clicking a message in the
@@ -109,6 +110,105 @@ Window {
         else for (var i = 0; i < ids.length; i++) store.moveTo(ids[i], kind)
     }
 
+    // The window's menus: in the desktop's global menu bar and in the ☰
+    // button (see Main.qml). The keys are this window's Shortcuts below.
+    readonly property var findPage: onMessage && page ? page.page : null
+    property bool menusReady: false
+    Component.onCompleted: Qt.callLater(function() { w.menusReady = true })
+    readonly property var menuModel: {
+        if (!menusReady) return []
+        var cur = w.current, many = w.tabs.length > 1
+        return [
+            { title: "Almanac", items: [
+                { id: "quit", text: "Quit Almanac", icon: "application-exit" }
+            ] },
+            { title: "File", items: [
+                { id: "close", text: many ? "Close Tab" : "Close Window", icon: "window-close", shortcut: "Ctrl+W" },
+                { separator: true },
+                { id: "print", text: "Print…", icon: "document-print", enabled: cur !== null && !!w.mail && !!w.mail.printMessages }
+            ] },
+            { title: "Edit", items: [
+                { id: "copy", text: "Copy", icon: "edit-copy", shortcut: "Ctrl+C" },
+                { id: "selectAll", text: "Select All", icon: "edit-select-all", shortcut: "Ctrl+A" },
+                { separator: true },
+                { id: "find", text: "Find in Message…", icon: "edit-find", shortcut: "Ctrl+F", enabled: cur !== null && !!w.findPage },
+                { id: "findNext", text: "Find Next", icon: "go-down-search", shortcut: "Ctrl+G", enabled: cur !== null && !!w.findPage },
+                { id: "findPrevious", text: "Find Previous", icon: "go-up-search", shortcut: "Ctrl+Shift+G", enabled: cur !== null && !!w.findPage }
+            ] },
+            { title: "Message", items: [
+                { id: "reply", text: "Reply", icon: "mail-reply-sender", shortcut: "Ctrl+R", enabled: cur !== null },
+                { id: "replyAll", text: "Reply All", icon: "mail-reply-all", shortcut: "Ctrl+Shift+R", enabled: cur !== null },
+                { id: "forward", text: "Forward", icon: "mail-forward", shortcut: "Ctrl+Shift+F", enabled: cur !== null },
+                { id: "sendAgain", text: "Send Again", icon: "mail-send", shortcut: "Ctrl+Shift+D", enabled: cur !== null },
+                { separator: true },
+                { id: "flag", text: cur && cur.flagged ? "Unflag" : "Flag", icon: "flag-red", shortcut: "Ctrl+Shift+L", enabled: cur !== null },
+                { id: "markRead", text: cur && !cur.read ? "Mark as Read" : "Mark as Unread", icon: "mail-mark-unread", enabled: cur !== null },
+                { separator: true },
+                { id: "archive", text: "Archive", icon: "archive-insert", shortcut: "Ctrl+Shift+A", enabled: cur !== null },
+                { id: "junk", text: "Move to Junk", icon: "mail-mark-junk", shortcut: "Ctrl+Shift+J", enabled: cur !== null },
+                { id: "delete", text: "Delete", icon: "edit-delete", shortcut: "Del", enabled: cur !== null }
+            ] },
+            { title: "Window", items: [
+                { id: "minimize", text: "Minimize", icon: "window-minimize" },
+                { id: "zoom", text: "Zoom", icon: "window-maximize" },
+                { separator: true },
+                { id: "nextTab", text: "Show Next Tab", icon: "go-next", shortcut: "Ctrl+Tab", enabled: many },
+                { id: "previousTab", text: "Show Previous Tab", icon: "go-previous", shortcut: "Ctrl+Shift+Tab", enabled: many },
+                { id: "tearOut", text: "Move Tab to New Window", icon: "window-new", enabled: many },
+                { id: "toMain", text: "Move Tab to Main Window", icon: "go-home", enabled: w.tabs.length > 0 },
+                { separator: true },
+                { id: "mainWindow", text: "Almanac", icon: "almanac" }
+            ] }
+        ]
+    }
+    property bool fromAppMenu: false
+    property Item focusBeforeMenu: null
+    // Copy / Select All: whatever has the focus (the message's page offers them).
+    function editAction(name) {
+        for (var f = w.fromAppMenu ? w.focusBeforeMenu : w.activeFocusItem; f; f = f.parent)
+            if (typeof f[name] === "function") { f[name](); return }
+        if (w.findPage && typeof w.findPage[name] === "function") w.findPage[name]()
+    }
+    function menuAction(id) {
+        var cur = w.current
+        switch (id) {
+        case "quit": Qt.quit(); break
+        case "close": w.tabs.length > 1 ? w.closeTab(w.tabIndex) : w.close(); break
+        case "print": if (cur && w.mail.printMessages) w.mail.printMessages(w.messages); break
+        case "copy": case "selectAll": w.editAction(id); break
+        case "find": if (w.findPage) w.findPage.openFind(); break
+        case "findNext": if (w.findPage) w.findPage.findStep(false); break
+        case "findPrevious": if (w.findPage) w.findPage.findStep(true); break
+        case "reply": if (cur) w.act(cur, "reply"); break
+        case "replyAll": if (cur) w.act(cur, "replyAll"); break
+        case "forward": if (cur) w.act(cur, "forward"); break
+        case "sendAgain": if (cur) w.act(cur, "sendAgain"); break
+        case "flag": if (cur) w.store.toggleFlag(cur.id); break
+        case "markRead": if (cur) { var r = !cur.read; for (var i = 0; i < w.ids.length; i++) w.store.setRead(w.ids[i], r) } break
+        case "archive": if (cur) w.moveAll("archive"); break
+        case "junk": if (cur) w.moveAll("junk"); break
+        case "delete": if (cur) w.moveAll("delete"); break
+        case "minimize": w.showMinimized(); break
+        case "zoom": w.visibility === Window.Maximized ? w.showNormal() : w.showMaximized(); break
+        case "nextTab": if (w.tabs.length > 1) w.tabIndex = (w.tabIndex + 1) % w.tabs.length; break
+        case "previousTab": if (w.tabs.length > 1) w.tabIndex = (w.tabIndex + w.tabs.length - 1) % w.tabs.length; break
+        case "tearOut": w.tearOut(w.tabIndex); break
+        case "toMain": if (w.tabs.length) w.toMain(w.tabIndex); break
+        case "mainWindow": w.mail.raiseWindow(); break
+        }
+    }
+    GlobalMenuBar { id: globalMenu; window: w; model: w.menuModel; onTriggered: id => w.menuAction(id) }
+    onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
+    AppMenu {
+        id: appMenu
+        // (The window's palette has no hover colour for menu items.)
+        palette.light: Theme.hover
+        palette.midlight: Theme.pressed
+        model: w.menuModel
+        onTriggered: id => { w.fromAppMenu = true; w.menuAction(id); w.fromAppMenu = false }
+        onClosed: w.focusBeforeMenu = null
+    }
+
     Shortcut { sequences: [StandardKey.Close, "Escape"]; onActivated: w.tabs.length > 1 ? w.closeTab(w.tabIndex) : w.close() }
     Shortcut { sequence: "Ctrl+Tab"; enabled: w.tabs.length > 1; onActivated: w.tabIndex = (w.tabIndex + 1) % w.tabs.length }
     Shortcut { sequence: "Ctrl+Shift+Tab"; enabled: w.tabs.length > 1; onActivated: w.tabIndex = (w.tabIndex + w.tabs.length - 1) % w.tabs.length }
@@ -142,6 +242,13 @@ Window {
                 anchors.leftMargin: w.macOS ? 78 : 10
                 anchors.rightMargin: w.macOS ? 10 : 0
                 spacing: 2
+                ToolButtonX {
+                    id: menuButton
+                    text: "☰"
+                    textSize: 19
+                    tip: "Menu: every command for this window"
+                    onClicked: { w.focusBeforeMenu = w.activeFocusItem; appMenu.openAt(menuButton, 0, menuButton.height + 4) }
+                }
                 RowLayout {
                     visible: w.onMessage
                     spacing: 2

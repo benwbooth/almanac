@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import QtQuick.Window
 import QtCore
 import org.craft.pim
+import GlobalMenu
 
 ApplicationWindow {
     // Back in view after the desktop hid it (on another desktop, covered…): see
@@ -170,7 +171,7 @@ ApplicationWindow {
                         text: "☰"
                         textSize: 19
                         tip: "Menu: every command, Accounts and Settings"
-                        onClicked: appMenu.open(menuButton)
+                        onClicked: win.openAppMenu()
                     }
                     ToolButtonX {
                         icon: "sidebar"
@@ -341,346 +342,393 @@ ApplicationWindow {
         signaturesDialog: mailView.signaturesDlg
     }
 
-    // ☰ menu: every command in one place, laid out like Apple Mail's menu
-    // bar (Almanac, File, Edit, View, Mailbox, Message, Window, Help) with
-    // Calendar and Contacts added. Shown with the system's own menus.
+    // The menus: in the desktop's global menu bar (hearth, Plasma's Global
+    // Menu) and in the ☰ button, from one model, laid out like Apple Mail's
+    // menu bar (Almanac, File, Edit, View, Mailbox, Message, Window, Help)
+    // with Calendar and Contacts added. Items: { id, text, shortcut, icon,
+    // enabled, checkable, checked, items (a submenu) }; ids are unique (a
+    // repeated command gets "#2"), and choosing one runs menuAction(id).
+    // The shortcuts are only shown: the Shortcut objects below (and the
+    // views' own) do the keys.
     function editAction(name) {
-        // The menu's shortcuts take the keys first, so they must also reach the
-        // email's page (the browser engine), whose focus sits on an item inside
-        // the view: walk up to whatever offers the action.
-        for (var f = win.activeFocusItem; f; f = f.parent) {
+        // From the ☰ menu the focus is on the menu: start from what had it.
+        var from = win.fromAppMenu ? win.focusBeforeMenu : win.activeFocusItem
+        // The focus in an email's page sits on an item inside the browser
+        // engine's view: walk up to whatever offers the action.
+        for (var f = from; f; f = f.parent) {
             // (The message editor pastes formatted text in its own colours.)
             if (name === "paste" && typeof f.pasteFormatted === "function") { f.pasteFormatted(); return }
             if (typeof f[name] === "function") { f[name](); return }
         }
     }
-    P.Menu {
-        id: appMenu
-        // The top level has short names: a narrow menu, each section with its icon.
-        minimumWidth: 150
-        P.Menu {
-            title: "Almanac"
-            icon.name: "almanac"
-            icon.source: store.iconUrl("almanac")
-            P.MenuItem { id: menuCmd1; icon.name: "help-about"; shortcut: "Shift+F1"; text: "About Almanac"; onTriggered: aboutPopup.open() }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "configure"; text: "Settings…"; shortcut: "Ctrl+,"; onTriggered: settingsDialog.open() }
-            P.MenuItem { id: menuCmd2; icon.name: "system-users"; shortcut: "Ctrl+Alt+A"; text: "Accounts…"; onTriggered: sourcesDialog.open() }
-            P.MenuItem { id: menuCmd3; icon.name: "dialog-password"; shortcut: "Ctrl+Alt+G"; text: "Sign-in Setup (Google, Microsoft, Yahoo, AOL)…"; onTriggered: signInSetup.openFor("google", false) }
-            P.MenuItem { id: menuCmd4; icon.name: "help-contents"; shortcut: "Ctrl+F1"; text: "Setup Guide"; onTriggered: store.onboarded = false }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "application-exit"; text: "Quit Almanac"; shortcut: "Ctrl+Q"; onTriggered: Qt.quit() }
-        }
-        P.Menu {
-            title: "File"
-            icon.name: "folder-open"
-            P.MenuItem { icon.name: "mail-message-new"; text: "New Message"; shortcut: "Ctrl+N"; onTriggered: { win.section = 0; mailView.newMessage() } }
-            P.MenuItem { id: menuCmd5; icon.name: "appointment-new"; shortcut: "Ctrl+Shift+E"; text: "New Event"; onTriggered: { win.section = 1; calendarView.newEventNow() } }
-            P.MenuItem { id: menuCmd6; icon.name: "contact-new"; shortcut: "Ctrl+Shift+C"; text: "New Contact"; onTriggered: { win.section = 2; contactsView.newContact() } }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd7; icon.name: "mail-attachment"; shortcut: "Ctrl+Shift+S"; text: "Save Attachments…"; enabled: !!mailView.current && mailView.current.attachments.length > 0; onTriggered: mailView.saveAttachments() }
-            P.MenuItem { id: menuCmd8; icon.name: "document-import"; shortcut: "Ctrl+Shift+I"; text: "Import Mailboxes…"; onTriggered: sourcesDialog.open() }
-            P.MenuItem { id: menuCmd9; icon.name: "document-import"; shortcut: "Ctrl+Alt+I"; text: "Import vCard…"; onTriggered: { win.section = 2; contactsView.importCards() } }
-            P.MenuItem { id: menuCmd10; icon.name: "document-export"; shortcut: "Ctrl+Alt+E"; text: "Export vCard…"; onTriggered: { win.section = 2; contactsView.exportCards() } }
-            P.MenuItem { id: menuCmd11; icon.name: "application-pdf"; shortcut: "Ctrl+Shift+P"; text: "Export as PDF…"; enabled: mailView.current !== null; onTriggered: mailView.exportCurrentPdf() }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "document-print"; text: "Print…"; shortcut: "Ctrl+P"; onTriggered: win.section === 0 ? mailView.printCurrent() : win.section === 1 ? calendarView.printView() : contactsView.printCards(false) }
-        }
-        P.Menu {
-            title: "Edit"
-            icon.name: "document-edit"
-            P.MenuItem { icon.name: "edit-undo"; text: (!win.typing && store.mailUndoText !== "" ? store.mailUndoText : "Undo") + "\tCtrl+Z"; onTriggered: if (!win.typing && store.mailUndoText !== "") store.undoMail(); else win.editAction("undo") }
-            P.MenuItem { icon.name: "edit-redo"; text: "Redo"; shortcut: "Ctrl+Shift+Z"; onTriggered: win.editAction("redo") }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "edit-cut"; text: "Cut"; shortcut: "Ctrl+X"; onTriggered: win.editAction("cut") }
-            P.MenuItem { icon.name: "edit-copy"; text: "Copy"; shortcut: "Ctrl+C"; onTriggered: win.editAction("copy") }
-            P.MenuItem { icon.name: "edit-paste"; text: "Paste"; shortcut: "Ctrl+V"; onTriggered: win.editAction("paste") }
-            P.MenuItem { id: menuCmd12; icon.name: "edit-delete"; text: "Delete\tDel"; enabled: win.section === 0 && mailView.current !== null; onTriggered: mailView.removeCurrent("delete") }
-            P.MenuItem { icon.name: "edit-select-all"; text: "Select All"; shortcut: "Ctrl+A"; onTriggered: win.editAction("selectAll") }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "edit-find"; text: "Find…"; shortcut: "Ctrl+F"; onTriggered: win.section === 0 ? mailView.find() : win.views[win.section].focusSearch() }
-            P.MenuItem { icon.name: "edit-find"; text: "Find in Message…\tCtrl+G"; enabled: win.section === 0 && mailView.current !== null; onTriggered: mailView.findInMessage() }
-            P.Menu {
-                title: "Spelling and Grammar"
-                icon.name: "tools-check-spelling"
-                P.MenuItem { icon.name: "tools-check-spelling"; text: "Check Spelling While Typing"; checkable: true; checked: mailView.composer.spellOn; onTriggered: mailView.composer.setSpelling(!mailView.composer.spellOn) }
-                P.MenuItem { icon.name: "story-editor"; text: "Check Grammar With Spelling"; checkable: true; checked: mailView.composer.grammarOn; enabled: mailView.composer.spellOn; onTriggered: mailView.composer.setGrammar(!mailView.composer.grammarOn) }
-            }
-        }
-        P.Menu {
-            title: "View"
-            icon.name: "view-visible"
-            P.MenuItem { icon.name: "mail-message"; text: "Mail"; shortcut: "Ctrl+1"; checkable: true; checked: win.section === 0; onTriggered: win.section = 0 }
-            P.MenuItem { icon.name: "view-calendar"; text: "Calendar"; shortcut: "Ctrl+2"; checkable: true; checked: win.section === 1; onTriggered: win.section = 1 }
-            P.MenuItem { icon.name: "x-office-address-book"; text: "Contacts"; shortcut: "Ctrl+3"; checkable: true; checked: win.section === 2; onTriggered: win.section = 2 }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "view-sidetree"; text: win.views[win.section].sidebarShown ? "Hide Mailbox List" : "Show Mailbox List"; shortcut: "Ctrl+Alt+S"; onTriggered: win.views[win.section].sidebarShown = !win.views[win.section].sidebarShown }
-            P.MenuItem { id: menuCmd13; icon.name: "view-list-tree"; shortcut: "Ctrl+Shift+O"; text: "Organize by Conversation"; checkable: true; checked: mailView.threaded; onTriggered: mailView.threaded = !mailView.threaded }
-            P.Menu {
-                title: "Layout"
-                icon.name: "view-split-left-right"
-                P.MenuItem { id: menuCmd14; icon.name: "view-split-left-right"; shortcut: "Ctrl+Alt+H"; text: "Standard (List Beside Message)"; checkable: true; checked: !mailView.classic; onTriggered: { win.section = 0; mailView.setLayout("standard") } }
-                P.MenuItem { id: menuCmd15; icon.name: "view-split-top-bottom"; shortcut: "Ctrl+Alt+K"; text: "Classic (List Above Message)"; checkable: true; checked: mailView.classic; onTriggered: { win.section = 0; mailView.setLayout("classic") } }
-                P.MenuSeparator {}
-                P.MenuItem { icon.name: "view-sidetree"; shortcut: "Ctrl+Alt+S"; text: "Show Mailbox List"; checkable: true; checked: mailView.sidebarShown; onTriggered: mailView.sidebarShown = !mailView.sidebarShown }
-            }
-            P.Menu {
-                id: sortByMenu
-                title: "Sort By"
-                icon.name: "view-sort"
-                Instantiator {
-                    model: ["date", "from", "subject", "to", "attachments", "flags", "unread"]
-                    onObjectAdded: (i, o) => sortByMenu.insertItem(i, o)
-                    onObjectRemoved: (i, o) => sortByMenu.removeItem(o)
-                    delegate: P.MenuItem {
-                        required property string modelData
-                        icon.name: "view-sort"
-                        text: mailView.sortNames[modelData]
-                        checkable: true
-                        checked: mailView.sortBy === modelData
-                        onTriggered: mailView.setSort(modelData, mailView.sortAscending)
-                    }
-                }
-                P.MenuSeparator {}
-                P.MenuItem { id: menuCmd16; icon.name: "view-sort-ascending"; shortcut: "Ctrl+Alt+Up"; text: "Ascending"; checkable: true; checked: mailView.sortAscending; onTriggered: mailView.setSort(mailView.sortBy, true) }
-                P.MenuItem { id: menuCmd17; icon.name: "view-sort-descending"; shortcut: "Ctrl+Alt+Down"; text: "Descending"; checkable: true; checked: !mailView.sortAscending; onTriggered: mailView.setSort(mailView.sortBy, false) }
-            }
-            P.Menu {
-                title: "Filter"
-                icon.name: "view-filter"
-                P.MenuItem { id: menuCmd18; icon.name: "view-list-details"; shortcut: "Ctrl+Alt+M"; text: "All Messages"; checkable: true; checked: !mailView.unreadOnly; onTriggered: mailView.unreadOnly = false }
-                P.MenuItem { id: menuCmd19; icon.name: "mail-mark-unread"; shortcut: "Ctrl+Alt+U"; text: "Only Unread"; checkable: true; checked: mailView.unreadOnly; onTriggered: mailView.unreadOnly = true }
-            }
-            P.Menu {
-                title: "Message"
-                icon.name: "text-html"
-                P.MenuItem { id: menuCmd20; icon.name: "text-html"; shortcut: "Ctrl+Alt+F"; text: "Formatted"; checkable: true; checked: mailView.formatted; onTriggered: mailView.formatted = true }
-                P.MenuItem { id: menuCmd21; icon.name: "text-plain"; shortcut: "Ctrl+Alt+P"; text: "Plain Text Alternative"; checkable: true; checked: !mailView.formatted; onTriggered: mailView.formatted = false }
-                P.MenuSeparator {}
-                P.MenuItem { id: menuCmd22; icon.name: "image-x-generic"; shortcut: "Ctrl+Alt+Shift+R"; text: "Load Remote Content Automatically"; checkable: true; checked: !!mailView.prefs.load_remote; onTriggered: store.setSetting("load_remote", JSON.stringify(!mailView.prefs.load_remote)) }
-            }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd23; icon.name: "flashlight-on"; shortcut: "Ctrl+Alt+Shift+L"; text: "Light Appearance"; checkable: true; checked: store.theme === "light"; onTriggered: store.chooseTheme("light") }
-            P.MenuItem { id: menuCmd24; icon.name: "flashlight-off"; shortcut: "Ctrl+Alt+Shift+D"; text: "Dark Appearance"; checkable: true; checked: store.theme === "dark"; onTriggered: store.chooseTheme("dark") }
-            P.MenuItem { id: menuCmd25; icon.name: "color-management"; shortcut: "Ctrl+Alt+Shift+M"; text: "Match System Appearance"; checkable: true; checked: store.theme === "system"; onTriggered: store.chooseTheme("system") }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "view-fullscreen"; text: win.visibility === Window.FullScreen ? "Exit Full Screen" : "Enter Full Screen"; shortcut: "F11"; onTriggered: win.visibility === Window.FullScreen ? win.showNormal() : win.showFullScreen() }
-        }
-        P.Menu {
-            title: "Mailbox"
-            icon.name: "mail-folder-inbox"
-            P.MenuItem { icon.name: "mail-receive"; text: "Get All New Mail"; shortcut: "Ctrl+Shift+N"; onTriggered: store.refreshAll() }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd26; icon.name: "edit-delete"; text: ("Erase Deleted Items") + "\tCtrl+Shift+Del"; onTriggered: mailView.eraseMailbox("trash") }
-            P.MenuItem { id: menuCmd27; icon.name: "mail-mark-junk"; text: ("Erase Junk Mail") + "\tCtrl+Alt+J"; onTriggered: mailView.eraseMailbox("junk") }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd28; icon.name: "folder-new"; shortcut: "Ctrl+Alt+Shift+N"; text: "New Smart Mailbox…"; onTriggered: { win.section = 0; mailView.newSmartMailbox() } }
-            P.MenuItem { id: menuCmd29; icon.name: "mail-mark-read"; text: ("Mark All Messages as Read") + "\tCtrl+Alt+Shift+U"; onTriggered: store.markAllRead(mailView.selection) }
-            P.MenuSeparator {}
-            P.Menu {
-                title: "Go To"
-                icon.name: "go-jump"
-                P.MenuItem { id: menuCmd30; icon.name: "mail-folder-inbox"; shortcut: "Alt+1"; text: "Inbox"; onTriggered: { win.section = 0; mailView.goTo("inbox", "Inbox") } }
-                P.MenuItem { id: menuCmd31; icon.name: "document-edit"; shortcut: "Alt+2"; text: "Drafts"; onTriggered: { win.section = 0; mailView.goTo("drafts", "Drafts") } }
-                P.MenuItem { id: menuCmd32; icon.name: "mail-folder-sent"; shortcut: "Alt+3"; text: "Sent"; onTriggered: { win.section = 0; mailView.goTo("sent", "Sent") } }
-                P.MenuItem { id: menuCmd33; icon.name: "archive-insert"; shortcut: "Alt+4"; text: "Archive"; onTriggered: { win.section = 0; mailView.goTo("archive", "Archive") } }
-                P.MenuItem { id: menuCmd34; icon.name: "mail-mark-junk"; shortcut: "Alt+5"; text: "Junk"; onTriggered: { win.section = 0; mailView.goTo("junk", "Junk") } }
-                P.MenuItem { id: menuCmd35; icon.name: "user-trash"; shortcut: "Alt+6"; text: "Trash"; onTriggered: { win.section = 0; mailView.goTo("trash", "Trash") } }
-            }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd36; icon.name: "view-filter"; shortcut: "Ctrl+Alt+R"; text: "Rules…"; onTriggered: mailView.rulesDlg.open() }
-            P.MenuItem { id: menuCmd37; icon.name: "mail-signed"; shortcut: "Ctrl+Alt+Shift+G"; text: "Signatures…"; onTriggered: mailView.signaturesDlg.open() }
-        }
-        P.Menu {
-            id: appMessageMenu
-            title: "Message"
-            icon.name: "mail-message"
-            P.MenuItem { id: menuCmd38; icon.name: "mail-send"; text: ("Send Again") + "\tCtrl+Shift+D"; enabled: mailView.current !== null; onTriggered: { win.section = 0; mailView.sendAgain() } }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "mail-reply-sender"; text: "Reply"; shortcut: "Ctrl+R"; enabled: mailView.current !== null; onTriggered: { win.section = 0; mailView.reply(false) } }
-            P.MenuItem { icon.name: "mail-reply-all"; text: "Reply All"; shortcut: "Ctrl+Shift+R"; enabled: mailView.current !== null; onTriggered: { win.section = 0; mailView.reply(true) } }
-            P.MenuItem { icon.name: "mail-forward"; text: "Forward"; shortcut: "Ctrl+Shift+F"; enabled: mailView.current !== null; onTriggered: { win.section = 0; mailView.forward() } }
-            P.MenuSeparator {}
-            P.Menu {
-                title: "Mark"
-                icon.name: "mail-mark-important"
-                enabled: mailView.currentRow !== null
-                P.MenuItem { icon.name: "mail-mark-unread"; text: mailView.currentRow && mailView.currentRow.read ? "As Unread" : "As Read"; shortcut: "Ctrl+Shift+U"; onTriggered: mailView.setCurrentRead(!mailView.currentRow.read) }
-                P.MenuItem { icon.name: "mail-mark-junk"; text: "As Junk Mail\tCtrl+Shift+J"; onTriggered: mailView.removeCurrent("junk") }
-            }
-            P.MenuItem { icon.name: "flag-red"; text: mailView.current && mailView.current.flagged ? "Unflag" : "Flag"; shortcut: "Ctrl+Shift+L"; enabled: mailView.current !== null; onTriggered: mailView.toggleCurrentFlag() }
-            P.Menu {
-                id: appFlagMenu
-                title: "Flag Colour"
-                icon.name: "flag"
-                enabled: mailView.current !== null
-                Instantiator {
-                    model: 7
-                    onObjectAdded: (i, o) => appFlagMenu.insertItem(i, o)
-                    onObjectRemoved: (i, o) => appFlagMenu.removeItem(o)
-                    delegate: P.MenuItem {
-                        required property int index
-                        text: Theme.flagNames[index]
-                        icon.source: mailView.flagIcon(index)
-                        onTriggered: mailView.setCurrentFlag(index)
-                    }
-                }
-                P.MenuSeparator {}
-                P.MenuItem { text: "Clear Flag"; onTriggered: mailView.setCurrentFlag(-1) }
-            }
-            P.MenuItem { id: menuCmd39; icon.name: "mail-thread-ignored"; text: (mailView.current && mailView.current.muted ? "Unmute" : "Mute") + "\tCtrl+Shift+M"; enabled: mailView.current !== null; onTriggered: store.toggleMute(mailView.current.id) }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "archive-insert"; text: "Archive\tCtrl+Shift+A"; enabled: mailView.current !== null; onTriggered: mailView.removeCurrent("archive") }
-            P.MenuItem { icon.name: "mail-mark-junk"; text: "Move to Junk\tCtrl+Shift+J"; enabled: mailView.current !== null; onTriggered: mailView.removeCurrent("junk") }
-            P.Menu {
-                id: appMoveMenu
-                title: "Move to"
-                icon.name: "folder-move"
-                enabled: mailView.current !== null
-                Instantiator {
-                    model: mailView.folders
-                    onObjectAdded: (i, o) => appMoveMenu.insertItem(i, o)
-                    onObjectRemoved: (i, o) => appMoveMenu.removeItem(o)
-                    delegate: P.MenuItem {
-                        required property var modelData
-                        icon.name: "folder"
-                        text: (mailView.sidebar.accounts.length > 1 ? modelData.account + " › " : "") + modelData.name
-                        onTriggered: mailView.moveCurrentToFolder(modelData.id)
-                    }
-                }
-            }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd40; icon.name: "system-run"; text: ("Apply Rules") + "\tCtrl+Alt+Shift+A"; onTriggered: store.applyRulesNow() }
-            P.MenuItem { id: menuCmd41; icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: mailView.current && mailView.current.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs"; enabled: mailView.current !== null; onTriggered: store.toggleVip(mailView.current.fromEmail) }
-            P.MenuItem { id: menuCmd42; icon.name: "im-ban-user"; text: (mailView.current && mailView.current.blocked ? "Unblock Sender" : "Block Sender") + "\tCtrl+Alt+B"; enabled: mailView.current !== null; onTriggered: store.toggleBlocked(mailView.current.fromEmail) }
-            P.MenuSeparator {}
-            P.Menu {
-                title: "Remind Me"
-                icon.name: "chronometer"
-                enabled: mailView.current !== null
-                P.MenuItem { id: menuCmd43; icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+H"; text: "In 1 Hour"; onTriggered: mailView.remindIn(3600000) }
-                P.MenuItem { id: menuCmd44; icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+T"; text: "Tonight"; onTriggered: mailView.remindAt(21, 0) }
-                P.MenuItem { id: menuCmd45; icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+O"; text: "Tomorrow"; onTriggered: mailView.remindAt(8, 1) }
-                P.MenuItem { id: menuCmd46; icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+W"; text: "Next Week"; onTriggered: mailView.remindAt(8, 7) }
-                P.MenuSeparator {}
-                P.MenuItem { id: menuCmd47; icon.name: "edit-clear-history"; shortcut: "Ctrl+Alt+Shift+X"; text: "Remove Reminder"; onTriggered: store.remindMe(mailView.current.id, 0) }
-            }
-            P.MenuItem { id: menuCmd48; icon.name: "mail-folder-outbox"; shortcut: "Ctrl+Alt+O"; text: "Outbox (Send Later)…"; onTriggered: mailView.outboxDlg.open() }
-        }
-        P.Menu {
-            title: "Calendar"
-            icon.name: "view-calendar"
-            P.MenuItem { icon.name: "appointment-new"; shortcut: "Ctrl+Shift+E"; text: "New Event"; onTriggered: { win.section = 1; calendarView.newEventNow() } }
-            P.MenuItem { id: menuCmd49; icon.name: "view-calendar-list"; shortcut: "Ctrl+Alt+N"; text: "New Calendar…"; onTriggered: { win.section = 1; calendarView.newCalendar() } }
-            P.MenuItem { id: menuCmd50; icon.name: "view-calendar-upcoming-events"; shortcut: "Ctrl+Alt+Shift+S"; text: "New Calendar Subscription…"; onTriggered: { win.section = 1; calendarView.newSubscription() } }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "go-jump-today"; text: "Go to Today"; shortcut: "Ctrl+T"; onTriggered: { win.section = 1; calendarView.cursor = new Date() } }
-            P.MenuItem { id: menuCmd51; icon.name: "view-calendar-day"; shortcut: "Ctrl+Alt+1"; text: "Day"; checkable: true; checked: calendarView.view === "day"; onTriggered: { win.section = 1; calendarView.view = "day" } }
-            P.MenuItem { id: menuCmd52; icon.name: "view-calendar-week"; shortcut: "Ctrl+Alt+2"; text: "Week"; checkable: true; checked: calendarView.view === "week"; onTriggered: { win.section = 1; calendarView.view = "week" } }
-            P.MenuItem { id: menuCmd53; icon.name: "view-calendar-month"; shortcut: "Ctrl+Alt+3"; text: "Month"; checkable: true; checked: calendarView.view === "month"; onTriggered: { win.section = 1; calendarView.view = "month" } }
-            P.MenuItem { id: menuCmd54; icon.name: "view-calendar-timeline"; shortcut: "Ctrl+Alt+4"; text: "Year"; checkable: true; checked: calendarView.view === "year"; onTriggered: { win.section = 1; calendarView.view = "year" } }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd55; icon.name: "view-refresh"; shortcut: "Ctrl+Alt+Shift+F"; text: "Refresh Subscriptions"; onTriggered: store.syncSubscriptions() }
-        }
-        P.Menu {
-            title: "Contacts"
-            icon.name: "x-office-address-book"
-            P.MenuItem { icon.name: "contact-new"; shortcut: "Ctrl+Shift+C"; text: "New Contact"; onTriggered: { win.section = 2; contactsView.newContact() } }
-            P.MenuItem { id: menuCmd56; icon.name: "user-group-new"; shortcut: "Ctrl+Alt+Shift+K"; text: "New Group…"; onTriggered: { win.section = 2; contactsView.newGroup() } }
-            P.MenuItem { id: menuCmd57; icon.name: "user-group-properties"; shortcut: "Ctrl+Alt+Shift+J"; text: "New Smart Group…"; onTriggered: { win.section = 2; contactsView.newSmartGroup() } }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd58; icon.name: "edit-duplicate"; shortcut: "Ctrl+Alt+D"; text: "Look for Duplicates…"; onTriggered: { win.section = 2; contactsView.findDuplicates() } }
-            P.MenuItem { id: menuCmd59; icon.name: "user-identity"; shortcut: "Ctrl+Alt+Shift+I"; text: "Go to My Card"; onTriggered: { win.section = 2; contactsView.goToMyCard() } }
-        }
-        P.Menu {
-            title: "Window"
-            icon.name: "window"
-            P.MenuItem { icon.name: "window-minimize"; text: "Minimize"; shortcut: "Ctrl+M"; onTriggered: win.showMinimized() }
-            P.MenuItem { id: menuCmd60; icon.name: "window-maximize"; shortcut: "Ctrl+Alt+Z"; text: "Zoom"; onTriggered: win.visibility === Window.Maximized ? win.showNormal() : win.showMaximized() }
-            P.MenuSeparator {}
-            P.MenuItem { id: menuCmd61; icon.name: "mail-message"; shortcut: "Ctrl+Alt+0"; text: "Message Viewer"; onTriggered: win.section = 0 }
-            P.MenuItem { icon.name: "mail-folder-outbox"; shortcut: "Ctrl+Alt+O"; text: "Outbox"; onTriggered: mailView.outboxDlg.open() }
-        }
-        P.Menu {
-            title: "Help"
-            icon.name: "help-contents"
-            P.MenuItem { id: menuCmd62; icon.name: "help-keybord-shortcuts"; shortcut: "F1"; text: "Keyboard Shortcuts"; onTriggered: shortcutsPopup.open() }
-            P.MenuItem { icon.name: "help-contents"; shortcut: "Ctrl+F1"; text: "Setup Guide"; onTriggered: store.onboarded = false }
+    property bool fromAppMenu: false
+    property Item focusBeforeMenu: null
+    readonly property bool hasMessage: mailView.current !== null
+    // (Built once everything has started: read while the views were still
+    // setting themselves up, their first values counted as a binding loop.)
+    property bool menusReady: false
+    readonly property var menuModel: {
+        if (!menusReady) return []
+        var cur = mailView.current, row = mailView.currentRow
+        var sortItems = ["date", "from", "subject", "to", "attachments", "flags", "unread"].map(function(k) {
+            return { id: "sortBy:" + k, text: mailView.sortNames[k], icon: "view-sort", checkable: true, checked: mailView.sortBy === k }
+        })
+        var flagItems = []
+        for (var c = 0; c < 7; c++) flagItems.push({ id: "flagColour:" + c, text: Theme.flagNames[c] })
+        flagItems.push({ separator: true }, { id: "flagColour:-1", text: "Clear Flag" })
+        var many = mailView.sidebar.accounts.length > 1
+        var moveItems = (mailView.folders || []).map(function(f) {
+            return { id: "moveTo:" + f.id, text: (many ? f.account + " › " : "") + f.name, icon: "folder" }
+        })
+        var fullScreen = win.visibility === Window.FullScreen
+        var view = win.views[win.section]
+        return [
+            { title: "Almanac", items: [
+                { id: "about", text: "About Almanac", icon: "help-about", shortcut: "Shift+F1" },
+                { separator: true },
+                { id: "settings", text: "Settings…", icon: "configure", shortcut: "Ctrl+," },
+                { id: "accounts", text: "Accounts…", icon: "system-users", shortcut: "Ctrl+Alt+A" },
+                { id: "signIn", text: "Sign-in Setup (Google, Microsoft, Yahoo, AOL)…", icon: "dialog-password", shortcut: "Ctrl+Alt+G" },
+                { id: "setupGuide", text: "Setup Guide", icon: "help-contents", shortcut: "Ctrl+F1" },
+                { separator: true },
+                { id: "quit", text: "Quit Almanac", icon: "application-exit", shortcut: "Ctrl+Q" }
+            ] },
+            { title: "File", items: [
+                { id: "newMessage", text: "New Message", icon: "mail-message-new", shortcut: "Ctrl+N" },
+                { id: "newEvent", text: "New Event", icon: "appointment-new", shortcut: "Ctrl+Shift+E" },
+                { id: "newContact", text: "New Contact", icon: "contact-new", shortcut: "Ctrl+Shift+C" },
+                { separator: true },
+                { id: "saveAttachments", text: "Save Attachments…", icon: "mail-attachment", shortcut: "Ctrl+Shift+S", enabled: !!cur && cur.attachments.length > 0 },
+                { id: "importMailboxes", text: "Import Mailboxes…", icon: "document-import", shortcut: "Ctrl+Shift+I" },
+                { id: "importVcard", text: "Import vCard…", icon: "document-import", shortcut: "Ctrl+Alt+I" },
+                { id: "exportVcard", text: "Export vCard…", icon: "document-export", shortcut: "Ctrl+Alt+E" },
+                { id: "exportPdf", text: "Export as PDF…", icon: "application-pdf", shortcut: "Ctrl+Shift+P", enabled: cur !== null },
+                { separator: true },
+                { id: "print", text: "Print…", icon: "document-print", shortcut: "Ctrl+P" }
+            ] },
+            { title: "Edit", items: [
+                { id: "undo", text: !win.typing && store.mailUndoText !== "" ? store.mailUndoText : "Undo", icon: "edit-undo", shortcut: "Ctrl+Z" },
+                { id: "redo", text: "Redo", icon: "edit-redo", shortcut: "Ctrl+Shift+Z" },
+                { separator: true },
+                { id: "cut", text: "Cut", icon: "edit-cut", shortcut: "Ctrl+X" },
+                { id: "copy", text: "Copy", icon: "edit-copy", shortcut: "Ctrl+C" },
+                { id: "paste", text: "Paste", icon: "edit-paste", shortcut: "Ctrl+V" },
+                { id: "delete", text: "Delete", icon: "edit-delete", shortcut: "Del", enabled: win.section === 0 && cur !== null },
+                { id: "selectAll", text: "Select All", icon: "edit-select-all", shortcut: "Ctrl+A" },
+                { separator: true },
+                { id: "find", text: "Find…", icon: "edit-find", shortcut: "Ctrl+F" },
+                { id: "findInMessage", text: "Find in Message…", icon: "edit-find", shortcut: "Ctrl+G", enabled: win.section === 0 && cur !== null },
+                { id: "spelling", text: "Spelling and Grammar", icon: "tools-check-spelling", items: [
+                    { id: "spellCheck", text: "Check Spelling While Typing", icon: "tools-check-spelling", checkable: true, checked: mailView.composer.spellOn },
+                    { id: "grammarCheck", text: "Check Grammar With Spelling", icon: "story-editor", checkable: true, checked: mailView.composer.grammarOn, enabled: mailView.composer.spellOn }
+                ] }
+            ] },
+            { title: "View", items: [
+                { id: "showMail", text: "Mail", icon: "mail-message", shortcut: "Ctrl+1", checkable: true, checked: win.section === 0 },
+                { id: "showCalendar", text: "Calendar", icon: "view-calendar", shortcut: "Ctrl+2", checkable: true, checked: win.section === 1 },
+                { id: "showContacts", text: "Contacts", icon: "x-office-address-book", shortcut: "Ctrl+3", checkable: true, checked: win.section === 2 },
+                { separator: true },
+                { id: "toggleSidebar", text: view.sidebarShown ? "Hide Mailbox List" : "Show Mailbox List", icon: "view-sidetree", shortcut: "Ctrl+Alt+S" },
+                { id: "threaded", text: "Organize by Conversation", icon: "view-list-tree", shortcut: "Ctrl+Shift+O", checkable: true, checked: mailView.threaded },
+                { id: "layout", text: "Layout", icon: "view-split-left-right", items: [
+                    { id: "layoutStandard", text: "Standard (List Beside Message)", icon: "view-split-left-right", shortcut: "Ctrl+Alt+H", checkable: true, checked: !mailView.classic },
+                    { id: "layoutClassic", text: "Classic (List Above Message)", icon: "view-split-top-bottom", shortcut: "Ctrl+Alt+K", checkable: true, checked: mailView.classic },
+                    { separator: true },
+                    { id: "mailSidebar", text: "Show Mailbox List", icon: "view-sidetree", checkable: true, checked: mailView.sidebarShown }
+                ] },
+                { id: "sortBy", text: "Sort By", icon: "view-sort", items: sortItems.concat([
+                    { separator: true },
+                    { id: "sortAscending", text: "Ascending", icon: "view-sort-ascending", shortcut: "Ctrl+Alt+Up", checkable: true, checked: mailView.sortAscending },
+                    { id: "sortDescending", text: "Descending", icon: "view-sort-descending", shortcut: "Ctrl+Alt+Down", checkable: true, checked: !mailView.sortAscending }
+                ]) },
+                { id: "filter", text: "Filter", icon: "view-filter", items: [
+                    { id: "allMessages", text: "All Messages", icon: "view-list-details", shortcut: "Ctrl+Alt+M", checkable: true, checked: !mailView.unreadOnly },
+                    { id: "onlyUnread", text: "Only Unread", icon: "mail-mark-unread", shortcut: "Ctrl+Alt+U", checkable: true, checked: mailView.unreadOnly }
+                ] },
+                { id: "messageView", text: "Message", icon: "text-html", items: [
+                    { id: "formatted", text: "Formatted", icon: "text-html", shortcut: "Ctrl+Alt+F", checkable: true, checked: mailView.formatted },
+                    { id: "plainText", text: "Plain Text Alternative", icon: "text-plain", shortcut: "Ctrl+Alt+P", checkable: true, checked: !mailView.formatted },
+                    { separator: true },
+                    { id: "loadRemote", text: "Load Remote Content Automatically", icon: "image-x-generic", shortcut: "Ctrl+Alt+Shift+R", checkable: true, checked: !!mailView.prefs.load_remote }
+                ] },
+                { separator: true },
+                { id: "themeLight", text: "Light Appearance", icon: "flashlight-on", shortcut: "Ctrl+Alt+Shift+L", checkable: true, checked: store.theme === "light" },
+                { id: "themeDark", text: "Dark Appearance", icon: "flashlight-off", shortcut: "Ctrl+Alt+Shift+D", checkable: true, checked: store.theme === "dark" },
+                { id: "themeSystem", text: "Match System Appearance", icon: "color-management", shortcut: "Ctrl+Alt+Shift+M", checkable: true, checked: store.theme === "system" },
+                { separator: true },
+                { id: "fullScreen", text: fullScreen ? "Exit Full Screen" : "Enter Full Screen", icon: "view-fullscreen", shortcut: "F11" }
+            ] },
+            { title: "Mailbox", items: [
+                { id: "getMail", text: "Get All New Mail", icon: "mail-receive", shortcut: "Ctrl+Shift+N" },
+                { separator: true },
+                { id: "eraseTrash", text: "Erase Deleted Items", icon: "edit-delete", shortcut: "Ctrl+Shift+Del" },
+                { id: "eraseJunk", text: "Erase Junk Mail", icon: "mail-mark-junk", shortcut: "Ctrl+Alt+J" },
+                { separator: true },
+                { id: "newSmartMailbox", text: "New Smart Mailbox…", icon: "folder-new", shortcut: "Ctrl+Alt+Shift+N" },
+                { id: "markAllRead", text: "Mark All Messages as Read", icon: "mail-mark-read", shortcut: "Ctrl+Alt+Shift+U" },
+                { separator: true },
+                { id: "goTo", text: "Go To", icon: "go-jump", items: [
+                    { id: "go:inbox", text: "Inbox", icon: "mail-folder-inbox", shortcut: "Alt+1" },
+                    { id: "go:drafts", text: "Drafts", icon: "document-edit", shortcut: "Alt+2" },
+                    { id: "go:sent", text: "Sent", icon: "mail-folder-sent", shortcut: "Alt+3" },
+                    { id: "go:archive", text: "Archive", icon: "archive-insert", shortcut: "Alt+4" },
+                    { id: "go:junk", text: "Junk", icon: "mail-mark-junk", shortcut: "Alt+5" },
+                    { id: "go:trash", text: "Trash", icon: "user-trash", shortcut: "Alt+6" }
+                ] },
+                { separator: true },
+                { id: "rules", text: "Rules…", icon: "view-filter", shortcut: "Ctrl+Alt+R" },
+                { id: "signatures", text: "Signatures…", icon: "mail-signed", shortcut: "Ctrl+Alt+Shift+G" }
+            ] },
+            { title: "Message", items: [
+                { id: "sendAgain", text: "Send Again", icon: "mail-send", shortcut: "Ctrl+Shift+D", enabled: cur !== null },
+                { separator: true },
+                { id: "reply", text: "Reply", icon: "mail-reply-sender", shortcut: "Ctrl+R", enabled: cur !== null },
+                { id: "replyAll", text: "Reply All", icon: "mail-reply-all", shortcut: "Ctrl+Shift+R", enabled: cur !== null },
+                { id: "forward", text: "Forward", icon: "mail-forward", shortcut: "Ctrl+Shift+F", enabled: cur !== null },
+                { separator: true },
+                { id: "mark", text: "Mark", icon: "mail-mark-important", enabled: row !== null, items: [
+                    { id: "markRead", text: row && row.read ? "As Unread" : "As Read", icon: "mail-mark-unread", shortcut: "Ctrl+Shift+U", enabled: row !== null },
+                    { id: "junk#2", text: "As Junk Mail", icon: "mail-mark-junk", shortcut: "Ctrl+Shift+J", enabled: row !== null }
+                ] },
+                { id: "flag", text: cur && cur.flagged ? "Unflag" : "Flag", icon: "flag-red", shortcut: "Ctrl+Shift+L", enabled: cur !== null },
+                { id: "flagColour", text: "Flag Colour", icon: "flag", enabled: cur !== null, items: flagItems },
+                { id: "mute", text: cur && cur.muted ? "Unmute" : "Mute", icon: "mail-thread-ignored", shortcut: "Ctrl+Shift+M", enabled: cur !== null },
+                { separator: true },
+                { id: "archive", text: "Archive", icon: "archive-insert", shortcut: "Ctrl+Shift+A", enabled: cur !== null },
+                { id: "junk", text: "Move to Junk", icon: "mail-mark-junk", shortcut: "Ctrl+Shift+J", enabled: cur !== null },
+                { id: "moveTo", text: "Move to", icon: "folder-move", enabled: cur !== null && moveItems.length > 0, items: moveItems },
+                { separator: true },
+                { id: "applyRules", text: "Apply Rules", icon: "system-run", shortcut: "Ctrl+Alt+Shift+A" },
+                { id: "vip", text: cur && cur.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs", icon: "emblem-favorite", shortcut: "Ctrl+Alt+V", enabled: cur !== null },
+                { id: "block", text: cur && cur.blocked ? "Unblock Sender" : "Block Sender", icon: "im-ban-user", shortcut: "Ctrl+Alt+B", enabled: cur !== null },
+                { separator: true },
+                { id: "remind", text: "Remind Me", icon: "chronometer", enabled: cur !== null, items: [
+                    { id: "remind:hour", text: "In 1 Hour", icon: "chronometer", shortcut: "Ctrl+Alt+Shift+H", enabled: cur !== null },
+                    { id: "remind:tonight", text: "Tonight", icon: "chronometer", shortcut: "Ctrl+Alt+Shift+T", enabled: cur !== null },
+                    { id: "remind:tomorrow", text: "Tomorrow", icon: "chronometer", shortcut: "Ctrl+Alt+Shift+O", enabled: cur !== null },
+                    { id: "remind:week", text: "Next Week", icon: "chronometer", shortcut: "Ctrl+Alt+Shift+W", enabled: cur !== null },
+                    { separator: true },
+                    { id: "remind:none", text: "Remove Reminder", icon: "edit-clear-history", shortcut: "Ctrl+Alt+Shift+X", enabled: cur !== null }
+                ] },
+                { id: "outbox", text: "Outbox (Send Later)…", icon: "mail-folder-outbox", shortcut: "Ctrl+Alt+O" }
+            ] },
+            { title: "Calendar", items: [
+                { id: "newEvent#2", text: "New Event", icon: "appointment-new", shortcut: "Ctrl+Shift+E" },
+                { id: "newCalendar", text: "New Calendar…", icon: "view-calendar-list", shortcut: "Ctrl+Alt+N" },
+                { id: "newSubscription", text: "New Calendar Subscription…", icon: "view-calendar-upcoming-events", shortcut: "Ctrl+Alt+Shift+S" },
+                { separator: true },
+                { id: "today", text: "Go to Today", icon: "go-jump-today", shortcut: "Ctrl+T" },
+                { id: "cal:day", text: "Day", icon: "view-calendar-day", shortcut: "Ctrl+Alt+1", checkable: true, checked: calendarView.view === "day" },
+                { id: "cal:week", text: "Week", icon: "view-calendar-week", shortcut: "Ctrl+Alt+2", checkable: true, checked: calendarView.view === "week" },
+                { id: "cal:month", text: "Month", icon: "view-calendar-month", shortcut: "Ctrl+Alt+3", checkable: true, checked: calendarView.view === "month" },
+                { id: "cal:year", text: "Year", icon: "view-calendar-timeline", shortcut: "Ctrl+Alt+4", checkable: true, checked: calendarView.view === "year" },
+                { separator: true },
+                { id: "refreshSubscriptions", text: "Refresh Subscriptions", icon: "view-refresh", shortcut: "Ctrl+Alt+Shift+F" }
+            ] },
+            { title: "Contacts", items: [
+                { id: "newContact#2", text: "New Contact", icon: "contact-new", shortcut: "Ctrl+Shift+C" },
+                { id: "newGroup", text: "New Group…", icon: "user-group-new", shortcut: "Ctrl+Alt+Shift+K" },
+                { id: "newSmartGroup", text: "New Smart Group…", icon: "user-group-properties", shortcut: "Ctrl+Alt+Shift+J" },
+                { separator: true },
+                { id: "duplicates", text: "Look for Duplicates…", icon: "edit-duplicate", shortcut: "Ctrl+Alt+D" },
+                { id: "myCard", text: "Go to My Card", icon: "user-identity", shortcut: "Ctrl+Alt+Shift+I" }
+            ] },
+            { title: "Window", items: [
+                { id: "minimize", text: "Minimize", icon: "window-minimize", shortcut: "Ctrl+M" },
+                { id: "zoom", text: "Zoom", icon: "window-maximize", shortcut: "Ctrl+Alt+Z" },
+                { separator: true },
+                { id: "messageViewer", text: "Message Viewer", icon: "mail-message", shortcut: "Ctrl+Alt+0" },
+                { id: "outbox#2", text: "Outbox", icon: "mail-folder-outbox", shortcut: "Ctrl+Alt+O" }
+            ] },
+            { title: "Help", items: [
+                { id: "keys", text: "Keyboard Shortcuts", icon: "help-keybord-shortcuts", shortcut: "F1" },
+                { id: "setupGuide#2", text: "Setup Guide", icon: "help-contents", shortcut: "Ctrl+F1" }
+            ] }
+        ]
+    }
+    function menuAction(id) {
+        var cut = id.indexOf("#")
+        if (cut > 0) id = id.slice(0, cut)
+        var arg = id.indexOf(":") > 0 ? id.slice(id.indexOf(":") + 1) : ""
+        var cur = mailView.current
+        switch (id.indexOf(":") > 0 ? id.slice(0, id.indexOf(":")) : id) {
+        case "about": aboutPopup.open(); break
+        case "settings": settingsDialog.open(); break
+        case "accounts": sourcesDialog.open(); break
+        case "signIn": signInSetup.openFor("google", false); break
+        case "setupGuide": store.onboarded = false; break
+        case "quit": Qt.quit(); break
+        case "newMessage": win.section = 0; mailView.newMessage(); break
+        case "newEvent": win.section = 1; calendarView.newEventNow(); break
+        case "newContact": win.section = 2; contactsView.newContact(); break
+        case "saveAttachments": if (cur && cur.attachments.length > 0) mailView.saveAttachments(); break
+        case "importMailboxes": sourcesDialog.open(); break
+        case "importVcard": win.section = 2; contactsView.importCards(); break
+        case "exportVcard": win.section = 2; contactsView.exportCards(); break
+        case "exportPdf": if (cur) mailView.exportCurrentPdf(); break
+        case "print": win.section === 0 ? mailView.printCurrent() : win.section === 1 ? calendarView.printView() : contactsView.printCards(false); break
+        case "undo": if (!win.typing && !win.fromAppMenu && store.mailUndoText !== "" || win.fromAppMenu && store.mailUndoText !== "" && (!win.focusBeforeMenu || win.focusBeforeMenu.cursorPosition === undefined)) store.undoMail(); else win.editAction("undo"); break
+        case "redo": case "cut": case "copy": case "paste": case "selectAll": win.editAction(id); break
+        case "delete": if (win.section === 0 && cur) mailView.removeCurrent("delete"); break
+        case "find": win.section === 0 ? mailView.find() : win.views[win.section].focusSearch(); break
+        case "findInMessage": if (win.section === 0 && cur) mailView.findInMessage(); break
+        case "spellCheck": mailView.composer.setSpelling(!mailView.composer.spellOn); break
+        case "grammarCheck": if (mailView.composer.spellOn) mailView.composer.setGrammar(!mailView.composer.grammarOn); break
+        case "showMail": win.section = 0; break
+        case "showCalendar": win.section = 1; break
+        case "showContacts": win.section = 2; break
+        case "toggleSidebar": win.views[win.section].sidebarShown = !win.views[win.section].sidebarShown; break
+        case "threaded": mailView.threaded = !mailView.threaded; break
+        case "layoutStandard": win.section = 0; mailView.setLayout("standard"); break
+        case "layoutClassic": win.section = 0; mailView.setLayout("classic"); break
+        case "mailSidebar": mailView.sidebarShown = !mailView.sidebarShown; break
+        case "sortBy": mailView.setSort(arg, mailView.sortAscending); break
+        case "sortAscending": mailView.setSort(mailView.sortBy, true); break
+        case "sortDescending": mailView.setSort(mailView.sortBy, false); break
+        case "allMessages": mailView.unreadOnly = false; break
+        case "onlyUnread": mailView.unreadOnly = true; break
+        case "formatted": mailView.formatted = true; break
+        case "plainText": mailView.formatted = false; break
+        case "loadRemote": store.setSetting("load_remote", JSON.stringify(!mailView.prefs.load_remote)); break
+        case "themeLight": store.chooseTheme("light"); break
+        case "themeDark": store.chooseTheme("dark"); break
+        case "themeSystem": store.chooseTheme("system"); break
+        case "fullScreen": win.visibility === Window.FullScreen ? win.showNormal() : win.showFullScreen(); break
+        case "getMail": store.refreshAll(); break
+        case "eraseTrash": mailView.eraseMailbox("trash"); break
+        case "eraseJunk": mailView.eraseMailbox("junk"); break
+        case "newSmartMailbox": win.section = 0; mailView.newSmartMailbox(); break
+        case "markAllRead": store.markAllRead(mailView.selection); break
+        case "go":
+            win.section = 0
+            mailView.goTo(arg, { inbox: "Inbox", drafts: "Drafts", sent: "Sent", archive: "Archive", junk: "Junk", trash: "Trash" }[arg])
+            break
+        case "rules": mailView.rulesDlg.open(); break
+        case "signatures": mailView.signaturesDlg.open(); break
+        case "sendAgain": if (cur) { win.section = 0; mailView.sendAgain() } break
+        case "reply": if (cur) { win.section = 0; mailView.reply(false) } break
+        case "replyAll": if (cur) { win.section = 0; mailView.reply(true) } break
+        case "forward": if (cur) { win.section = 0; mailView.forward() } break
+        case "markRead": if (mailView.currentRow) mailView.setCurrentRead(!mailView.currentRow.read); break
+        case "flag": if (cur) mailView.toggleCurrentFlag(); break
+        case "flagColour": if (cur) mailView.setCurrentFlag(parseInt(arg)); break
+        case "mute": if (cur) store.toggleMute(cur.id); break
+        case "archive": if (cur) mailView.removeCurrent("archive"); break
+        case "junk": if (cur || mailView.currentRow) mailView.removeCurrent("junk"); break
+        case "moveTo": if (cur) mailView.moveCurrentToFolder(isNaN(Number(arg)) ? arg : Number(arg)); break
+        case "applyRules": store.applyRulesNow(); break
+        case "vip": if (cur) store.toggleVip(cur.fromEmail); break
+        case "block": if (cur) store.toggleBlocked(cur.fromEmail); break
+        case "remind":
+            if (arg === "hour") mailView.remindIn(3600000)
+            else if (arg === "tonight") mailView.remindAt(21, 0)
+            else if (arg === "tomorrow") mailView.remindAt(8, 1)
+            else if (arg === "week") mailView.remindAt(8, 7)
+            else if (cur) store.remindMe(cur.id, 0)
+            break
+        case "outbox": mailView.outboxDlg.open(); break
+        case "newCalendar": win.section = 1; calendarView.newCalendar(); break
+        case "newSubscription": win.section = 1; calendarView.newSubscription(); break
+        case "today": win.section = 1; calendarView.cursor = new Date(); break
+        case "cal": win.section = 1; calendarView.view = arg; break
+        case "refreshSubscriptions": store.syncSubscriptions(); break
+        case "newGroup": win.section = 2; contactsView.newGroup(); break
+        case "newSmartGroup": win.section = 2; contactsView.newSmartGroup(); break
+        case "duplicates": win.section = 2; contactsView.findDuplicates(); break
+        case "myCard": win.section = 2; contactsView.goToMyCard(); break
+        case "minimize": win.showMinimized(); break
+        case "zoom": win.visibility === Window.Maximized ? win.showNormal() : win.showMaximized(); break
+        case "messageViewer": win.section = 0; break
+        case "keys": shortcutsPopup.open(); break
         }
     }
-    // The menus' shortcuts work with the menus closed (each runs its menu command).
-    Shortcut { sequence: menuCmd1.shortcut; enabled: menuCmd1.enabled; onActivated: menuCmd1.triggered() }
-    Shortcut { sequence: menuCmd2.shortcut; enabled: menuCmd2.enabled && !win.typing; onActivated: menuCmd2.triggered() }
-    Shortcut { sequence: menuCmd3.shortcut; enabled: menuCmd3.enabled && !win.typing; onActivated: menuCmd3.triggered() }
-    Shortcut { sequence: menuCmd4.shortcut; enabled: menuCmd4.enabled; onActivated: menuCmd4.triggered() }
-    Shortcut { sequence: menuCmd5.shortcut; enabled: menuCmd5.enabled; onActivated: menuCmd5.triggered() }
-    Shortcut { sequence: menuCmd6.shortcut; enabled: menuCmd6.enabled; onActivated: menuCmd6.triggered() }
-    Shortcut { sequence: menuCmd7.shortcut; enabled: menuCmd7.enabled; onActivated: menuCmd7.triggered() }
-    Shortcut { sequence: menuCmd8.shortcut; enabled: menuCmd8.enabled; onActivated: menuCmd8.triggered() }
-    Shortcut { sequence: menuCmd9.shortcut; enabled: menuCmd9.enabled && !win.typing; onActivated: menuCmd9.triggered() }
-    Shortcut { sequence: menuCmd10.shortcut; enabled: menuCmd10.enabled && !win.typing; onActivated: menuCmd10.triggered() }
-    Shortcut { sequence: menuCmd11.shortcut; enabled: menuCmd11.enabled; onActivated: menuCmd11.triggered() }
-    // Delete, Archive, Junk and Undo have no live shortcut on their menu items:
-    // with KDE's menus those fired however focus was, and repeated while the
-    // key was held, so holding Delete sent row after row to the Trash. These
-    // act once per press, and not while typing.
-    Shortcut { sequence: "Del"; autoRepeat: false; enabled: menuCmd12.enabled && !win.typing; onActivated: menuCmd12.triggered() }
+    GlobalMenuBar { id: globalMenu; window: win; model: win.menuModel; onTriggered: id => win.menuAction(id) }
+    onVisibleChanged: if (visible) Qt.callLater(globalMenu.attach)
+    AppMenu {
+        id: appMenu
+        // (The window's palette has no hover colour for menu items.)
+        palette.light: Theme.hover
+        palette.midlight: Theme.pressed
+        model: win.menuModel
+        onTriggered: id => { win.fromAppMenu = true; win.menuAction(id); win.fromAppMenu = false }
+        onClosed: win.focusBeforeMenu = null
+    }
+    function openAppMenu() {
+        win.focusBeforeMenu = win.activeFocusItem
+        appMenu.openAt(menuButton, 0, menuButton.height + 4)
+    }
+
+    // The menus' keys (the menus only show them). Delete, Archive, Junk and
+    // the like act once per press (holding Delete once sent row after row to
+    // the Trash), and keys that type in text fields (Alt, Delete) wait while
+    // typing.
+    Shortcut { sequence: "Shift+F1"; onActivated: win.menuAction("about") }
+    Shortcut { sequence: "Ctrl+Alt+A"; enabled: !win.typing; onActivated: win.menuAction("accounts") }
+    Shortcut { sequence: "Ctrl+Alt+G"; enabled: !win.typing; onActivated: win.menuAction("signIn") }
+    Shortcut { sequence: "Ctrl+F1"; onActivated: win.menuAction("setupGuide") }
+    Shortcut { sequence: "Ctrl+Shift+E"; onActivated: win.menuAction("newEvent") }
+    Shortcut { sequence: "Ctrl+Shift+C"; onActivated: win.menuAction("newContact") }
+    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !!mailView.current && mailView.current.attachments.length > 0; onActivated: win.menuAction("saveAttachments") }
+    Shortcut { sequence: "Ctrl+Shift+I"; onActivated: win.menuAction("importMailboxes") }
+    Shortcut { sequence: "Ctrl+Alt+I"; enabled: !win.typing; onActivated: win.menuAction("importVcard") }
+    Shortcut { sequence: "Ctrl+Alt+E"; enabled: !win.typing; onActivated: win.menuAction("exportVcard") }
+    Shortcut { sequence: "Ctrl+Shift+P"; enabled: win.hasMessage; onActivated: win.menuAction("exportPdf") }
+    Shortcut { sequence: "Del"; autoRepeat: false; enabled: win.section === 0 && win.hasMessage && !win.typing; onActivated: win.menuAction("delete") }
     // Undo, outside text: the last delete or move put back.
     Shortcut { sequence: "Ctrl+Z"; autoRepeat: false; enabled: !win.typing && store.mailUndoText !== ""; onActivated: store.undoMail() }
-    Shortcut { sequence: menuCmd13.shortcut; enabled: menuCmd13.enabled; onActivated: menuCmd13.triggered() }
-    Shortcut { sequence: menuCmd14.shortcut; enabled: menuCmd14.enabled && !win.typing; onActivated: menuCmd14.triggered() }
-    Shortcut { sequence: menuCmd15.shortcut; enabled: menuCmd15.enabled && !win.typing; onActivated: menuCmd15.triggered() }
-    Shortcut { sequence: menuCmd16.shortcut; enabled: menuCmd16.enabled && !win.typing; onActivated: menuCmd16.triggered() }
-    Shortcut { sequence: menuCmd17.shortcut; enabled: menuCmd17.enabled && !win.typing; onActivated: menuCmd17.triggered() }
-    Shortcut { sequence: menuCmd18.shortcut; enabled: menuCmd18.enabled && !win.typing; onActivated: menuCmd18.triggered() }
-    Shortcut { sequence: menuCmd19.shortcut; enabled: menuCmd19.enabled && !win.typing; onActivated: menuCmd19.triggered() }
-    Shortcut { sequence: menuCmd20.shortcut; enabled: menuCmd20.enabled && !win.typing; onActivated: menuCmd20.triggered() }
-    Shortcut { sequence: menuCmd21.shortcut; enabled: menuCmd21.enabled && !win.typing; onActivated: menuCmd21.triggered() }
-    Shortcut { sequence: menuCmd22.shortcut; enabled: menuCmd22.enabled && !win.typing; onActivated: menuCmd22.triggered() }
-    Shortcut { sequence: menuCmd23.shortcut; enabled: menuCmd23.enabled && !win.typing; onActivated: menuCmd23.triggered() }
-    Shortcut { sequence: menuCmd24.shortcut; enabled: menuCmd24.enabled && !win.typing; onActivated: menuCmd24.triggered() }
-    Shortcut { sequence: menuCmd25.shortcut; enabled: menuCmd25.enabled && !win.typing; onActivated: menuCmd25.triggered() }
-    Shortcut { sequence: "Ctrl+Shift+Del"; autoRepeat: false; enabled: menuCmd26.enabled; onActivated: menuCmd26.triggered() }
-    Shortcut { sequence: "Ctrl+Alt+J"; autoRepeat: false; enabled: menuCmd27.enabled && !win.typing; onActivated: menuCmd27.triggered() }
-    Shortcut { sequence: menuCmd28.shortcut; enabled: menuCmd28.enabled && !win.typing; onActivated: menuCmd28.triggered() }
-    Shortcut { sequence: "Ctrl+Alt+Shift+U"; autoRepeat: false; enabled: menuCmd29.enabled && !win.typing; onActivated: menuCmd29.triggered() }
-    Shortcut { sequence: menuCmd30.shortcut; enabled: menuCmd30.enabled && !win.typing; onActivated: menuCmd30.triggered() }
-    Shortcut { sequence: menuCmd31.shortcut; enabled: menuCmd31.enabled && !win.typing; onActivated: menuCmd31.triggered() }
-    Shortcut { sequence: menuCmd32.shortcut; enabled: menuCmd32.enabled && !win.typing; onActivated: menuCmd32.triggered() }
-    Shortcut { sequence: menuCmd33.shortcut; enabled: menuCmd33.enabled && !win.typing; onActivated: menuCmd33.triggered() }
-    Shortcut { sequence: menuCmd34.shortcut; enabled: menuCmd34.enabled && !win.typing; onActivated: menuCmd34.triggered() }
-    Shortcut { sequence: menuCmd35.shortcut; enabled: menuCmd35.enabled && !win.typing; onActivated: menuCmd35.triggered() }
-    Shortcut { sequence: menuCmd36.shortcut; enabled: menuCmd36.enabled && !win.typing; onActivated: menuCmd36.triggered() }
-    Shortcut { sequence: menuCmd37.shortcut; enabled: menuCmd37.enabled && !win.typing; onActivated: menuCmd37.triggered() }
-    Shortcut { sequence: "Ctrl+Shift+D"; autoRepeat: false; enabled: menuCmd38.enabled; onActivated: menuCmd38.triggered() }
-    Shortcut { sequence: "Ctrl+Shift+M"; autoRepeat: false; enabled: menuCmd39.enabled; onActivated: menuCmd39.triggered() }
-    Shortcut { sequence: "Ctrl+Alt+Shift+A"; autoRepeat: false; enabled: menuCmd40.enabled && !win.typing; onActivated: menuCmd40.triggered() }
-    Shortcut { sequence: menuCmd41.shortcut; enabled: menuCmd41.enabled && !win.typing; onActivated: menuCmd41.triggered() }
-    Shortcut { sequence: "Ctrl+Alt+B"; autoRepeat: false; enabled: menuCmd42.enabled && !win.typing; onActivated: menuCmd42.triggered() }
-    Shortcut { sequence: menuCmd43.shortcut; enabled: menuCmd43.enabled && !win.typing; onActivated: menuCmd43.triggered() }
-    Shortcut { sequence: menuCmd44.shortcut; enabled: menuCmd44.enabled && !win.typing; onActivated: menuCmd44.triggered() }
-    Shortcut { sequence: menuCmd45.shortcut; enabled: menuCmd45.enabled && !win.typing; onActivated: menuCmd45.triggered() }
-    Shortcut { sequence: menuCmd46.shortcut; enabled: menuCmd46.enabled && !win.typing; onActivated: menuCmd46.triggered() }
-    Shortcut { sequence: menuCmd47.shortcut; enabled: menuCmd47.enabled && !win.typing; onActivated: menuCmd47.triggered() }
-    Shortcut { sequence: menuCmd48.shortcut; enabled: menuCmd48.enabled && !win.typing; onActivated: menuCmd48.triggered() }
-    Shortcut { sequence: menuCmd49.shortcut; enabled: menuCmd49.enabled && !win.typing; onActivated: menuCmd49.triggered() }
-    Shortcut { sequence: menuCmd50.shortcut; enabled: menuCmd50.enabled && !win.typing; onActivated: menuCmd50.triggered() }
-    Shortcut { sequence: menuCmd51.shortcut; enabled: menuCmd51.enabled && !win.typing; onActivated: menuCmd51.triggered() }
-    Shortcut { sequence: menuCmd52.shortcut; enabled: menuCmd52.enabled && !win.typing; onActivated: menuCmd52.triggered() }
-    Shortcut { sequence: menuCmd53.shortcut; enabled: menuCmd53.enabled && !win.typing; onActivated: menuCmd53.triggered() }
-    Shortcut { sequence: menuCmd54.shortcut; enabled: menuCmd54.enabled && !win.typing; onActivated: menuCmd54.triggered() }
-    Shortcut { sequence: menuCmd55.shortcut; enabled: menuCmd55.enabled && !win.typing; onActivated: menuCmd55.triggered() }
-    Shortcut { sequence: menuCmd56.shortcut; enabled: menuCmd56.enabled && !win.typing; onActivated: menuCmd56.triggered() }
-    Shortcut { sequence: menuCmd57.shortcut; enabled: menuCmd57.enabled && !win.typing; onActivated: menuCmd57.triggered() }
-    Shortcut { sequence: menuCmd58.shortcut; enabled: menuCmd58.enabled && !win.typing; onActivated: menuCmd58.triggered() }
-    Shortcut { sequence: menuCmd59.shortcut; enabled: menuCmd59.enabled && !win.typing; onActivated: menuCmd59.triggered() }
-    Shortcut { sequence: menuCmd60.shortcut; enabled: menuCmd60.enabled && !win.typing; onActivated: menuCmd60.triggered() }
-    Shortcut { sequence: menuCmd61.shortcut; enabled: menuCmd61.enabled && !win.typing; onActivated: menuCmd61.triggered() }
-    Shortcut { sequence: menuCmd62.shortcut; enabled: menuCmd62.enabled; onActivated: menuCmd62.triggered() }
+    Shortcut { sequence: "Ctrl+Shift+O"; onActivated: win.menuAction("threaded") }
+    Shortcut { sequence: "Ctrl+Alt+H"; enabled: !win.typing; onActivated: win.menuAction("layoutStandard") }
+    Shortcut { sequence: "Ctrl+Alt+K"; enabled: !win.typing; onActivated: win.menuAction("layoutClassic") }
+    Shortcut { sequence: "Ctrl+Alt+Up"; enabled: !win.typing; onActivated: win.menuAction("sortAscending") }
+    Shortcut { sequence: "Ctrl+Alt+Down"; enabled: !win.typing; onActivated: win.menuAction("sortDescending") }
+    Shortcut { sequence: "Ctrl+Alt+M"; enabled: !win.typing; onActivated: win.menuAction("allMessages") }
+    Shortcut { sequence: "Ctrl+Alt+U"; enabled: !win.typing; onActivated: win.menuAction("onlyUnread") }
+    Shortcut { sequence: "Ctrl+Alt+F"; enabled: !win.typing; onActivated: win.menuAction("formatted") }
+    Shortcut { sequence: "Ctrl+Alt+P"; enabled: !win.typing; onActivated: win.menuAction("plainText") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+R"; enabled: !win.typing; onActivated: win.menuAction("loadRemote") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+L"; enabled: !win.typing; onActivated: win.menuAction("themeLight") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+D"; enabled: !win.typing; onActivated: win.menuAction("themeDark") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+M"; enabled: !win.typing; onActivated: win.menuAction("themeSystem") }
+    Shortcut { sequence: "Ctrl+Shift+Del"; autoRepeat: false; onActivated: win.menuAction("eraseTrash") }
+    Shortcut { sequence: "Ctrl+Alt+J"; autoRepeat: false; enabled: !win.typing; onActivated: win.menuAction("eraseJunk") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+N"; enabled: !win.typing; onActivated: win.menuAction("newSmartMailbox") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+U"; autoRepeat: false; enabled: !win.typing; onActivated: win.menuAction("markAllRead") }
+    Shortcut { sequence: "Alt+1"; enabled: !win.typing; onActivated: win.menuAction("go:inbox") }
+    Shortcut { sequence: "Alt+2"; enabled: !win.typing; onActivated: win.menuAction("go:drafts") }
+    Shortcut { sequence: "Alt+3"; enabled: !win.typing; onActivated: win.menuAction("go:sent") }
+    Shortcut { sequence: "Alt+4"; enabled: !win.typing; onActivated: win.menuAction("go:archive") }
+    Shortcut { sequence: "Alt+5"; enabled: !win.typing; onActivated: win.menuAction("go:junk") }
+    Shortcut { sequence: "Alt+6"; enabled: !win.typing; onActivated: win.menuAction("go:trash") }
+    Shortcut { sequence: "Ctrl+Alt+R"; enabled: !win.typing; onActivated: win.menuAction("rules") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+G"; enabled: !win.typing; onActivated: win.menuAction("signatures") }
+    Shortcut { sequence: "Ctrl+Shift+D"; autoRepeat: false; enabled: win.hasMessage; onActivated: win.menuAction("sendAgain") }
+    Shortcut { sequence: "Ctrl+Shift+M"; autoRepeat: false; enabled: win.hasMessage; onActivated: win.menuAction("mute") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+A"; autoRepeat: false; enabled: !win.typing; onActivated: win.menuAction("applyRules") }
+    Shortcut { sequence: "Ctrl+Alt+V"; enabled: win.hasMessage && !win.typing; onActivated: win.menuAction("vip") }
+    Shortcut { sequence: "Ctrl+Alt+B"; autoRepeat: false; enabled: win.hasMessage && !win.typing; onActivated: win.menuAction("block") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+H"; enabled: win.hasMessage && !win.typing; onActivated: win.menuAction("remind:hour") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+T"; enabled: win.hasMessage && !win.typing; onActivated: win.menuAction("remind:tonight") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+O"; enabled: win.hasMessage && !win.typing; onActivated: win.menuAction("remind:tomorrow") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+W"; enabled: win.hasMessage && !win.typing; onActivated: win.menuAction("remind:week") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+X"; enabled: win.hasMessage && !win.typing; onActivated: win.menuAction("remind:none") }
+    Shortcut { sequence: "Ctrl+Alt+O"; enabled: !win.typing; onActivated: win.menuAction("outbox") }
+    Shortcut { sequence: "Ctrl+Alt+N"; enabled: !win.typing; onActivated: win.menuAction("newCalendar") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+S"; enabled: !win.typing; onActivated: win.menuAction("newSubscription") }
+    Shortcut { sequence: "Ctrl+Alt+1"; enabled: !win.typing; onActivated: win.menuAction("cal:day") }
+    Shortcut { sequence: "Ctrl+Alt+2"; enabled: !win.typing; onActivated: win.menuAction("cal:week") }
+    Shortcut { sequence: "Ctrl+Alt+3"; enabled: !win.typing; onActivated: win.menuAction("cal:month") }
+    Shortcut { sequence: "Ctrl+Alt+4"; enabled: !win.typing; onActivated: win.menuAction("cal:year") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+F"; enabled: !win.typing; onActivated: win.menuAction("refreshSubscriptions") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+K"; enabled: !win.typing; onActivated: win.menuAction("newGroup") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+J"; enabled: !win.typing; onActivated: win.menuAction("newSmartGroup") }
+    Shortcut { sequence: "Ctrl+Alt+D"; enabled: !win.typing; onActivated: win.menuAction("duplicates") }
+    Shortcut { sequence: "Ctrl+Alt+Shift+I"; enabled: !win.typing; onActivated: win.menuAction("myCard") }
+    Shortcut { sequence: "Ctrl+Alt+Z"; enabled: !win.typing; onActivated: win.menuAction("zoom") }
+    Shortcut { sequence: "Ctrl+Alt+0"; enabled: !win.typing; onActivated: win.menuAction("messageViewer") }
+    Shortcut { sequence: "F1"; onActivated: win.menuAction("keys") }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsDialog.open() }
-    // Shortcuts the menus show (menus only list them; these make them work).
-    Shortcut { sequence: "Ctrl+P"; onActivated: win.section === 0 ? mailView.printCurrent() : win.section === 1 ? calendarView.printView() : contactsView.printCards(false) }
-    Shortcut { sequence: "F11"; onActivated: win.visibility === Window.FullScreen ? win.showNormal() : win.showFullScreen() }
+    Shortcut { sequence: "Ctrl+P"; onActivated: win.menuAction("print") }
+    Shortcut { sequence: "F11"; onActivated: win.menuAction("fullScreen") }
     Shortcut { sequence: "Ctrl+M"; onActivated: win.showMinimized() }
     Shortcut { sequence: "Ctrl+Shift+N"; enabled: win.section !== 0; onActivated: store.refreshAll() }
     Shortcut { sequence: "Ctrl+Q"; onActivated: Qt.quit() }
@@ -726,7 +774,15 @@ ApplicationWindow {
         contentItem: ColumnLayout {
             spacing: 8
             Text { text: "Almanac"; font.pixelSize: 22; font.weight: Font.Bold; color: Theme.text }
+            Text { text: "Version " + Qt.application.version; color: Theme.secondary; visible: Qt.application.version !== "" }
             Text { text: "Mail, Calendar and Contacts for Linux, Windows and macOS.\nBuilt with Rust and Qt."; color: Theme.secondary }
+            Text {
+                text: "<a href=\"https://github.com/benwbooth/almanac\">github.com/benwbooth/almanac</a>"
+                textFormat: Text.StyledText
+                linkColor: Theme.accent
+                onLinkActivated: link => Qt.openUrlExternally(link)
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+            }
             ToolButtonX { Layout.alignment: Qt.AlignRight; text: "Close"; onClicked: aboutPopup.close() }
         }
     }
@@ -879,6 +935,7 @@ ApplicationWindow {
     Component.onCompleted: {
         // (Once: the mail's conversations worked out in the background for the list.)
         Qt.callLater(store.buildConversations)
+        Qt.callLater(function() { win.menusReady = true })
         store.startupMark("window set up")
         // Window buttons drawn like the desktop's own (Plasma's round Breeze ones here).
         if (Qt.platform.os === "linux") Theme.windowButtons = /GNOME|Unity|Pantheon|Budgie|Cinnamon|MATE|XFCE/i.test(store.desktopName()) ? "adwaita" : "breeze"
@@ -1070,7 +1127,7 @@ ApplicationWindow {
         else if (p === "signin-other") { signInSetup.openFor("microsoft", false); Qt.callLater(function() { signInSetup.showOthers() }) }
         else if (p === "signin-google") signInSetup.openFor("google", false)
         else if (p === "signin-steps") { signInSetup.openFor("google", false); signInSetup.byHand = true; for (var i = 0; i < 5; i++) signInSetup.markDone(i) }
-        else if (p === "menu") appMenu.open(menuButton)
+        else if (p === "menu") Qt.callLater(win.openAppMenu)
     }
 
     Shortcut { sequence: "Ctrl+1"; onActivated: win.section = 0 }
