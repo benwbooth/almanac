@@ -43,6 +43,19 @@ Item {
         apply: function(s, W, H) { if (s.sideW > 60) sidebarPane.SplitView.preferredWidth = Math.min(s.sideW, W * 0.4) }
     }
     function newEventNow() { var n = new Date(cursor); var now = new Date(); n.setHours(now.getHours() + 1, 0, 0, 0); newEvent(n, false) }
+    // From `almanac --new-event YYYY-MM-DD[THH:MM]` (the desktop clock's New
+    // Event…): that day shown and the editor open, at the time given, else at
+    // the next hour today or 9:00 on another day.
+    function newEventOn(when) {
+        var d = Theme.parseDT(when.length > 10 ? when : when + "T00:00")
+        if (when.length <= 10) {
+            var now = new Date()
+            if (Theme.isoDate(d) === Theme.isoDate(now)) d.setHours(now.getHours() + 1, 0, 0, 0)
+            else d.setHours(9, 0, 0, 0)
+        }
+        cursor = d
+        newEvent(d, false)
+    }
     function newCalendar() { calEditor.openFor(null) }
     function newSubscription() { subDialog.open() }
     property date cursor: new Date()

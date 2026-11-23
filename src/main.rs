@@ -6,6 +6,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod data;
+mod cli;
 mod autoreg;
 mod browser;
 mod cloud;
@@ -162,6 +163,16 @@ impl Drop for Timed {
 
 fn main() {
     startup_mark("started");
+    // `--events …`: calendar answers as JSON, no window (see cli.rs).
+    if cli::run() {
+        return;
+    }
+    // `--open-event` / `--new-event` while Almanac runs: handed straight to it.
+    if let Some(req) = cli::launch_request() {
+        if instance::forward(&req.to_string()) {
+            return;
+        }
+    }
     let args: Vec<String> = std::env::args().collect();
     let shot = args
         .iter()

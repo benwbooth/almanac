@@ -1297,6 +1297,7 @@ ApplicationWindow {
             if (r.mail !== undefined) { win.section = 0; mailView.openMessageById(r.mail) }
             else if (r.inbox) { win.section = 0; mailView.goTo("inbox", "Inbox") }
             else if (r.event !== undefined) { win.section = 1; calendarView.showEvent(r.event, r.start) }
+            else if (r.newEvent) { win.section = 1; calendarView.newEventOn(r.newEvent) }
             else if (r.calendar) win.section = 1
         }
     }

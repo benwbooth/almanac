@@ -868,13 +868,26 @@ impl cxx_qt::Initialize for qobject::Store {
             return;
         }
         // Started again while running: show this window.
+        // (Or asked to open an event or the new-event editor: `almanac
+        // --open-event` / `--new-event`, e.g. from the desktop's clock.)
         let thread = self.qt_thread();
-        crate::instance::serve(move || {
-            let _ = thread.queue(|mut store| {
-                let n = *store.show_requests() + 1;
-                store.as_mut().set_show_requests(n);
-            });
-        });
+        let thread2 = self.qt_thread();
+        crate::instance::serve(
+            move || {
+                let _ = thread.queue(|mut store| {
+                    let n = *store.show_requests() + 1;
+                    store.as_mut().set_show_requests(n);
+                });
+            },
+            move |req| {
+                let _ = thread2.queue(move |mut store| store.as_mut().set_open_request(QString::from(req.as_str())));
+            },
+        );
+        // Started with one of those (Almanac wasn't running).
+        if let Some(req) = crate::cli::launch_request() {
+            let thread = self.qt_thread();
+            let _ = thread.queue(move |mut store| store.as_mut().set_open_request(QString::from(req.to_string().as_str())));
+        }
         let auto: Vec<String> = self
             .db
             .sources
