@@ -945,9 +945,11 @@ ApplicationWindow {
         if (Qt.platform.os === "linux") Theme.windowButtons = /GNOME|Unity|Pantheon|Budgie|Cinnamon|MATE|XFCE/i.test(store.desktopName()) ? "adwaita" : "breeze"
         if (store.arg("--buttons") !== "") Theme.windowButtons = store.arg("--buttons")
         restoreState()
-        // --width N (for pictures of narrow windows)
+        // --width N / --height N (for pictures of narrow or short windows)
         var w = parseInt(store.arg("--width"))
         if (w > 0) width = w
+        var h = parseInt(store.arg("--height"))
+        if (h > 0) height = h
         if (parseInt(store.arg("--list-width")) > 0) mailView.setListWidth(parseInt(store.arg("--list-width")))
         var p = store.startPanel
         if (p === "accounts") sourcesDialog.open()
@@ -1130,7 +1132,8 @@ ApplicationWindow {
         else if (p === "signin") signInSetup.openFor("microsoft", false)
         else if (p === "signin-other") { signInSetup.openFor("microsoft", false); Qt.callLater(function() { signInSetup.showOthers() }) }
         else if (p === "signin-google") signInSetup.openFor("google", false)
-        else if (p === "signin-steps") { signInSetup.openFor("google", false); signInSetup.byHand = true; for (var i = 0; i < 5; i++) signInSetup.markDone(i) }
+        // signin-step3: Google's setup at that step (signin-steps: the first)
+        else if (p.indexOf("signin-step") === 0) { signInSetup.openFor("google", false); signInSetup.gStep = parseInt(p.slice(11)) || 1 }
         else if (p === "menu") Qt.callLater(win.openAppMenu)
     }
 

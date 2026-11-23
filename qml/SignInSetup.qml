@@ -15,12 +15,15 @@ Popup {
     property var info: { for (var i = 0; i < all.length; i++) if (all[i].id === provider) return all[i]; return null }
     property bool editingIds: false
     property bool byHand: false
+    // Google's setup wizard: 0 is signing in (or the setup's intro), 1… its steps.
+    property int gStep: 0
+    readonly property bool gWizard: provider === "google" && gStep > 0
+    onGStepChanged: scroller.contentY = 0
     // Steps ticked off this session ("provider:index"); Google's first four
     // are done once "Prepare Automatically" has run.
     property var done: ({})
     function stepDone(i) {
         if (done[provider + ":" + i]) return true
-        if (provider === "google" && store.googleProject !== "" && i <= 3) return true
         if (info && info.ready && info.steps && i < info.steps.length - 1) return true
         return false
     }
@@ -32,8 +35,6 @@ Popup {
         else if (s.action === "paste") { pasteBox.forceActiveFocus(); markDone(i) }
         else if (s.action === "signin" && info && info.ready) signIn()
     }
-    // After the automatic part, show the remaining steps.
-    Connections { target: dlg.store; function onGoogleProjectChanged() { if (dlg.store.googleProject !== "") dlg.byHand = true } }
     property var tools: { store.revision; return visible ? JSON.parse(store.setupTools()) : ({}) }
 
     // Google's downloaded client file (client_secret_….json)
@@ -44,7 +45,7 @@ Popup {
             nameFilters: ["Google client file (*.json)", "All files (*)"]
             onAccepted: {
                 var text = dlg.store.readTextFile(selectedFile.toString())
-                if (dlg.store.usePastedRegistration(dlg.provider, text)) Qt.callLater(dlg.signIn)
+                if (dlg.store.usePastedRegistration(dlg.provider, text)) { dlg.gStep = 0; Qt.callLater(dlg.signIn) }
                 destroy()
             }
             onRejected: destroy()
@@ -61,6 +62,7 @@ Popup {
     function openFor(p, signInNow) {
         provider = p
         editingIds = false
+        gStep = 0
         open()
         Qt.callLater(function() {
             clientId.text = dlg.info && dlg.info.source === "saved" ? dlg.info.clientId : ""
@@ -69,7 +71,8 @@ Popup {
         })
     }
     function showOthers() { scroller.contentY = Math.max(0, Math.min(otherCard.y, scroller.contentHeight - scroller.height)) }
-    function signIn() { pasted.text = ""; store.signInWith(provider, "", "", "common") }
+    function signIn() { gStep = 0; pasted.text = ""; store.signInWith(provider, "", "", "common") }
+    function loadFile() { jsonPicker.createObject(dlg).open() }
     readonly property bool waiting: store.signingIn === provider
 
     Connections {
@@ -139,12 +142,53 @@ Popup {
                 width: dlg.width - 48
                 spacing: 12
 
-                Text { text: dlg.info ? dlg.info.name : ""; font.pixelSize: 22; font.weight: Font.Bold; color: Theme.text }
-                Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: dlg.info ? dlg.info.detail : ""; color: Theme.secondary }
+                Text { visible: !dlg.gWizard; text: dlg.info ? dlg.info.name : ""; font.pixelSize: 22; font.weight: Font.Bold; color: Theme.text }
+                Text { visible: !dlg.gWizard; Layout.fillWidth: true; wrapMode: Text.WordWrap; text: dlg.info ? dlg.info.detail : ""; color: Theme.secondary }
+
+                // ------------------------------------- Google: the setup, step by step
+                GoogleWizard {
+                    id: wizard
+                    visible: dlg.gWizard
+                    Layout.fillWidth: true
+                    dlg: dlg
+                    store: dlg.store
+                    project: dlg.store.googleProject !== "" ? dlg.store.googleProject : (dlg.info && dlg.info.keyProject && dlg.info.source === "saved" ? dlg.info.keyProject : "")
+                }
+
+                // Google, not set up yet: what the setup is, and start it.
+                Rectangle {
+                    visible: dlg.provider === "google" && !dlg.gWizard && !!dlg.info && !dlg.info.ready
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: introCol.implicitHeight + 28
+                    radius: 10
+                    color: Theme.accentSoft
+                    border.color: Theme.accent
+                    border.width: 2
+                    ColumnLayout {
+                        id: introCol
+                        x: 14; y: 14
+                        width: parent.width - 28
+                        spacing: 10
+                        Text { text: "First, a one-time setup in Google Cloud"; font.pixelSize: 15; font.weight: Font.DemiBold; color: Theme.text }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: Theme.text; font.pixelSize: 13; lineHeight: 1.15
+                            text: "Google only lets an app sign in to Gmail, Calendar and Contacts with a sign-in key from its own Google Cloud project. "
+                                  + "Apps like Thunderbird come with one from their makers; for your copy of Almanac you make one yourself, once (about 5 minutes, free). "
+                                  + "Each step opens its page in your browser, shows a picture of the page with what to click ringed, and says what to type. "
+                                  + "Your password is only ever typed on Google's own page."
+                        }
+                        RowLayout {
+                            ToolButtonX { text: "Start Setup"; primary: true; onClicked: dlg.gStep = 1 }
+                            ToolButtonX { text: "Load Downloaded File…"; icon: "import"; tip: "Already made the sign-in key? Load its client_secret_….json file"; onClicked: dlg.loadFile() }
+                        }
+                    }
+                }
 
                 // ------------------------------------------ ready: sign in
                 Rectangle {
-                    visible: !!dlg.info && dlg.info.ready && !dlg.editingIds
+                    visible: !!dlg.info && dlg.info.ready && !dlg.editingIds && !dlg.gWizard
                     Layout.fillWidth: true
                     Layout.preferredHeight: readyCol.implicitHeight + 28
                     radius: 10
@@ -173,71 +217,29 @@ Popup {
                                 onClicked: dlg.signIn()
                             }
                             Item { Layout.fillWidth: true }
-                            ToolButtonX { visible: !!dlg.info && dlg.info.source === "saved"; text: "Change App ID…"; onClicked: dlg.editingIds = true }
+                            ToolButtonX { visible: dlg.provider === "google"; text: "Set Up Again…"; tip: "Go through the Google Cloud steps again"; onClicked: dlg.gStep = 1 }
+                            ToolButtonX {
+                                visible: !!dlg.info && dlg.info.source === "saved"
+                                text: "Change App ID…"
+                                onClicked: if (dlg.provider === "google") dlg.gStep = wizard.count; else dlg.editingIds = true
+                            }
                         }
                     }
                 }
 
-                // Google's "Access blocked … has not completed the Google verification process"
-                Rectangle {
-                    visible: dlg.provider === "google" && !!dlg.info && (dlg.info.ready || dlg.store.googleProject !== "")
+                // Google's warnings on its sign-in page
+                Text {
+                    visible: dlg.provider === "google" && !dlg.gWizard && !!dlg.info && dlg.info.ready
                     Layout.fillWidth: true
-                    Layout.preferredHeight: gHelp.implicitHeight + 28
-                    radius: 10
-                    color: Theme.card
-                    border.color: Theme.orange
-                    ColumnLayout {
-                        id: gHelp
-                        x: 14; y: 14
-                        width: parent.width - 28
-                        spacing: 8
-                        Text {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            font.weight: Font.DemiBold
-                            color: Theme.text
-                            text: "Google says “Access blocked: Almanac has not completed the Google verification process”?"
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: Theme.secondary
-                            font.pixelSize: 13
-                            lineHeight: 1.15
-                            text: "Google only lets the people on your app's Test users list sign in, and only in the project the sign-in key came from. "
-                                  + (dlg.info && dlg.info.keyProject
-                                     ? "Almanac's key comes from the Google Cloud project numbered " + dlg.info.keyProject + ". "
-                                     : "")
-                                  + "Check each of these:"
-                        }
-                        Repeater {
-                            model: [
-                                "Press Open the Audience Page below. It opens the project Almanac's key came from. If you made more than one project, this may not be the one you added yourself to.",
-                                "Publishing status says Testing or In production. In production lets every account sign in and stays signed in; Testing only lets the Test users in, and signs out every 7 days.",
-                                "Under Test users, your exact Gmail address must be listed. If it isn't, press + Add users, type it and press Save. Watch for typos, and use the full address with @gmail.com.",
-                                "Press Sign In Again. Google now always asks which account to use. Pick the address you just listed, not another account that's signed in.",
-                                "When Google says it hasn't verified the app, press Advanced, then Go to Almanac (unsafe).",
-                                "Still blocked? Let Almanac do it all with Set Up in My Browser (above), or press Load Another Key and do steps 5 to 10 of the guide in the project where you added yourself."
-                            ]
-                            delegate: RowLayout {
-                                required property string modelData
-                                required property int index
-                                Layout.fillWidth: true
-                                spacing: 8
-                                Text { Layout.alignment: Qt.AlignTop; text: (index + 1) + "."; color: Theme.text; font.pixelSize: 13; font.weight: Font.DemiBold }
-                                Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: modelData; color: Theme.text; font.pixelSize: 13 }
-                            }
-                        }
-                        RowLayout {
-                            ToolButtonX {
-                                text: "Open the Audience Page"
-                                primary: true
-                                onClicked: Qt.openUrlExternally(dlg.info.audience)
-                            }
-                            ToolButtonX { visible: !!dlg.info && dlg.info.ready; text: "Sign In Again"; enabled: !dlg.store.busy; onClicked: dlg.signIn() }
-                            ToolButtonX { visible: !!dlg.info && dlg.info.ready; text: "Load Another Key…"; onClicked: { dlg.store.cancelSignIn(); jsonPicker.createObject(dlg).open() } }
-                        }
-                    }
+                    wrapMode: Text.WordWrap
+                    color: Theme.secondary; font.pixelSize: 12; lineHeight: 1.15
+                    text: "Google says “Google hasn't verified this app”: it's your own copy, so click Continue (or Advanced, then Go to Almanac). "
+                          + "Google says “Access blocked”: your address isn't a test user in the project the key came from. "
+                          + "<a href=\"audience\">Open its test users</a>, add your address, Save, and sign in again."
+                    textFormat: Text.StyledText
+                    linkColor: Theme.accent
+                    onLinkActivated: Qt.openUrlExternally(dlg.info.audience)
+                    HoverHandler { enabled: parent.hoveredLink !== ""; cursorShape: Qt.PointingHandCursor }
                 }
 
                 // While the provider's page is open in the browser
@@ -285,30 +287,26 @@ Popup {
                 Rectangle {
                     id: browserCard
                     readonly property string browser: dlg.visible ? dlg.store.browserName() : ""
-                    visible: dlg.provider === "google" && !!dlg.info && !dlg.editingIds
+                    visible: dlg.provider === "google" && !dlg.gWizard && !!dlg.info && !dlg.info.ready
                     Layout.fillWidth: true
                     Layout.preferredHeight: browserCol.implicitHeight + 28
                     radius: 10
-                    color: Theme.accentSoft
-                    border.color: Theme.accent
-                    border.width: 2
+                    color: Theme.card
+                    border.color: Theme.borderSoft
                     ColumnLayout {
                         id: browserCol
                         x: 14; y: 14
                         width: parent.width - 28
                         spacing: 8
-                        Text { text: "Set it all up in the browser (easiest)"; font.pixelSize: 15; font.weight: Font.DemiBold; color: Theme.text }
+                        Text { text: "Or: let Almanac click through it in your browser"; font.pixelSize: 15; font.weight: Font.DemiBold; color: Theme.text }
                         Text {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
-                            color: Theme.text; font.pixelSize: 13; lineHeight: 1.15
+                            color: Theme.secondary; font.pixelSize: 12; lineHeight: 1.15
                             text: browserCard.browser !== ""
-                                ? "Almanac opens a new tab in your own " + browserCard.browser + ", where you're probably already signed in to Google, and does every step of the guide below by itself: "
-                                  + "it makes the project, turns on Gmail, Calendar and Contacts, names the app, adds you as a test user, creates the sign-in key and signs you in.\n\n"
-                                  + "It also accepts Google's terms and allows access for you. You only step in where a person must: the first time, to let Almanac "
-                                  + "control the browser (tick one switch and press Allow), and if Google asks for your password, a 2-step code or a robot check. "
-                                  + "A blue bar at the bottom of the page says what Almanac is doing. When it turns orange, it's your turn. "
-                                  + "Safe to run again: finished steps are skipped."
+                                ? "Almanac opens a new tab in your own " + browserCard.browser + ", where you're probably already signed in to Google, and does every setup step by itself: "
+                                  + "it makes the project, turns on Gmail, Calendar and Contacts, names the app, adds you as a test user, creates the sign-in key and signs you in. "
+                                  + "You step in where a person must (letting Almanac control the browser, your password, a robot check): a bar at the bottom of the page turns orange then."
                                 : "This needs Google Chrome, Brave, Chromium or Microsoft Edge. Install one, then reopen this page."
                         }
                         RowLayout {
@@ -316,7 +314,6 @@ Popup {
                                 visible: dlg.store.registering === ""
                                 text: "Set Up in My " + (browserCard.browser || "Browser")
                                 icon: "export"
-                                primary: true
                                 enabled: browserCard.browser !== ""
                                 onClicked: dlg.store.setUpInBrowser("google", true)
                             }
@@ -343,7 +340,7 @@ Popup {
 
                 // ------------------------------- not set up: do it for me
                 Rectangle {
-                    visible: !!dlg.info && !dlg.info.ready && !dlg.editingIds && (dlg.provider === "microsoft" || dlg.provider === "google")
+                    visible: !!dlg.info && !dlg.info.ready && !dlg.editingIds && dlg.provider === "microsoft"
                     Layout.fillWidth: true
                     Layout.preferredHeight: autoCol.implicitHeight + 28
                     radius: 10
@@ -386,21 +383,12 @@ Popup {
                                 text: dlg.store.statusText; color: Theme.text; font.pixelSize: 12
                             }
                         }
-                        // Google: what's left after the automatic part.
-                        Text {
-                            visible: dlg.provider === "google" && dlg.store.googleProject !== ""
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: "#34a853"
-                            font.weight: Font.DemiBold
-                            text: "✓ Project " + dlg.store.googleProject + " is ready and Gmail, Calendar and Contacts are on. Steps 1 to 4 below are done. Carry on from step 5."
-                        }
                     }
                 }
 
                 // ------------------------------------------ ask an AI
                 Rectangle {
-                    visible: !!dlg.info && !dlg.info.ready && !dlg.editingIds
+                    visible: !!dlg.info && !dlg.info.ready && !dlg.editingIds && dlg.provider !== "google"
                     Layout.fillWidth: true
                     Layout.preferredHeight: aiCol.implicitHeight + 28
                     radius: 10
@@ -433,7 +421,7 @@ Popup {
 
                 // ------------------------------------- paste anything with IDs
                 ColumnLayout {
-                    visible: !!dlg.info && (!dlg.info.ready || dlg.editingIds)
+                    visible: !!dlg.info && (!dlg.info.ready || dlg.editingIds) && dlg.provider !== "google"
                     Layout.fillWidth: true
                     spacing: 6
                     Text { text: "Paste the IDs, the AI's answer or the downloaded file here:"; color: Theme.text; font.pixelSize: 12 }
@@ -461,7 +449,7 @@ Popup {
                 }
 
                 ToolButtonX {
-                    visible: !!dlg.info && !dlg.info.ready && !dlg.editingIds
+                    visible: !!dlg.info && !dlg.info.ready && !dlg.editingIds && dlg.provider !== "google"
                     text: dlg.byHand ? "Hide the step-by-step guide" : "Show the step-by-step guide (do it by hand)…"
                     onClicked: dlg.byHand = !dlg.byHand
                 }
@@ -472,7 +460,7 @@ Popup {
                     // Bring the guide into view when it opens.
                     onVisibleChanged: if (visible) scrollTimer.restart()
                     Timer { id: scrollTimer; interval: 50; onTriggered: scroller.contentY = Math.max(0, Math.min(guide.y + 20 - 8, scroller.contentHeight - scroller.height)) }
-                    visible: !!dlg.info && ((!dlg.info.ready && (dlg.byHand || dlg.store.googleProject !== "" && dlg.provider === "google")) || dlg.editingIds)
+                    visible: !!dlg.info && dlg.provider !== "google" && ((!dlg.info.ready && dlg.byHand) || dlg.editingIds)
                     Layout.fillWidth: true
                     spacing: 10
                     Text {
@@ -672,6 +660,7 @@ Popup {
                 // ------------------------------------------ every other service
                 Rectangle {
                     id: otherCard
+                    visible: !dlg.gWizard
                     Layout.fillWidth: true
                     Layout.topMargin: 8
                     Layout.preferredHeight: otherCol.implicitHeight + 28

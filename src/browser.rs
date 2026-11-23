@@ -688,8 +688,8 @@ pub fn setup_google(known_project: &str, own_browser: bool, progress: &dyn Fn(St
     let _ = crate::oauth::save_extra("google_project", &project);
     progress(format!("Using project {project}"));
 
-    // 3. Turn on Gmail, Calendar and Contacts.
-    for (api, label) in [("gmail.googleapis.com", "Gmail"), ("calendar-json.googleapis.com", "Google Calendar"), ("people.googleapis.com", "Google Contacts")] {
+    // 3. Turn on Gmail, Calendar, Contacts and Drive (big attachments as links).
+    for (api, label) in [("gmail.googleapis.com", "Gmail"), ("calendar-json.googleapis.com", "Google Calendar"), ("people.googleapis.com", "Google Contacts"), ("drive.googleapis.com", "Google Drive")] {
         page.navigate(&console(&format!("apis/library/{api}"), &project))?;
         let _ = page.wait(15, &|p| p.exists("^(Enable|Manage)$") || p.text().contains("API Enabled"));
         step(

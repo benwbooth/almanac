@@ -83,6 +83,8 @@ fn main() {
             cxx_qt_build::QmlFile::from("qml/WelcomeGuide.qml"),
             cxx_qt_build::QmlFile::from("qml/SettingsDialog.qml"),
             cxx_qt_build::QmlFile::from("qml/SignInSetup.qml"),
+            cxx_qt_build::QmlFile::from("qml/GoogleWizard.qml"),
+            cxx_qt_build::QmlFile::from("qml/StepPicture.qml"),
             cxx_qt_build::QmlFile::from("qml/PaneGrip.qml"),
             cxx_qt_build::QmlFile::from("qml/PaneKeeper.qml"),
             cxx_qt_build::QmlFile::from("qml/ComboX.qml"),

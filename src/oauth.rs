@@ -103,115 +103,8 @@ pub fn setup_json() -> Value {
     };
     let steps = |p: &str| -> Value {
         match p {
-            GOOGLE => json!([
-                {"title": "Make a project for Almanac",
-                 "detail": "A project is just a folder in Google Cloud that holds Almanac's settings. It's free.",
-                 "substeps": [
-                     "Press Open page. Google Cloud opens in your web browser.",
-                     "If Google asks you to sign in, use your normal Google account.",
-                     "If it shows terms of service, tick the box to agree and press Agree and continue.",
-                     "In the Project name box, type Almanac.",
-                     "Leave everything else as it is and press the blue Create button.",
-                     "Wait about 10 seconds. When the bell icon says the project is ready, press Select project."],
-                 "done": "The box at the top-left of the page says Almanac.",
-                 "trouble": "Already made an Almanac project before? Don't make another one: click the project box at the top-left and choose Almanac.",
-                 "url": "https://console.cloud.google.com/projectcreate"},
-                {"title": "Turn on Gmail",
-                 "detail": "This lets Almanac read and send your mail.",
-                 "substeps": [
-                     "Press Open page.",
-                     "Check the top-left of the page says Almanac. If not, click it and choose Almanac.",
-                     "Press the blue Enable button."],
-                 "done": "The page says API Enabled, or shows a Manage button instead of Enable.",
-                 "url": gq("apis/library/gmail.googleapis.com")},
-                {"title": "Turn on Google Calendar",
-                 "detail": "This lets Almanac show and change your calendars.",
-                 "substeps": [
-                     "Press Open page.",
-                     "Check the top-left says Almanac.",
-                     "Press the blue Enable button."],
-                 "done": "The page says API Enabled, or shows a Manage button.",
-                 "url": gq("apis/library/calendar-json.googleapis.com")},
-                {"title": "Turn on Google Contacts",
-                 "detail": "Google calls this the People API.",
-                 "substeps": [
-                     "Press Open page.",
-                     "Check the top-left says Almanac.",
-                     "Press the blue Enable button."],
-                 "done": "The page says API Enabled, or shows a Manage button.",
-                 "url": gq("apis/library/people.googleapis.com")},
-                {"title": "Give the app a name",
-                 "detail": "Google asks a few questions about the app. It takes four short pages.",
-                 "substeps": [
-                     "Press Open page, then press Get started.",
-                     "Page 1, App information: in App name type Almanac. In User support email pick your address from the list. Press Next.",
-                     "Page 2, Audience: choose External. Press Next.",
-                     "Page 3, Contact information: type your email address. Press Next.",
-                     "Page 4, Finish: tick the box that says you agree to the Google API Services User Data Policy. Press Continue.",
-                     "Press Create."],
-                 "done": "The page shows an Overview instead of a Get started button. If you already see the Overview, this step was done earlier.",
-                 "url": gq("auth/overview")},
-                {"title": "Add yourself as a test user",
-                 "detail": "Until the next step is done, only people you list here can sign in. This prevents Google's “Access blocked” message.",
-                 "substeps": [
-                     "Press Open page. It opens the Audience page.",
-                     "Scroll down to Test users and press + Add users.",
-                     "Type the Gmail address you'll use in Almanac. Have more than one Google account? Add each one, separated by commas.",
-                     "Press Save."],
-                 "done": "Your address is listed under Test users.",
-                 "url": gq("auth/audience")},
-                {"title": "Give the app a homepage and privacy policy",
-                 "detail": "Google needs these before the app can be published (next step). Almanac's own pages work for your copy too.",
-                 "substeps": [
-                     "Press Open page. It opens the Branding page.",
-                     "Under App domain, in Application home page type https://benwbooth.github.io/almanac/",
-                     "In Application privacy policy link type https://benwbooth.github.io/almanac/privacy.html",
-                     "Under Authorized domains press + Add domain and type benwbooth.github.io",
-                     "Press Save at the bottom."],
-                 "done": "The Branding page shows both links after you reload it.",
-                 "url": gq("auth/branding")},
-                {"title": "Publish the app so it stays signed in",
-                 "detail": "While an app is in Google's Testing mode, Google signs it out every 7 days. Published, it stays signed in. You don't need Google to verify it: it's your own copy.",
-                 "substeps": [
-                     "Press Open page. It opens the Audience page.",
-                     "Under Publishing status press Publish app.",
-                     "Press Confirm. If Google says the app needs verification, that's fine: leave it unverified, it still works for you.",
-                     "Already signed in to Almanac before publishing? Sign in once more from Accounts (Sign In Again), so the new sign-in doesn't expire."],
-                 "done": "Publishing status says In production.",
-                 "trouble": "Seeing “Valid app name, support email, homepage url, and privacy policy url are required”? Do the step before this one, then press Publish app again.",
-                 "url": gq("auth/audience")},
-                {"title": "Create the sign-in key and download it",
-                 "detail": "The key is a small file that identifies your copy of Almanac to Google. It isn't your password.",
-                 "substeps": [
-                     "Press Open page.",
-                     "Application type: choose Desktop app.",
-                     "Name: leave it or type Almanac.",
-                     "Press Create.",
-                     "A box shows “OAuth client created”. Press Download JSON in that box. The file goes to your Downloads folder.",
-                     "Press OK."],
-                 "done": "A file named client_secret_….json is in your Downloads folder.",
-                 "trouble": "Closed the box without downloading? Just do this step again. An extra key does no harm.",
-                 "url": gq("auth/clients/create")},
-                {"title": "Give the file to Almanac",
-                 "detail": "Almanac reads the key from the file you just downloaded.",
-                 "substeps": [
-                     "Press Choose File….",
-                     "Open your Downloads folder.",
-                     "Pick the file whose name starts with client_secret and press Open."],
-                 "done": "This page changes to say Google is ready, with a Sign In button.",
-                 "action": "load"},
-                {"title": "Sign in",
-                 "detail": "Google's own sign-in page opens in your browser. Almanac never sees your password.",
-                 "substeps": [
-                     "Choose the Google account you added as a test user.",
-                     "Google says “Google hasn't verified this app”. This is expected, because it's your own copy. Press the small Advanced link, then Go to Almanac (unsafe).",
-                     "On the access page, tick Select all (or every box) so mail, calendars and contacts all work.",
-                     "Press Continue.",
-                     "When the page says Signed in, close it and go back to Almanac."],
-                 "done": "Your Google account appears in Almanac's sidebar and starts syncing.",
-                 "trouble": "If Google says “Access blocked”, your address isn't in Test users yet. Do the Add yourself as a test user step again, then sign in again.",
-                 "action": "signin"},
-            ]),
+            // Google's setup is its own step-by-step wizard (qml/GoogleWizard.qml).
+            GOOGLE => json!([]),
             MICROSOFT => json!([
                 {"title": "Open App registrations",
                  "detail": "Microsoft's page for registering apps. It's free.",
@@ -658,7 +551,7 @@ pub fn sign_in(provider: &str, client_id: &str, client_secret: &str, tenant: &st
                 let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len());
                 if let Some(err) = q.get("error") {
                     let hint = if provider == GOOGLE && err == "access_denied" {
-                        " — if Google said “Access blocked”, add your Gmail address under Test users on the project's Audience page (or publish the app there), then sign in again."
+                        " — if Google said “Access blocked”, add your Gmail address under Test users on the project's Audience page, then sign in again."
                     } else {
                         ""
                     };
