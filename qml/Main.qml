@@ -1302,6 +1302,7 @@ ApplicationWindow {
             else if (r.event !== undefined) { win.section = 1; calendarView.showEvent(r.event, r.start) }
             else if (r.newEvent) { win.section = 1; calendarView.newEventOn(r.newEvent) }
             else if (r.calendar) win.section = 1
+            else if (r.compose) { win.section = 0; mailView.composeFrom(r.compose) }
         }
     }
     // The window you're using: shown, not minimised, and active (or it was a

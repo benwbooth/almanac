@@ -11,6 +11,10 @@
 //!   start as `--events` gave it) and `almanac --new-event YYYY-MM-DD[THH:MM]`
 //!   opens the new-event editor on that day: handed to the running Almanac if
 //!   there is one, else Almanac starts with it.
+//! - `almanac --compose 'mailto:a@b.org?cc=…&bcc=…&subject=…&body=…&attach=/path'`
+//!   (or just `almanac mailto:…`, as a desktop's mailto: handler is run) opens
+//!   a new message filled in from the link (RFC 6068). `attach=` / `attachment=`
+//!   (a path or a file:// URI, repeatable) adds files. Handed over the same way.
 
 use serde_json::{json, Value};
 
@@ -28,7 +32,69 @@ pub fn launch_request() -> Option<Value> {
         crate::data::parse_dt(&day)?;
         return Some(json!({ "newEvent": day, "at": now_ms() }));
     }
+    let link = after("--compose", 1).or_else(|| args.iter().skip(1).find(|a| a.to_ascii_lowercase().starts_with("mailto:")).cloned());
+    if let Some(link) = link {
+        return Some(json!({ "compose": compose_from_mailto(&link), "at": now_ms() }));
+    }
     None
+}
+
+/// A mailto: link (RFC 6068) as ComposeSheet.openWith's fields:
+/// {to, cc, bcc, subject, body, attachments}. Addresses are comma separated;
+/// attachments keep only files that exist.
+pub fn compose_from_mailto(link: &str) -> Value {
+    let rest = match link.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("mailto:") => &link[7..],
+        _ => link,
+    };
+    let (to, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let mut to: Vec<String> = split_addrs(&pct_decode(to));
+    let (mut cc, mut bcc, mut subject, mut body, mut files) = (Vec::new(), Vec::new(), String::new(), String::new(), Vec::new());
+    for kv in query.split('&').filter(|kv| !kv.is_empty()) {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        let v = pct_decode(v);
+        match pct_decode(k).to_ascii_lowercase().as_str() {
+            "to" => to.extend(split_addrs(&v)),
+            "cc" => cc.extend(split_addrs(&v)),
+            "bcc" => bcc.extend(split_addrs(&v)),
+            "subject" => subject = v,
+            // Line breaks come as %0D%0A; the editor wants \n.
+            "body" => body = v.replace("\r\n", "\n"),
+            "attach" | "attachment" => {
+                let path = v.strip_prefix("file://").map(pct_decode).unwrap_or(v);
+                if std::path::Path::new(&path).is_file() {
+                    files.push(path);
+                } else {
+                    eprintln!("almanac --compose: no such file to attach: {path}");
+                }
+            }
+            _ => {}
+        }
+    }
+    json!({ "to": to.join(", "), "cc": cc.join(", "), "bcc": bcc.join(", "), "subject": subject, "body": body, "attachments": files })
+}
+
+fn split_addrs(s: &str) -> Vec<String> {
+    s.split(',').map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect()
+}
+
+/// %XX decoding (a '+' stays a '+': mailto: links don't use it for spaces).
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 3 <= b.len() {
+            if let Some(x) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(x);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn now_ms() -> i64 {
@@ -109,5 +175,33 @@ mod tests {
         let v = answer(&crate::data::Db::default(), "2026-01-01", "2026-02-01", "f");
         assert_eq!(v["events"].as_array().unwrap().len(), 0);
         assert_eq!(v["calendars"].as_array().unwrap().len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod compose_tests {
+    use super::compose_from_mailto;
+
+    #[test]
+    fn mailto_fields() {
+        let dir = std::env::temp_dir().join("almanac-compose-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a b.pdf");
+        std::fs::write(&f, b"x").unwrap();
+        let link = format!(
+            "MAILTO:a@b.org,c%20d@e.org?cc=x@y.org&bcc=z@w.org,q@r.org&subject=Hi%20%26%20bye%2B&body=L1%0D%0AL2&attach={}&attachment=file://{}&attach=/nope/missing",
+            f.display().to_string().replace(' ', "%20"),
+            f.display().to_string().replace(' ', "%20"));
+        let v = compose_from_mailto(&link);
+        assert_eq!(v["to"], "a@b.org, c d@e.org");
+        assert_eq!(v["cc"], "x@y.org");
+        assert_eq!(v["bcc"], "z@w.org, q@r.org");
+        assert_eq!(v["subject"], "Hi & bye+");
+        assert_eq!(v["body"], "L1\nL2");
+        assert_eq!(v["attachments"].as_array().unwrap().len(), 2);
+        assert_eq!(v["attachments"][0], f.display().to_string());
+        let v = compose_from_mailto("mailto:?to=solo@x.org&subject=%E2%9C%93%");
+        assert_eq!(v["to"], "solo@x.org");
+        assert_eq!(v["subject"], "\u{2713}%");
     }
 }

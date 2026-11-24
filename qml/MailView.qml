@@ -798,6 +798,9 @@ Item {
             if (r.bcc) compose.fillBcc(r.bcc)
         }
     }
+    // A new message filled in from a mailto: link (`almanac --compose`,
+    // the desktop's "Send by email"): {to, cc, bcc, subject, body, attachments}.
+    function composeFrom(m) { compose.openWith(m) }
     function composeNew() { compose.openWith({ to: "riley@example.org", subject: "Agenda for Thursday", body: "Hi Riley,\n\nHere are my notes for the kickoff.\n" }) }
     function openDraft() {
         if (!current || current.kind !== "drafts") return false

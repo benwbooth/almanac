@@ -53,7 +53,8 @@
               Name=Almanac
               GenericName=Mail, Calendar and Contacts
               Comment=Mail, calendars and contacts in one app
-              Exec=almanac
+              Exec=almanac %u
+              MimeType=x-scheme-handler/mailto;
               Icon=almanac
               Categories=Office;Network;Email;Calendar;ContactManagement;
               StartupWMClass=almanac
