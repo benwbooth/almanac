@@ -150,16 +150,9 @@ ApplicationWindow {
                         GradientStop { position: 1; color: "transparent" }
                     }
                 }
-                // Drag the bar to move the window; double-click to zoom it.
-                DragHandler {
-                    target: null
-                    grabPermissions: PointerHandler.CanTakeOverFromItems | PointerHandler.CanTakeOverFromHandlersOfDifferentType
-                    onActiveChanged: if (active) win.startSystemMove()
-                }
-                TapHandler {
-                    gesturePolicy: TapHandler.DragThreshold
-                    onDoubleTapped: win.visibility === Window.Maximized ? win.showNormal() : win.showMaximized()
-                }
+                // Drag the bar to move the window, double-click to zoom it, right-click
+                // for the window menu (the shared ChromeTitleArea, as every app).
+                ChromeTitleArea { anchors.fill: parent; window: win; menuDark: Theme.dark; menuAccent: Theme.accentFill }
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: win.macOS ? 78 : 10

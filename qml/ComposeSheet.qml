@@ -619,18 +619,9 @@ Popup {
             Layout.fillWidth: true
             Layout.preferredHeight: sheet.detached ? Theme.toolbarHeight : sheet.inline ? 42 : 48
             gradient: Theme.toolbarGradient
-            // In its own window: drag the bar to move it, double-click to zoom.
-            DragHandler {
-                enabled: sheet.detached
-                target: null
-                grabPermissions: PointerHandler.CanTakeOverFromItems | PointerHandler.CanTakeOverFromHandlersOfDifferentType
-                onActiveChanged: if (active) ownWindow.startSystemMove()
-            }
-            TapHandler {
-                enabled: sheet.detached
-                gesturePolicy: TapHandler.DragThreshold
-                onDoubleTapped: ownWindow.visibility === Window.Maximized ? ownWindow.showNormal() : ownWindow.showMaximized()
-            }
+            // In its own window: drag the bar to move it, double-click to zoom,
+            // right-click for the window menu (the shared ChromeTitleArea).
+            ChromeTitleArea { anchors.fill: parent; enabled: sheet.detached; window: ownWindow; menuDark: Theme.dark; menuAccent: Theme.accentFill }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: sheet.detached && Qt.platform.os === "osx" ? 78 : 12

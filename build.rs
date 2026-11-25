@@ -119,6 +119,9 @@ fn main() {
             cxx_qt_build::QmlFile::from("qml/MacMenu.qml"),
             cxx_qt_build::QmlFile::from("qml/MacMenuSeparator.qml"),
             cxx_qt_build::QmlFile::from("qml/MacMenuStyle.qml"),
+            cxx_qt_build::QmlFile::from("qml/ChromeButtons.qml"),
+            cxx_qt_build::QmlFile::from("qml/ChromeResizeEdges.qml"),
+            cxx_qt_build::QmlFile::from("qml/ChromeTitleArea.qml"),
         ]),
     )
     // Headers come from include/ only. The default (the whole crate folder)
