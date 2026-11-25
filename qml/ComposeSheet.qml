@@ -110,7 +110,10 @@ Popup {
     readonly property bool canEncrypt: hasRecipients && (useSmime ? sm.missing.length === 0 : (pgp.gpg && pgp.missing.length === 0))
     function checkPgp() {
         var from = senders.length ? senders[fromBox.currentIndex].label : ""
-        pgp = JSON.parse(store.pgpReady(from, [toRow.field.text, ccRow.field.text, bccRow.field.text].join(",")))
+        var r = JSON.parse(store.pgpReady(from, [toRow.field.text, ccRow.field.text, bccRow.field.text].join(",")))
+        // (Worked out on its own thread: asked again in a moment.)
+        if (r.pending) { pgpCheck.restart(); return }
+        pgp = r
         if (!canSignNow) sign = false
         if (encrypt && !canEncrypt) encrypt = false
     }

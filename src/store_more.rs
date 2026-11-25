@@ -986,6 +986,14 @@ impl qobject::Store {
         let _timed = crate::Timed::new("pgp_ready");
         let me = crate::pgp::addresses(&from.to_string()).into_iter().next().unwrap_or_default();
         let to = crate::pgp::addresses(&recipients.to_string());
+        // (Worked out on its own thread: {"pending": true} until it's there,
+        // and the compose window asks again.)
+        let key = format!("pgp_ready {}", json!([me, to]));
+        q(&self.slow_answer(key, move || Self::pgp_ready_now(&me, &to)).unwrap_or_else(|| json!({"pending": true})))
+    }
+
+    fn pgp_ready_now(me: &str, to: &[String]) -> Value {
+        let (me, to) = (me.to_string(), to.to_vec());
         // S/MIME too: a certificate of yours, and the recipients' (from their signed mail).
         let smime = if crate::smime::available() {
             json!({"available": true, "canSign": !me.is_empty() && crate::smime::can_sign(&me), "missing": crate::smime::missing_certificates(&to)})
@@ -1214,7 +1222,10 @@ impl qobject::Store {
         let list = |v: Vec<(String, String, String, String)>| -> Vec<Value> {
             v.into_iter().map(|(e, n, f, end)| json!({"email": e, "name": n, "fingerprint": f, "ends": end})).collect()
         };
-        q(&json!({"available": crate::smime::available(), "mine": list(crate::smime::own_certificates()), "others": list(crate::smime::others_certificates())}))
+        let answer = self.slow_answer("smime_certs".to_string(), move || {
+            json!({"available": crate::smime::available(), "mine": list(crate::smime::own_certificates()), "others": list(crate::smime::others_certificates())})
+        });
+        q(&answer.unwrap_or_else(|| json!({"available": true, "mine": [], "others": [], "pending": true})))
     }
 
     pub(super) fn smime_import(&self, file_url: &QString, password: &QString) {
@@ -1229,19 +1240,63 @@ impl qobject::Store {
     pub(super) fn smime_remove(mut self: Pin<&mut Self>, mine: bool, email: &QString) {
         let e = email.to_string();
         if mine { crate::smime::remove_own(&e) } else { crate::smime::remove_other(&e) }
+        forget_slow_answers();
         self.changed();
+    }
+
+    /// An answer from gpg or openssl (programs run: a second or more with a
+    /// cold gpg-agent), worked out on a thread of its own and kept; the
+    /// window's thread only reads it. None while it's being worked out (the
+    /// revision goes up when it's there, and `forget_slow_answers` after the
+    /// keys or certificates change).
+    fn slow_answer(&self, key: String, work: impl FnOnce() -> Value + Send + 'static) -> Option<Value> {
+        let mut s = SLOW_ANSWERS.lock().unwrap();
+        let s = s.get_or_insert_with(Default::default);
+        let kept = s.0.get(&key).cloned();
+        // (A minute old: asked again in the background, the kept answer
+        // meanwhile. Recipients' certificates come with their mail.)
+        if kept.as_ref().is_some_and(|(_, at)| at.elapsed() < std::time::Duration::from_secs(60)) {
+            return kept.map(|(v, _)| v);
+        }
+        if s.1.insert(key.clone()) {
+            let thread = self.qt_thread();
+            std::thread::spawn(move || {
+                let v = work();
+                {
+                    let mut s = SLOW_ANSWERS.lock().unwrap();
+                    let s = s.get_or_insert_with(Default::default);
+                    s.1.remove(&key);
+                    s.0.insert(key, (v, std::time::Instant::now()));
+                }
+                let _ = thread.queue(|mut store| {
+                    let r = store.revision + 1;
+                    store.as_mut().set_revision(r);
+                });
+            });
+        }
+        kept.map(|(v, _)| v)
     }
 
     pub(super) fn pgp_keys(&self) -> QString {
         let _timed = crate::Timed::new("pgp_keys");
-        let keys: Vec<Value> = self
+        let accounts: Vec<(String, String)> = self
             .db
             .live
             .iter()
             .filter(|a| !a.smtp_host.is_empty() && !a.email.is_empty())
-            .map(|a| json!({"email": a.email, "name": if a.full_name.is_empty() { &a.name } else { &a.full_name }, "fingerprint": crate::pgp::own_key(&a.email).unwrap_or_default()}))
+            .map(|a| (a.email.clone(), if a.full_name.is_empty() { a.name.clone() } else { a.full_name.clone() }))
             .collect();
-        q(&json!({"gpg": crate::pgp::available(), "keys": keys}))
+        let key = format!("pgp_keys {}", json!(accounts));
+        let wanted = accounts.clone();
+        let answer = self.slow_answer(key, move || {
+            let keys: Vec<Value> = wanted.iter().map(|(e, n)| json!({"email": e, "name": n, "fingerprint": crate::pgp::own_key(e).unwrap_or_default()})).collect();
+            json!({"gpg": crate::pgp::available(), "keys": keys})
+        });
+        // (Being worked out: the addresses, keys not known yet.)
+        q(&answer.unwrap_or_else(|| {
+            let keys: Vec<Value> = accounts.iter().map(|(e, n)| json!({"email": e, "name": n, "fingerprint": ""})).collect();
+            json!({"gpg": true, "keys": keys, "pending": true})
+        }))
     }
 
     /// Runs a key job in the background; while it runs and when it's done,
@@ -1258,6 +1313,7 @@ impl qobject::Store {
             };
             let status = json!({"op": op, "email": email, "busy": false, "ok": ok, "text": text}).to_string();
             let line = if ok { text } else { format!("OpenPGP: {text}") };
+            forget_slow_answers();
             let _ = thread.queue(move |mut store| {
                 store.as_mut().set_pgp_status_json(QString::from(status.as_str()));
                 store.as_mut().set_status_text(QString::from(line.as_str()));
@@ -2581,5 +2637,16 @@ mod shows_words_tests {
         assert!(!q.matches(&m, &super::shown_text("Your visit today", styled)), "styles, hidden text and link addresses don't count");
         assert!(q.matches(&m, &super::shown_text("", "<p>Bring the <b>family</b></p>")));
         assert!(q.matches(&m, &super::shown_text("Family dinner", "")));
+    }
+}
+
+/// `Store::slow_answer`'s answers and what's being worked out.
+type SlowAnswers = (std::collections::HashMap<String, (Value, std::time::Instant)>, std::collections::HashSet<String>);
+static SLOW_ANSWERS: std::sync::Mutex<Option<SlowAnswers>> = std::sync::Mutex::new(None);
+
+/// Keys or certificates changed: gpg and openssl asked again.
+fn forget_slow_answers() {
+    if let Some(s) = SLOW_ANSWERS.lock().unwrap().as_mut() {
+        s.0.clear();
     }
 }

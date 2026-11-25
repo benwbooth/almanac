@@ -295,6 +295,44 @@ pub const FLAG_NAMES: [&str; 7] = ["Red", "Orange", "Yellow", "Green", "Blue", "
 /// "The server didn't say": a flag's colour stays as it was.
 pub const NO_COLOR: u8 = u8::MAX;
 
+/// A message's whole state, its text included (a change after a `SaveJob`
+/// was taken, to keep it in memory for the next save).
+fn whole_state(m: &Message) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    m.hash(&mut h);
+    h.finish()
+}
+
+/// A save taken on the window's thread (`Db::save_job`), run on another: the
+/// window doesn't wait for the database (a check writing thousands of
+/// messages held it ~2 s), and the list's readers wait for it instead
+/// (`mailstore::wait_for_saves`).
+pub struct SaveJob {
+    messages: Vec<Message>,
+    saved: std::collections::HashMap<i64, u64>,
+    json: Option<String>,
+    pub states: std::collections::HashMap<i64, u64>,
+}
+
+impl SaveJob {
+    /// Writes the mail, then data.json (as `Db::save`). Whether the mail was saved.
+    pub fn run(self) -> bool {
+        let mail_saved = crate::mailstore::save_with(&self.messages, self.saved);
+        if let Some(text) = self.json {
+            let dir = data_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let tmp = dir.join("data.json.tmp");
+            if std::fs::write(&tmp, text).is_ok() {
+                let _ = std::fs::rename(&tmp, data_file());
+            }
+        }
+        crate::mailstore::writing_finished();
+        crate::mailstore::save_finished();
+        mail_saved
+    }
+}
+
 /// The mail as read at start (see `Db::read_mail`).
 pub struct MailRead {
     pub messages: Vec<Message>,
@@ -463,6 +501,7 @@ pub struct Db {
     }
 
 pub fn partial_wanted(source: &str, folders: &[Folder]) -> Vec<crate::live::Wanted> {
+    crate::mailstore::wait_for_saves();
     let filled = crate::mailstore::fill_from_copies(source);
     if filled > 0 {
         eprintln!("almanac: {filled} message(s) filled in from their copies in other folders (not downloaded again)");
@@ -816,6 +855,7 @@ impl WindowPlan {
 /// (a conversation, or one message), and with `counted`, how many rows there
 /// are and how many have unread mail.
 pub fn fetch_window(plan: &WindowPlan, offset: usize, count: usize, counted: bool) -> (Vec<Vec<Message>>, i64, i64) {
+    crate::mailstore::wait_for_saves();
     let (mut groups, total, unread) = fetch_window_rows(plan, offset, count, counted);
     if !plan.words.is_empty() {
         // Searching: each row shows where the words are in its text (a
@@ -980,6 +1020,7 @@ fn whole_list(plan: &WindowPlan) -> std::sync::Arc<WholeList> {
 /// `Db::window_plan`), or -1 when it isn't in it (on any thread). `msg`: its
 /// folder and date.
 pub fn position_in(plan: &WindowPlan, id: i64, msg: Option<(String, i64)>) -> i64 {
+    crate::mailstore::wait_for_saves();
     if plan.filter.is_some() {
         let whole = whole_list(plan);
         let conv = if plan.threaded { crate::mailstore::conv_of(id) } else { None };
@@ -1483,6 +1524,7 @@ impl Db {
 
     /// Saves everything; false when the mail couldn't be saved.
     pub fn save(&self) -> bool {
+        crate::mailstore::wait_for_writes();
         let dir = data_dir();
         let _ = std::fs::create_dir_all(&dir);
         let mail_saved = crate::mailstore::save(&self.messages);
@@ -1493,6 +1535,60 @@ impl Db {
             }
         }
         mail_saved
+    }
+
+    /// A save to run on another thread, taken here on the window's thread:
+    /// the messages in memory, what's noted as saved (taken together, see
+    /// `mailstore::saved_snapshot`), data.json's text, and each message's
+    /// whole state (to let go afterwards only of what hasn't changed since).
+    pub fn save_job(&self) -> SaveJob {
+        let _t = crate::Timed::new("taking what to save");
+        crate::mailstore::save_started();
+        crate::mailstore::writing_started();
+        SaveJob {
+            messages: self.messages.clone(),
+            saved: crate::mailstore::saved_snapshot(),
+            json: serde_json::to_string(self).ok(),
+            states: self.messages.iter().map(|m| (m.id, whole_state(m))).collect(),
+        }
+    }
+
+    /// After a `SaveJob` ran: as `forget_saved_text` and `release_saved` after
+    /// a save here, but only for messages just as they were when it was
+    /// taken (one changed since is written by the next save).
+    pub fn after_save(&mut self, states: &std::collections::HashMap<i64, u64>, saved: bool) {
+        if !saved {
+            return;
+        }
+        let same = |m: &Message| states.get(&m.id) == Some(&whole_state(m));
+        for m in self.messages.iter_mut().filter(|m| same(m)) {
+            if crate::mailstore::has_text(m) {
+                if m.preview.is_empty() {
+                    m.preview = preview_from(&m.body, &m.html);
+                }
+                m.body = String::new();
+                m.html = String::new();
+                m.invite = String::new();
+            }
+            m.list_heads = String::new();
+        }
+        if !self.backed {
+            return;
+        }
+        // (Compared again: dropping the text above changed them.)
+        let done: Vec<i64> = self
+            .messages
+            .iter()
+            .filter(|m| states.contains_key(&m.id) && !crate::mailstore::has_text(m) && m.list_heads.is_empty())
+            .filter(|m| crate::mailstore::saved_fingerprint_matches(m))
+            .map(|m| m.id)
+            .collect();
+        if done.is_empty() {
+            return;
+        }
+        crate::mailstore::forget(&done);
+        let done: std::collections::HashSet<i64> = done.into_iter().collect();
+        self.messages.retain(|m| !done.contains(&m.id));
     }
 
     /// After saving (mail in the database): the messages in memory are let

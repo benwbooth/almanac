@@ -857,7 +857,7 @@ impl cxx_qt::Initialize for qobject::Store {
                         let save = store.as_mut().db_mut().take_mail(read);
                         store.as_mut().set_loading(false);
                         if save {
-                            store.as_mut().flush();
+                            store.as_mut().flush_in_background();
                         }
                         store.as_mut().changed();
                         crate::startup_mark("mail shown");
@@ -967,7 +967,7 @@ impl qobject::Store {
                 std::thread::sleep(std::time::Duration::from_millis(600));
                 let _ = thread.queue(|mut store| {
                     SAVE_SOON.store(false, std::sync::atomic::Ordering::SeqCst);
-                    store.as_mut().flush();
+                    store.as_mut().flush_in_background();
                 });
             });
         }
@@ -1240,7 +1240,7 @@ impl qobject::Store {
         let live: Vec<crate::live::LiveAccount> = self.db.live.iter().filter(|a| !a.imap_host.is_empty() && !a.is_pop() && !a.is_ews()).cloned().collect();
         let backed = self.db.backed;
         if backed {
-            self.as_mut().flush();
+            self.as_mut().flush_in_background();
         }
         let known_here: std::collections::HashMap<String, std::collections::HashMap<String, Vec<u32>>> =
             if backed { Default::default() } else { live.iter().map(|a| (a.id.clone(), self.db.known_uids(&a.source()))).collect() };
@@ -1264,7 +1264,7 @@ impl qobject::Store {
                             let new_ids = store.as_mut().db_mut().apply_import(imp);
                             store.as_mut().after_new_mail(new_ids);
                             if store.db.backed {
-                                store.as_mut().flush();
+                                store.as_mut().flush_in_background();
                             }
                             store.changed();
                             let _ = tx.send(());
@@ -1316,7 +1316,7 @@ impl qobject::Store {
         }
         let backed = self.db.backed;
         if backed {
-            self.as_mut().flush();
+            self.as_mut().flush_in_background();
         }
         let known_here = if backed { None } else { Some(self.db.known_uids(&a.source())) };
         let marks = self.db.folder_marks.clone();
@@ -1335,7 +1335,7 @@ impl qobject::Store {
                     let new_ids = store.as_mut().db_mut().apply_import(imp);
                     store.as_mut().after_new_mail(new_ids);
                     if store.db.backed {
-                        store.as_mut().flush();
+                        store.as_mut().flush_in_background();
                     }
                     store.as_mut().changed();
                 }
@@ -2140,7 +2140,7 @@ impl qobject::Store {
         // (Pages are read from the database: changes still only in memory, a
         // message just deleted say, are written first.)
         if self.db.backed && !self.db.messages.is_empty() {
-            self.as_mut().flush();
+            self.as_mut().flush_in_background();
         }
         let Some(mut plan) = self.db.window_plan(&selection.to_string(), &query.to_string(), threaded, &sort_by.to_string(), ascending, unread_only, keep) else { return };
         plan.token = token as i64;
@@ -2238,6 +2238,50 @@ impl qobject::Store {
         QString::from(std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().as_str())
     }
 
+    /// Saves what's changed on a thread of its own (the window doesn't wait
+    /// for the database: a check writing into it held a save here ~2 s).
+    /// Messages are let go of once written (`Db::after_save`); the list's
+    /// readers wait for it (`mailstore::wait_for_saves`). Another asked for
+    /// meanwhile runs right after.
+    fn flush_in_background(self: Pin<&mut Self>) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+        static AGAIN: AtomicBool = AtomicBool::new(false);
+        if self.loading || !self.persist {
+            return;
+        }
+        if RUNNING.swap(true, Ordering::SeqCst) {
+            // (Counted as a save in progress from now: a reader mustn't slip
+            // in between this one and the next.)
+            if !AGAIN.swap(true, Ordering::SeqCst) {
+                crate::mailstore::save_started();
+            }
+            return;
+        }
+        let job = self.db.save_job();
+        let states = job.states.clone();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let saved = {
+                let _t = crate::Timed::new("saving (on its own thread)");
+                job.run()
+            };
+            let _ = thread.queue(move |mut store| {
+                store.as_mut().db_mut().after_save(&states, saved);
+                RUNNING.store(false, Ordering::SeqCst);
+                if AGAIN.swap(false, Ordering::SeqCst) {
+                    store.as_mut().flush_in_background();
+                    crate::mailstore::save_finished();
+                }
+                // (What's read from the database now has it: shown again.
+                // Not changed(): that saves again.)
+                let r = store.revision + 1;
+                store.as_mut().set_revision(r);
+            });
+        });
+    }
+
+    /// Saves now and waits (Almanac quitting).
     fn flush(mut self: Pin<&mut Self>) {
         if self.loading {
             return;
@@ -2390,7 +2434,7 @@ impl qobject::Store {
         // not this one: for a big mailbox that's a second or so.)
         let backed = self.db.backed;
         if backed {
-            self.as_mut().flush();
+            self.as_mut().flush_in_background();
         }
         let known_for: std::collections::HashMap<String, (Option<std::collections::HashMap<String, Vec<u32>>>, bool)> =
             live.iter().map(|a| (a.id.clone(), (if backed { None } else { Some(self.db.known_uids(&a.source())) }, all))).collect();
@@ -2534,7 +2578,7 @@ impl qobject::Store {
                     let src = format!("live:{id}");
                     if store.db.backed {
                         // Saved, then worked out on the sync's thread (see below).
-                        store.as_mut().flush();
+                        store.as_mut().flush_in_background();
                         let _ = tx.send(Err((src, store.db.folders.clone())));
                     } else {
                         let _ = tx.send(Ok((store.db.partial_messages(&src), store.db.known_uids(&src))));

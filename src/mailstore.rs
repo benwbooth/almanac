@@ -1370,6 +1370,11 @@ fn fingerprint(m: &Message) -> u64 {
     h.finish()
 }
 
+/// Whether the tracking holds this message as it is now (it was saved so).
+pub fn saved_fingerprint_matches(m: &Message) -> bool {
+    SAVED.lock().unwrap().as_ref().and_then(|s| s.get(&m.id).copied()) == Some(fingerprint(m))
+}
+
 /// Whether a message carries its text in memory (to be written, then dropped).
 pub fn has_text(m: &Message) -> bool {
     !m.body.is_empty() || !m.html.is_empty() || !m.invite.is_empty()
@@ -1533,19 +1538,100 @@ pub fn load() -> Vec<Message> {
     list
 }
 
+/// What's noted as saved (see `is_tracked`), copied: a save on another thread
+/// takes it on the window's thread together with the messages it writes, so
+/// the two agree (a message read into memory after them isn't taken for one
+/// deleted).
+pub fn saved_snapshot() -> HashMap<i64, u64> {
+    SAVED.lock().unwrap().clone().unwrap_or_default()
+}
+
+// Saves in progress on other threads (Store::flush): reading the list waits
+// for them, as it did when the window's thread saved before reading.
+// (Saves asked for, those waiting for the one before them included; and
+// those writing now.)
+static SAVING: Mutex<(u32, u32)> = Mutex::new((0, 0));
+static SAVED_CV: std::sync::Condvar = std::sync::Condvar::new();
+
+/// A save is asked for (on the window's thread, before handing it on).
+pub fn save_started() {
+    SAVING.lock().unwrap().0 += 1;
+}
+
+/// That save is done (written or not).
+pub fn save_finished() {
+    let mut n = SAVING.lock().unwrap();
+    n.0 = n.0.saturating_sub(1);
+    SAVED_CV.notify_all();
+}
+
+/// A save's writing starts / ends (`Db::save_job`, `SaveJob::run`).
+pub fn writing_started() {
+    SAVING.lock().unwrap().1 += 1;
+}
+pub fn writing_finished() {
+    let mut n = SAVING.lock().unwrap();
+    n.1 = n.1.saturating_sub(1);
+    SAVED_CV.notify_all();
+}
+
+fn wait_while(busy: impl Fn(&(u32, u32)) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut n = SAVING.lock().unwrap();
+    while busy(&n) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        n = SAVED_CV.wait_timeout(n, left).unwrap().0;
+    }
+}
+
+/// Background readers of the list: wait for saves asked for (changes the
+/// window made, a message just deleted say, are in the database after
+/// them). At most 30 s, then it reads what's there.
+pub fn wait_for_saves() {
+    wait_while(|n| n.0 > 0);
+}
+
+/// A save on the window's own thread (Almanac quitting): waits for one
+/// writing now, so an older copy isn't written over its newer one. (Not for
+/// those still waiting: they'd only start on the window's thread.)
+pub fn wait_for_writes() {
+    wait_while(|n| n.1 > 0);
+}
+
 /// Writes what changed since the last save; deleted messages also lose
 /// their attachment files.
 pub fn save(messages: &[Message]) -> bool {
-    let mut guard = SAVED.lock().unwrap();
-    let saved = guard.get_or_insert_with(HashMap::new);
+    save_with(messages, saved_snapshot())
+}
+
+/// `save`, against `before` (from `saved_snapshot`, taken with the messages).
+/// The tracking isn't locked while it writes (the window's thread reads it
+/// on every lookup): what this save changed in it is applied afterwards.
+pub fn save_with(messages: &[Message], before: HashMap<i64, u64>) -> bool {
     // No mail at all where there was plenty: something went wrong (mail not
     // read yet?), not thousands of messages deleted at once. Nothing is saved.
-    if messages.is_empty() && saved.len() > 1000 {
-        eprintln!("almanac: not saving an empty mailbox over {} messages", saved.len());
+    if messages.is_empty() && before.len() > 1000 {
+        eprintln!("almanac: not saving an empty mailbox over {} messages", before.len());
         return false;
     }
-    match save_to(&db_path(), messages, saved) {
+    let mut after = before.clone();
+    match save_to(&db_path(), messages, &mut after) {
         Ok(gone) => {
+            {
+                let mut guard = SAVED.lock().unwrap();
+                let live = guard.get_or_insert_with(HashMap::new);
+                for (id, fp) in &after {
+                    if before.get(id) != Some(fp) {
+                        live.insert(*id, *fp);
+                    }
+                }
+                for id in before.keys().filter(|id| !after.contains_key(id)) {
+                    live.remove(id);
+                }
+            }
             let mut state = STATE.lock().unwrap();
             let state = state.get_or_insert_with(HashMap::new);
             for id in &gone {
@@ -1719,6 +1805,7 @@ pub fn folder_uid_ids(source: &str, folder: &str) -> HashMap<u32, i64> {
 }
 
 pub fn known_uids(source: &str) -> HashMap<String, Vec<u32>> {
+    wait_for_saves();
     let path = db_path();
     let mut out: HashMap<String, Vec<u32>> = HashMap::new();
     if !path.exists() {

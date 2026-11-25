@@ -260,7 +260,7 @@ Popup {
                     Row2 {
                         id: pgpRow
                         label: "OpenPGP:"
-                        readonly property var info: { dlg.store.revision; return JSON.parse(dlg.store.pgpKeys()) }
+                        readonly property var info: { dlg.store.revision; return dlg.visible ? JSON.parse(dlg.store.pgpKeys()) : ({ gpg: false, keys: [] }) }
                         // How the latest key job (create, import, publish, look up) is going.
                         readonly property var job: { try { return JSON.parse(dlg.store.pgpStatusJson || "{}") } catch (e) { return {} } }
                         readonly property bool busy: !!job.busy && job.op !== "unlock"
