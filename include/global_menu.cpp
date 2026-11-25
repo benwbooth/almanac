@@ -1,4 +1,6 @@
 #include "global_menu.h"
+#include <QJsonDocument>
+#include <QJsonArray>
 
 #include <functional>
 #include <QDebug>
@@ -54,6 +56,9 @@ void GlobalMenuBar::attach() {
 }
 
 void GlobalMenuBar::setModel(const QVariant &model) {
+    const QByteArray key = QJsonDocument(QJsonArray::fromVariantList(model.toList())).toJson(QJsonDocument::Compact);
+    if (key == m_modelKey && !m_menus.isEmpty()) return;
+    m_modelKey = key;
     m_model = model;
     if (!updateInPlace()) rebuild();
     emit modelChanged();
@@ -86,8 +91,10 @@ bool GlobalMenuBar::updateInPlace() {
         for (const QVariant &v : items) {
             const QVariantMap item = v.toMap();
             const QString id = item.value("id").toString();
-            if (QPlatformMenuItem *it = m_items.value(id)) {
+            QPlatformMenuItem *it = m_items.value(id);
+            if (it && m_shown.value(id) != item) {
                 apply(it, item);
+                m_shown.insert(id, item);
                 if (QPlatformMenu *menu = m_itemMenu.value(id)) menu->syncMenuItem(it);
             }
             if (item.contains("items")) walk(item.value("items").toList());
@@ -104,8 +111,7 @@ void GlobalMenuBar::apply(QPlatformMenuItem *it, const QVariantMap &item) {
     const bool checkable = item.value("checkable").toBool();
     it->setCheckable(checkable);
     it->setChecked(checkable && item.value("checked").toBool());
-    const QString icon = item.value("icon").toString();
-    it->setIcon(icon.isEmpty() ? QIcon() : QIcon::fromTheme(icon));
+    it->setIcon(themeIcon(item.value("icon").toString()));
 }
 
 void GlobalMenuBar::clear() {
@@ -119,6 +125,14 @@ void GlobalMenuBar::clear() {
     m_itemMenu.clear();
     qDeleteAll(m_menus);
     m_menus.clear();
+    m_shown.clear();
+}
+
+QIcon GlobalMenuBar::themeIcon(const QString &name) {
+    if (name.isEmpty()) return QIcon();
+    auto it = m_icons.constFind(name);
+    if (it != m_icons.constEnd()) return *it;
+    return *m_icons.insert(name, QIcon::fromTheme(name));
 }
 
 void GlobalMenuBar::fill(QPlatformMenu *menu, const QVariantList &items) {
@@ -132,6 +146,7 @@ void GlobalMenuBar::fill(QPlatformMenu *menu, const QVariantList &items) {
             it->setIsSeparator(true);
         } else {
             apply(it, item);
+            if (!id.isEmpty()) m_shown.insert(id, item);
             if (item.contains("items")) {
                 QPlatformMenu *sub = menu->createSubMenu();
                 if (!sub && m_bar) sub = m_bar->createMenu();
@@ -139,7 +154,7 @@ void GlobalMenuBar::fill(QPlatformMenu *menu, const QVariantList &items) {
                     sub->setTag(reinterpret_cast<quintptr>(sub));
                     sub->setText(item.value("text").toString());
                     const QString subIcon = item.value("icon").toString();
-                    if (!subIcon.isEmpty()) sub->setIcon(QIcon::fromTheme(subIcon));
+                    if (!subIcon.isEmpty()) sub->setIcon(themeIcon(subIcon));
                     sub->setEnabled(true);
                     sub->setVisible(true);
                     fill(sub, item.value("items").toList());

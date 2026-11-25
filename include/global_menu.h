@@ -2,6 +2,7 @@
 #define GLOBAL_MENU_H
 
 #include <QHash>
+#include <QIcon>
 #include <QObject>
 #include <QPointer>
 #include <QVariant>
@@ -63,7 +64,8 @@ private:
     bool updateInPlace();
     void clear();
     void fill(QPlatformMenu *menu, const QVariantList &items);
-    static void apply(QPlatformMenuItem *it, const QVariantMap &item);
+    void apply(QPlatformMenuItem *it, const QVariantMap &item);
+    QIcon themeIcon(const QString &name);
     static QString structure(const QVariant &model);
 
     QPointer<QWindow> m_window;
@@ -73,6 +75,13 @@ private:
     QList<QPlatformMenu *> m_menus;  // top-level and submenus, owned here
     QHash<QString, QPlatformMenuItem *> m_items;
     QHash<QString, QPlatformMenu *> m_itemMenu;  // item id -> menu holding it
+    // What the menus show now, to skip work when the model is rebuilt
+    // unchanged (2026-11-24: QML rebuilds it on every mail-list change while
+    // syncing, and re-syncing every item over D-Bus, with an icon-theme
+    // lookup each, kept the UI thread at 100%).
+    QByteArray m_modelKey;
+    QHash<QString, QVariantMap> m_shown;  // item id -> the definition applied
+    QHash<QString, QIcon> m_icons;        // theme icon cache
 };
 
 #endif // GLOBAL_MENU_H
