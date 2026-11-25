@@ -121,7 +121,7 @@ Popup {
     }
     function save() {
         // Changing one occurrence of a repeating event: ask how far it goes.
-        if (!isNew && ev.repeats && !ev.override && ev.occurrence) { scopeMenu.open(saveBtn); return }
+        if (!isNew && ev.repeats && !ev.override && ev.occurrence) { scopeMenu.popup(saveBtn, 0, saveBtn.height); return }
         doSave("all")
     }
     function doSave(scope) {
@@ -256,14 +256,14 @@ Popup {
                 visible: !ed.isNew
                 text: "Delete"; icon: "trash"
                 onClicked: {
-                    if (ed.ev.repeats) delMenu.open(delBtn)
+                    if (ed.ev.repeats) delMenu.popup(delBtn, 0, delBtn.height)
                     else { store.deleteEvent(ed.ev.id); ed.close() }
                 }
-                P.Menu {
+                AMenu {
                     id: delMenu
-                    P.MenuItem { icon.name: "edit-delete"; text: "Delete Only This Event"; onTriggered: { store.deleteEventOccurrence(ed.ev.id, ed.ev.occurrence || "", "this"); ed.close() } }
-                    P.MenuItem { icon.name: "edit-delete"; text: "Delete All Future Events"; onTriggered: { store.deleteEventOccurrence(ed.ev.id, ed.ev.occurrence || "", "future"); ed.close() } }
-                    P.MenuItem { icon.name: "edit-delete"; text: "Delete the Whole Series"; onTriggered: { store.deleteEvent(ed.ev.id); ed.close() } }
+                    MacMenuItem { icon.name: "edit-delete"; text: "Delete Only This Event"; onTriggered: { store.deleteEventOccurrence(ed.ev.id, ed.ev.occurrence || "", "this"); ed.close() } }
+                    MacMenuItem { icon.name: "edit-delete"; text: "Delete All Future Events"; onTriggered: { store.deleteEventOccurrence(ed.ev.id, ed.ev.occurrence || "", "future"); ed.close() } }
+                    MacMenuItem { icon.name: "edit-delete"; text: "Delete the Whole Series"; onTriggered: { store.deleteEvent(ed.ev.id); ed.close() } }
                 }
             }
             Item { Layout.fillWidth: true }
@@ -272,11 +272,11 @@ Popup {
                 id: saveBtn
                 text: ed.isNew ? "Add" : "Save"; primary: true
                 onClicked: ed.save()
-                P.Menu {
+                AMenu {
                     id: scopeMenu
-                    P.MenuItem { icon.name: "document-save"; text: "Save for This Event Only"; onTriggered: ed.doSave("this") }
-                    P.MenuItem { icon.name: "document-save"; text: "Save for Future Events"; onTriggered: ed.doSave("future") }
-                    P.MenuItem { icon.name: "document-save"; text: "Save for All Events"; onTriggered: ed.doSave("all") }
+                    MacMenuItem { icon.name: "document-save"; text: "Save for This Event Only"; onTriggered: ed.doSave("this") }
+                    MacMenuItem { icon.name: "document-save"; text: "Save for Future Events"; onTriggered: ed.doSave("future") }
+                    MacMenuItem { icon.name: "document-save"; text: "Save for All Events"; onTriggered: ed.doSave("all") }
                 }
             }
         }

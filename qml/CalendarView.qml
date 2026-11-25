@@ -140,7 +140,7 @@ Item {
     property var pendingMove: null
     function moveEvent(e, ns, ne) {
         pendingMove = { e: e, s: Theme.isoDT(ns), en: Theme.isoDT(ne) }
-        if (e.repeats && !e.override) moveScope.open()
+        if (e.repeats && !e.override) moveScope.popup()
         else applyMove("all")
     }
     function applyMove(scope) {
@@ -149,10 +149,10 @@ Item {
         store.moveEvent(m.e.id, m.e.occurrence || "", m.s, m.en, scope)
         pendingMove = null
     }
-    P.Menu {
+    AMenu {
         id: moveScope
-        P.MenuItem { icon.name: "transform-move"; text: "Move This Event Only"; onTriggered: page.applyMove("this") }
-        P.MenuItem { icon.name: "transform-move"; text: "Move All Events"; onTriggered: page.applyMove("all") }
+        MacMenuItem { icon.name: "transform-move"; text: "Move This Event Only"; onTriggered: page.applyMove("this") }
+        MacMenuItem { icon.name: "transform-move"; text: "Move All Events"; onTriggered: page.applyMove("all") }
         onAboutToHide: Qt.callLater(function() { page.pendingMove = null })
     }
     function printView() {

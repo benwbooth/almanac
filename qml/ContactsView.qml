@@ -289,7 +289,7 @@ Item {
                             badge: modelData.count
                             selected: page.group === modelData.id
                             onClicked: { page.group = modelData.id; page.selectedId = -1 }
-                            onRightClicked: if (index > 0) { groupMenu.target = modelData; groupMenu.open() }
+                            onRightClicked: if (index > 0) { groupMenu.target = modelData; groupMenu.popup() }
                             onDoubleClicked: if (modelData.smart) smartGroupDialog.openFor(modelData)
                         }
                     }
@@ -310,12 +310,12 @@ Item {
                 icon: "plus"; text: "New Group"
                 onClicked: { groupPopup.renameId = ""; groupPopup.open() }
             }
-            P.Menu {
+            AMenu {
                 id: groupMenu
                 property var target: ({})
-                P.MenuItem { icon.name: "document-edit"; visible: !!groupMenu.target.smart; text: "Edit Smart Group…"; onTriggered: smartGroupDialog.openFor(groupMenu.target) }
-                P.MenuItem { icon.name: "edit-rename"; visible: !groupMenu.target.smart; text: "Rename Group…"; onTriggered: { groupPopup.renameId = groupMenu.target.id; groupPopup.open() } }
-                P.MenuItem {
+                MacMenuItem { icon.name: "document-edit"; visible: !!groupMenu.target.smart; text: "Edit Smart Group…"; onTriggered: smartGroupDialog.openFor(groupMenu.target) }
+                MacMenuItem { icon.name: "edit-rename"; visible: !groupMenu.target.smart; text: "Rename Group…"; onTriggered: { groupPopup.renameId = groupMenu.target.id; groupPopup.open() } }
+                MacMenuItem {
                     icon.name: "user-group-delete"
                     text: "Delete Group"
                     onTriggered: {

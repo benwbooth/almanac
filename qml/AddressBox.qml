@@ -175,7 +175,7 @@ FocusScope {
                         box.selected = chip.index
                         box.forceActiveFocus()
                         keys.forceActiveFocus()
-                        if (ev.button === Qt.RightButton) { menu.at = chip.index; menu.open() }
+                        if (ev.button === Qt.RightButton) { menu.at = chip.index; menu.popup() }
                     }
                     onDoubleClicked: box.editAt(chip.index)
                 }
@@ -243,12 +243,12 @@ FocusScope {
     }
     onActiveFocusChanged: if (!activeFocus) selected = -1
     // Right-click on an address.
-    P.Menu {
+    AMenu {
         id: menu
         property int at: -1
-        P.MenuItem { icon.name: "edit-copy"; text: "Copy Address"; onTriggered: { clip.text = box.emailOf(box.chips[menu.at]); clip.selectAll(); clip.copy() } }
-        P.MenuItem { icon.name: "document-edit"; text: "Edit Address"; onTriggered: box.editAt(menu.at) }
-        P.MenuItem { icon.name: "list-remove"; text: "Remove Address"; onTriggered: box.removeAt(menu.at) }
+        MacMenuItem { icon.name: "edit-copy"; text: "Copy Address"; onTriggered: { clip.text = box.emailOf(box.chips[menu.at]); clip.selectAll(); clip.copy() } }
+        MacMenuItem { icon.name: "document-edit"; text: "Edit Address"; onTriggered: box.editAt(menu.at) }
+        MacMenuItem { icon.name: "list-remove"; text: "Remove Address"; onTriggered: box.removeAt(menu.at) }
     }
 
     // Focus on the box means typing in it.

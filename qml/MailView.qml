@@ -1032,7 +1032,7 @@ Item {
         return openTabWindow(t)
     }
     // Shared by the reading pane and message windows.
-    function senderClicked(m) { senderMenu.m = m; senderMenu.open() }
+    function senderClicked(m) { senderMenu.m = m; senderMenu.popup() }
     function remoteRequested(m, scope) {
         if (scope === "all") store.setSetting("load_remote", "true")
         else if (scope === "sender") {
@@ -1224,22 +1224,22 @@ Item {
                 id: flagColorButton
                 implicitWidth: 18
                 icon: "chevronDown"; tip: "Flag Colour"; enabled: mail.current !== null || mail.multi
-                onClicked: flagColorMenu.open(flagColorButton)
-                P.Menu {
+                onClicked: flagColorMenu.popup(flagColorButton, 0, flagColorButton.height)
+                AMenu {
                     id: flagColorMenu
                     Instantiator {
                         model: 7
                         onObjectAdded: (i, o) => flagColorMenu.insertItem(i, o)
                         onObjectRemoved: (i, o) => flagColorMenu.removeItem(o)
-                        delegate: P.MenuItem {
+                        delegate: MacMenuItem {
                             required property int index
                             text: Theme.flagNames[index]
                             icon.source: mail.flagIcon(index)
                             onTriggered: mail.setCurrentFlag(index)
                         }
                     }
-                    P.MenuSeparator {}
-                    P.MenuItem { text: "Clear Flag"; onTriggered: mail.setCurrentFlag(-1) }
+                    MacMenuSeparator {}
+                    MacMenuItem { text: "Clear Flag"; onTriggered: mail.setCurrentFlag(-1) }
                 }
             }
             ToolButtonX {
@@ -1394,7 +1394,7 @@ Item {
                                 badge: fav.modelData.badge
                                 selected: mail.selection === fav.modelData.id
                                 onClicked: { mail.selection = fav.modelData.id; mail.selectionName = fav.modelData.name; mail.selectedId = -1 }
-                                onRightClicked: { boxMenu.target = fav.modelData.id; boxMenu.open() }
+                                onRightClicked: { boxMenu.target = fav.modelData.id; boxMenu.popup() }
                                 Icon {
                                     visible: fav.parts.length > 1
                                     anchors.right: parent.left
@@ -1429,7 +1429,7 @@ Item {
                                     badge: modelData.badge
                                     selected: mail.selection === modelData.id
                                     onClicked: { mail.selection = modelData.id; mail.selectionName = "Inbox — " + modelData.account; mail.selectedId = -1 }
-                                    onRightClicked: { boxMenu.target = modelData.id; boxMenu.open() }
+                                    onRightClicked: { boxMenu.target = modelData.id; boxMenu.popup() }
                                 }
                             }
                         }
@@ -1452,7 +1452,7 @@ Item {
                             badge: modelData.badge
                             selected: mail.selection === modelData.id
                             onClicked: { mail.selection = modelData.id; mail.selectionName = modelData.name; mail.selectedId = -1 }
-                            onRightClicked: { smartMenu.target = modelData.id; smartMenu.open() }
+                            onRightClicked: { smartMenu.target = modelData.id; smartMenu.popup() }
                             onDoubleClicked: smartDialog.openFor(modelData.id)
                         }
                     }
@@ -1519,25 +1519,25 @@ Item {
                                     badge: modelData.badge
                                     selected: mail.selection === modelData.id
                                     onClicked: { mail.selection = modelData.id; mail.selectionName = modelData.name; mail.selectedId = -1 }
-                                    onRightClicked: { boxMenu.target = modelData.id; boxMenu.open() }
+                                    onRightClicked: { boxMenu.target = modelData.id; boxMenu.popup() }
                                 }
                             }
                         }
                     }
                 }
             }
-            P.Menu {
+            AMenu {
                 id: smartMenu
                 property string target: ""
-                P.MenuItem { icon.name: "document-edit"; text: "Edit Smart Mailbox…"; onTriggered: smartDialog.openFor(smartMenu.target) }
-                P.MenuItem { icon.name: "mail-mark-read"; text: "Mark All as Read"; onTriggered: store.markAllRead(smartMenu.target) }
-                P.MenuItem { icon.name: "edit-delete"; text: "Delete Smart Mailbox"; onTriggered: { store.deleteSmartMailbox(smartMenu.target); if (mail.selection === smartMenu.target) { mail.selection = "kind:inbox"; mail.selectionName = "Inbox" } } }
+                MacMenuItem { icon.name: "document-edit"; text: "Edit Smart Mailbox…"; onTriggered: smartDialog.openFor(smartMenu.target) }
+                MacMenuItem { icon.name: "mail-mark-read"; text: "Mark All as Read"; onTriggered: store.markAllRead(smartMenu.target) }
+                MacMenuItem { icon.name: "edit-delete"; text: "Delete Smart Mailbox"; onTriggered: { store.deleteSmartMailbox(smartMenu.target); if (mail.selection === smartMenu.target) { mail.selection = "kind:inbox"; mail.selectionName = "Inbox" } } }
             }
-            P.Menu {
+            AMenu {
                 id: boxMenu
                 property string target: ""
-                P.MenuItem { icon.name: "mail-mark-read"; text: "Mark All as Read"; onTriggered: store.markAllRead(boxMenu.target) }
-                P.MenuItem { icon.name: "mail-receive"; shortcut: "Ctrl+Shift+N"; text: "Get Mail"; onTriggered: store.refreshAll() }
+                MacMenuItem { icon.name: "mail-mark-read"; text: "Mark All as Read"; onTriggered: store.markAllRead(boxMenu.target) }
+                MacMenuItem { icon.name: "mail-receive"; shortcut: "Ctrl+Shift+N"; text: "Get Mail"; onTriggered: store.refreshAll() }
             }
         }
 
@@ -1595,17 +1595,17 @@ Item {
                                 transform: Scale { origin.y: 8; yScale: mail.sortAscending ? -1 : 1 }
                             }
                         }
-                        MouseArea { id: sortHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: sortMenu.open() }
+                        MouseArea { id: sortHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: sortMenu.popup() }
                         ToolTip.visible: sortHover.containsMouse
                         ToolTip.delay: 600
                         ToolTip.text: mail.sortTip
-                        P.Menu {
+                        AMenu {
                             id: sortMenu
                             Instantiator {
                                 model: ["date", "from", "subject", "to", "attachments", "flags", "unread"]
                                 onObjectAdded: (i, o) => sortMenu.insertItem(i, o)
                                 onObjectRemoved: (i, o) => sortMenu.removeItem(o)
-                                delegate: P.MenuItem {
+                                delegate: MacMenuItem {
                                     required property string modelData
                                     icon.name: "view-sort"
                                     text: mail.sortNames[modelData]
@@ -1614,14 +1614,14 @@ Item {
                                     onTriggered: mail.setSort(modelData, mail.sortAscending)
                                 }
                             }
-                            P.MenuSeparator {}
-                            P.MenuItem {
+                            MacMenuSeparator {}
+                            MacMenuItem {
                                 icon.name: "view-sort-ascending"; shortcut: "Ctrl+Alt+Up"
                                 text: mail.sortBy === "date" ? "Oldest on Top" : (["attachments", "flags", "unread"].indexOf(mail.sortBy) >= 0 ? "Without on Top" : "Ascending (A to Z)")
                                 checkable: true; checked: mail.sortAscending
                                 onTriggered: mail.setSort(mail.sortBy, true)
                             }
-                            P.MenuItem {
+                            MacMenuItem {
                                 icon.name: "view-sort-descending"; shortcut: "Ctrl+Alt+Down"
                                 text: mail.sortBy === "date" ? "Newest on Top" : (["attachments", "flags", "unread"].indexOf(mail.sortBy) >= 0 ? "With on Top" : "Descending (Z to A)")
                                 checkable: true; checked: !mail.sortAscending
@@ -2249,7 +2249,7 @@ Item {
                             if (ev.button === Qt.RightButton) {
                                 if (!mail.isPicked(row.modelData.id)) { mail.selectedIds = []; mail.select(row.modelData.id, true) }
                                 rowMenuLoader.active = true
-                                rowMenuLoader.item.open()
+                                rowMenuLoader.item.popup()
                             } else {
                                 mail.pick(row.modelData.id, row.index, ev.modifiers)
                             }
@@ -2268,11 +2268,11 @@ Item {
                         id: rowMenuLoader
                         active: false
                         sourceComponent: Component {
-                        P.Menu {
+                        AMenu {
                             id: rowMenu
-                            P.MenuItem { icon.name: "mail-mark-unread"; shortcut: "Ctrl+Shift+U"; text: row.modelData.read ? "Mark as Unread" : "Mark as Read"; onTriggered: mail.setCurrentRead(!row.modelData.read) }
-                            P.MenuItem { icon.name: "flag-red"; shortcut: "Ctrl+Shift+L"; text: row.modelData.flagged ? "Unflag" : "Flag"; onTriggered: mail.toggleCurrentFlag() }
-                            P.Menu {
+                            MacMenuItem { icon.name: "mail-mark-unread"; shortcut: "Ctrl+Shift+U"; text: row.modelData.read ? "Mark as Unread" : "Mark as Read"; onTriggered: mail.setCurrentRead(!row.modelData.read) }
+                            MacMenuItem { icon.name: "flag-red"; shortcut: "Ctrl+Shift+L"; text: row.modelData.flagged ? "Unflag" : "Flag"; onTriggered: mail.toggleCurrentFlag() }
+                            AMenu {
                                 id: rowFlagMenu
                                 title: "Flag Colour"
                                 icon.name: "flag"
@@ -2280,7 +2280,7 @@ Item {
                                     model: 7
                                     onObjectAdded: (i, o) => rowFlagMenu.insertItem(i, o)
                                     onObjectRemoved: (i, o) => rowFlagMenu.removeItem(o)
-                                    delegate: P.MenuItem {
+                                    delegate: MacMenuItem {
                                         required property int index
                                         text: Theme.flagNames[index]
                                         icon.source: mail.flagIcon(index)
@@ -2290,42 +2290,42 @@ Item {
                                     }
                                 }
                             }
-                            P.MenuSeparator {}
-                            P.MenuItem { icon.name: "mail-reply-sender"; shortcut: "Ctrl+R"; text: "Reply"; onTriggered: mail.reply(false) }
-                            P.MenuItem { icon.name: "mail-reply-all"; shortcut: "Ctrl+Shift+R"; text: "Reply All"; onTriggered: mail.reply(true) }
-                            P.MenuItem { icon.name: "mail-forward"; shortcut: "Ctrl+Shift+F"; text: "Forward"; onTriggered: mail.forward() }
-                            P.MenuItem { icon.name: "mail-send"; text: "Send Again\tCtrl+Shift+D"; onTriggered: mail.sendAgain() }
-                            P.MenuSeparator {}
-                            P.Menu {
+                            MacMenuSeparator {}
+                            MacMenuItem { icon.name: "mail-reply-sender"; shortcut: "Ctrl+R"; text: "Reply"; onTriggered: mail.reply(false) }
+                            MacMenuItem { icon.name: "mail-reply-all"; shortcut: "Ctrl+Shift+R"; text: "Reply All"; onTriggered: mail.reply(true) }
+                            MacMenuItem { icon.name: "mail-forward"; shortcut: "Ctrl+Shift+F"; text: "Forward"; onTriggered: mail.forward() }
+                            MacMenuItem { icon.name: "mail-send"; text: "Send Again\tCtrl+Shift+D"; onTriggered: mail.sendAgain() }
+                            MacMenuSeparator {}
+                            AMenu {
                                 id: rowMoveMenu
                                 title: "Move to"
                                 Instantiator {
                                     model: mail.folders
                                     onObjectAdded: (i, o) => rowMoveMenu.insertItem(i, o)
                                     onObjectRemoved: (i, o) => rowMoveMenu.removeItem(o)
-                                    delegate: P.MenuItem {
+                                    delegate: MacMenuItem {
                                         required property var modelData
                                         text: (mail.sidebar.accounts.length > 1 ? modelData.account + " › " : "") + modelData.name
                                         onTriggered: mail.moveCurrentToFolder(modelData.id)
                                     }
                                 }
                             }
-                            P.MenuItem { icon.name: "archive-insert"; text: "Archive\tCtrl+Shift+A"; onTriggered: mail.removeCurrent("archive") }
-                            P.MenuItem { icon.name: "mail-mark-junk"; text: "Move to Junk\tCtrl+Shift+J"; onTriggered: mail.removeCurrent("junk") }
-                            P.MenuItem { icon.name: "edit-delete"; text: "Delete\tDel"; onTriggered: mail.removeCurrent("delete") }
-                            P.MenuSeparator {}
-                            P.Menu {
+                            MacMenuItem { icon.name: "archive-insert"; text: "Archive\tCtrl+Shift+A"; onTriggered: mail.removeCurrent("archive") }
+                            MacMenuItem { icon.name: "mail-mark-junk"; text: "Move to Junk\tCtrl+Shift+J"; onTriggered: mail.removeCurrent("junk") }
+                            MacMenuItem { icon.name: "edit-delete"; text: "Delete\tDel"; onTriggered: mail.removeCurrent("delete") }
+                            MacMenuSeparator {}
+                            AMenu {
                                 title: "Remind Me"
-                                P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+H"; text: "In 1 Hour"; onTriggered: mail.remindIn(3600000) }
-                                P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+T"; text: "Tonight"; onTriggered: mail.remindAt(21, 0) }
-                                P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+O"; text: "Tomorrow Morning"; onTriggered: mail.remindAt(8, 1) }
-                                P.MenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+W"; text: "Next Week"; onTriggered: mail.remindAt(8, 7) }
-                                P.MenuItem { icon.name: "edit-clear-history"; shortcut: "Ctrl+Alt+Shift+X"; text: "Remove Reminder"; onTriggered: store.remindMe(row.modelData.id, 0) }
+                                MacMenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+H"; text: "In 1 Hour"; onTriggered: mail.remindIn(3600000) }
+                                MacMenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+T"; text: "Tonight"; onTriggered: mail.remindAt(21, 0) }
+                                MacMenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+O"; text: "Tomorrow Morning"; onTriggered: mail.remindAt(8, 1) }
+                                MacMenuItem { icon.name: "chronometer"; shortcut: "Ctrl+Alt+Shift+W"; text: "Next Week"; onTriggered: mail.remindAt(8, 7) }
+                                MacMenuItem { icon.name: "edit-clear-history"; shortcut: "Ctrl+Alt+Shift+X"; text: "Remove Reminder"; onTriggered: store.remindMe(row.modelData.id, 0) }
                             }
-                            P.MenuItem { icon.name: "mail-thread-ignored"; text: (row.modelData.muted ? "Unmute Conversation" : "Mute Conversation") + "\tCtrl+Shift+M"; onTriggered: store.toggleMute(row.modelData.id) }
-                            P.MenuItem { icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: row.modelData.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs"; onTriggered: store.toggleVip(row.modelData.fromEmail) }
-                            P.MenuItem { icon.name: "im-ban-user"; text: ("Block Sender") + "\tCtrl+Alt+B"; onTriggered: store.toggleBlocked(row.modelData.fromEmail) }
-                            P.MenuItem { icon.name: "document-print"; shortcut: "Ctrl+P"; text: "Print…"; onTriggered: mail.printCurrent() }
+                            MacMenuItem { icon.name: "mail-thread-ignored"; text: (row.modelData.muted ? "Unmute Conversation" : "Mute Conversation") + "\tCtrl+Shift+M"; onTriggered: store.toggleMute(row.modelData.id) }
+                            MacMenuItem { icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: row.modelData.vip ? "Remove Sender from VIPs" : "Add Sender to VIPs"; onTriggered: store.toggleVip(row.modelData.fromEmail) }
+                            MacMenuItem { icon.name: "im-ban-user"; text: ("Block Sender") + "\tCtrl+Alt+B"; onTriggered: store.toggleBlocked(row.modelData.fromEmail) }
+                            MacMenuItem { icon.name: "document-print"; shortcut: "Ctrl+P"; text: "Print…"; onTriggered: mail.printCurrent() }
                         }
                         }
                     }
@@ -2468,13 +2468,13 @@ Item {
                         onPositionChanged: function(ev) { if (pressed) replyFrame.wantH = h0 - (mapToItem(null, ev.x, ev.y).y - y0) }
                     }
                 }
-                P.Menu {
+                AMenu {
                     id: senderMenu
                     property var m: null
-                    P.MenuItem { icon.name: "mail-message-new"; text: senderMenu.m ? "New Message to " + (senderMenu.m.fromName || senderMenu.m.fromEmail) : ""; onTriggered: compose.openWith({ to: senderMenu.m.fromEmail }) }
-                    P.MenuItem { icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: senderMenu.m && senderMenu.m.vip ? "Remove from VIPs" : "Add to VIPs"; onTriggered: store.toggleVip(senderMenu.m.fromEmail) }
-                    P.MenuItem { icon.name: "im-ban-user"; text: (senderMenu.m && senderMenu.m.blocked ? "Unblock Contact" : "Block Contact") + "\tCtrl+Alt+B"; onTriggered: store.toggleBlocked(senderMenu.m.fromEmail) }
-                    P.MenuItem { icon.name: "edit-copy"; text: "Copy Address"; onTriggered: { copyHelper.text = senderMenu.m.fromEmail; copyHelper.selectAll(); copyHelper.copy() } }
+                    MacMenuItem { icon.name: "mail-message-new"; text: senderMenu.m ? "New Message to " + (senderMenu.m.fromName || senderMenu.m.fromEmail) : ""; onTriggered: compose.openWith({ to: senderMenu.m.fromEmail }) }
+                    MacMenuItem { icon.name: "emblem-favorite"; shortcut: "Ctrl+Alt+V"; text: senderMenu.m && senderMenu.m.vip ? "Remove from VIPs" : "Add to VIPs"; onTriggered: store.toggleVip(senderMenu.m.fromEmail) }
+                    MacMenuItem { icon.name: "im-ban-user"; text: (senderMenu.m && senderMenu.m.blocked ? "Unblock Contact" : "Block Contact") + "\tCtrl+Alt+B"; onTriggered: store.toggleBlocked(senderMenu.m.fromEmail) }
+                    MacMenuItem { icon.name: "edit-copy"; text: "Copy Address"; onTriggered: { copyHelper.text = senderMenu.m.fromEmail; copyHelper.selectAll(); copyHelper.copy() } }
                 }
                 // Ctrl + scroll / pinch on the trackpad zoom the messages.
                 WheelHandler {

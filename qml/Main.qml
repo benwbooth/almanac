@@ -259,12 +259,12 @@ ApplicationWindow {
                             overflowMenu.clear()
                             for (var i = 0; i < win.overflowButtons.length; i++)
                                 overflowMenu.addItem(overflowItem.createObject(overflowMenu, { target: win.overflowButtons[i] }))
-                            overflowMenu.open(overflowButton)
+                            overflowMenu.popup(overflowButton, 0, overflowButton.height)
                         }
-                        P.Menu { id: overflowMenu }
+                        AMenu { id: overflowMenu }
                         Component {
                             id: overflowItem
-                            P.MenuItem {
+                            MacMenuItem {
                                 property var target
                                 text: target ? win.buttonLabel(target) : ""
                                 icon.name: target ? (win.themeIcons[target.icon] || "") : ""

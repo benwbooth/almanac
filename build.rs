@@ -109,6 +109,16 @@ fn main() {
             cxx_qt_build::QmlFile::from("qml/Momentum.qml"),
             cxx_qt_build::QmlFile::from("qml/Spinner.qml"),
             cxx_qt_build::QmlFile::from("qml/AppMenu.qml"),
+            cxx_qt_build::QmlFile::from("qml/AMenu.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacComboBox.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacComboItem.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacComboPopup.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacMenuBackground.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacMenuIcon.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacMenuItem.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacMenu.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacMenuSeparator.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacMenuStyle.qml"),
         ]),
     )
     // Headers come from include/ only. The default (the whole crate folder)

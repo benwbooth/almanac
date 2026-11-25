@@ -450,32 +450,32 @@ ColumnLayout {
         plain = true
         body.cursorPosition = 0
     }
-    P.Menu {
+    AMenu {
         id: spellMenu
         property var lint: null
-        P.MenuItem { visible: !!spellMenu.lint; enabled: false; text: spellMenu.lint ? spellMenu.lint.message : "" }
-        P.MenuItem { visible: !!spellMenu.lint && !spellMenu.lint.suggestions.length; enabled: false; text: "No Guesses Found" }
+        MacMenuItem { visible: !!spellMenu.lint; enabled: false; text: spellMenu.lint ? spellMenu.lint.message : "" }
+        MacMenuItem { visible: !!spellMenu.lint && !spellMenu.lint.suggestions.length; enabled: false; text: "No Guesses Found" }
         Instantiator {
             model: spellMenu.lint ? spellMenu.lint.suggestions : []
             onObjectAdded: (i, o) => spellMenu.insertItem(2 + i, o)
             onObjectRemoved: (i, o) => spellMenu.removeItem(o)
-            delegate: P.MenuItem {
+            delegate: MacMenuItem {
                 required property string modelData
                 text: modelData === "" ? "Delete “" + spellMenu.lint.word + "”" : modelData
                 font.bold: true
                 onTriggered: sheet.applySuggestion(spellMenu.lint, modelData)
             }
         }
-        P.MenuSeparator { visible: !!spellMenu.lint }
-        P.MenuItem { visible: !!spellMenu.lint; icon.name: "dialog-cancel"; text: "Ignore"; onTriggered: sheet.ignoreWord(spellMenu.lint.word) }
-        P.MenuItem {
+        MacMenuSeparator { visible: !!spellMenu.lint }
+        MacMenuItem { visible: !!spellMenu.lint; icon.name: "dialog-cancel"; text: "Ignore"; onTriggered: sheet.ignoreWord(spellMenu.lint.word) }
+        MacMenuItem {
             visible: !!spellMenu.lint && spellMenu.lint.kind === "spelling"
             icon.name: "tools-check-spelling"; text: "Learn Spelling"
             onTriggered: { sheet.store.learnSpelling(spellMenu.lint.word); sheet.ignoreWord(spellMenu.lint.word) }
         }
-        P.MenuSeparator { visible: !!spellMenu.lint }
-        P.MenuItem { icon.name: "tools-check-spelling"; text: "Check Spelling While Typing"; checkable: true; checked: sheet.spellOn; onTriggered: sheet.setSpelling(!sheet.spellOn) }
-        P.MenuItem { icon.name: "story-editor"; text: "Check Grammar With Spelling"; checkable: true; checked: sheet.grammarOn; enabled: sheet.spellOn; onTriggered: sheet.setGrammar(!sheet.grammarOn) }
+        MacMenuSeparator { visible: !!spellMenu.lint }
+        MacMenuItem { icon.name: "tools-check-spelling"; text: "Check Spelling While Typing"; checkable: true; checked: sheet.spellOn; onTriggered: sheet.setSpelling(!sheet.spellOn) }
+        MacMenuItem { icon.name: "story-editor"; text: "Check Grammar With Spelling"; checkable: true; checked: sheet.grammarOn; enabled: sheet.spellOn; onTriggered: sheet.setGrammar(!sheet.grammarOn) }
     }
 
     // ------------------------------------------- spelling and grammar
@@ -740,7 +740,7 @@ ColumnLayout {
                 onTapped: function(ev) {
                     var l = sheet.lintAt(body.positionAt(ev.position.x, ev.position.y))
                     spellMenu.lint = l
-                    spellMenu.open()
+                    spellMenu.popup()
                 }
             }
             Keys.onReturnPressed: function(ev) { sheet.enterPressed(ev) }

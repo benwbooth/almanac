@@ -127,7 +127,7 @@ Item {
                     // Middle-click closes a tab, as in browsers.
                     onClicked: function(ev) {
                         if (ev.button === Qt.MiddleButton) { if (!tabItem.modelData.mailbox) strip.owner.closeTab(tabItem.tab) }
-                        else if (ev.button === Qt.RightButton) { if (!tabItem.modelData.mailbox) { tabMenu.tab = tabItem.tab; tabMenu.open() } }
+                        else if (ev.button === Qt.RightButton) { if (!tabItem.modelData.mailbox) { tabMenu.tab = tabItem.tab; tabMenu.popup() } }
                         else strip.owner.tabIndex = tabItem.index
                     }
                 }
@@ -187,15 +187,15 @@ Item {
     }
 
     // Right-click on a tab.
-    P.Menu {
+    AMenu {
         id: tabMenu
         property int tab: -1
-        P.MenuItem { icon.name: "tab-close"; text: "Close Tab"; onTriggered: strip.owner.closeTab(tabMenu.tab) }
-        P.MenuItem { icon.name: "tab-close-other"; text: "Close Other Tabs"; enabled: strip.owner.tabs.length > 1; onTriggered: strip.owner.closeOtherTabs(tabMenu.tab) }
-        P.MenuSeparator {}
-        P.MenuItem { icon.name: "window-new"; text: "Move Tab to New Window"; enabled: tabMenu.tab >= 0 && strip.owner.canTearOut(tabMenu.tab); onTriggered: strip.owner.tearOut(tabMenu.tab) }
-        P.MenuItem { icon.name: "go-home"; text: "Move Tab to Main Window"; visible: !!strip.owner.toMain; onTriggered: strip.owner.toMain(tabMenu.tab) }
-        P.MenuItem { icon.name: "window-duplicate"; text: "Merge All Windows"; visible: !!strip.mail; enabled: !!strip.mail && strip.mail.tabWindows.length > 0; onTriggered: strip.mail.mergeAllWindows() }
+        MacMenuItem { icon.name: "tab-close"; text: "Close Tab"; onTriggered: strip.owner.closeTab(tabMenu.tab) }
+        MacMenuItem { icon.name: "tab-close-other"; text: "Close Other Tabs"; enabled: strip.owner.tabs.length > 1; onTriggered: strip.owner.closeOtherTabs(tabMenu.tab) }
+        MacMenuSeparator {}
+        MacMenuItem { icon.name: "window-new"; text: "Move Tab to New Window"; enabled: tabMenu.tab >= 0 && strip.owner.canTearOut(tabMenu.tab); onTriggered: strip.owner.tearOut(tabMenu.tab) }
+        MacMenuItem { icon.name: "go-home"; text: "Move Tab to Main Window"; visible: !!strip.owner.toMain; onTriggered: strip.owner.toMain(tabMenu.tab) }
+        MacMenuItem { icon.name: "window-duplicate"; text: "Merge All Windows"; visible: !!strip.mail; enabled: !!strip.mail && strip.mail.tabWindows.length > 0; onTriggered: strip.mail.mergeAllWindows() }
     }
     // The tabs that don't fit (and every tab), in a drop-down.
     ToolButtonX {
@@ -206,14 +206,14 @@ Item {
         icon: "chevronDown"
         text: "" + (strip.all.length - strip.fit)
         tip: "All Tabs"
-        onClicked: allMenu.open(tabMore)
-        P.Menu {
+        onClicked: allMenu.popup(tabMore, 0, tabMore.height)
+        AMenu {
             id: allMenu
             Instantiator {
                 model: strip.all
                 onObjectAdded: (i, o) => allMenu.insertItem(i, o)
                 onObjectRemoved: (i, o) => allMenu.removeItem(o)
-                delegate: P.MenuItem {
+                delegate: MacMenuItem {
                     required property var modelData
                     required property int index
                     icon.name: modelData.mailbox ? "mail-folder-inbox" : modelData.attachment ? "mail-attachment" : "mail-message"
@@ -223,8 +223,8 @@ Item {
                     onTriggered: strip.owner.tabIndex = index
                 }
             }
-            P.MenuSeparator {}
-            P.MenuItem { icon.name: "tab-close"; text: strip.home ? "Close All Message Tabs" : "Close All Tabs"; onTriggered: strip.owner.closeAllTabs() }
+            MacMenuSeparator {}
+            MacMenuItem { icon.name: "tab-close"; text: strip.home ? "Close All Message Tabs" : "Close All Tabs"; onTriggered: strip.owner.closeAllTabs() }
         }
     }
 }

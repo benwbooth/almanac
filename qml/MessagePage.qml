@@ -621,7 +621,7 @@ WebEngineView {
         pageMenu.link = /^(https?|mailto):/i.test(link) ? link : ""
         pageMenu.hasSelection = request.selectedText !== ""
         pageMenu.attOnly = false
-        pageMenu.open()
+        pageMenu.popup()
     }
     // "Open ▾" on a picture, PDF or attachment: the ways to open it, as a drop-down.
     function openMenuFor(m, name) {
@@ -629,7 +629,7 @@ WebEngineView {
         pageMenu.link = ""
         pageMenu.hasSelection = false
         pageMenu.attOnly = true
-        pageMenu.open()
+        pageMenu.popup()
     }
     // "Name <a@b>, \"Last, First\" <c@d>, e@f" → [{name, email}] (commas inside
     // quotes or angle brackets don't split).
@@ -671,41 +671,41 @@ WebEngineView {
     function openAddressMenu(email, name) {
         addressMenu.email = email
         addressMenu.name = name
-        addressMenu.open()
+        addressMenu.popup()
     }
     function copyText(t) { copyHelper.text = t; copyHelper.selectAll(); copyHelper.copy() }
     TextEdit { id: copyHelper; visible: false }
-    P.Menu {
+    AMenu {
         id: addressMenu
         property string email: ""
         property string name: ""
-        P.MenuItem { icon.name: "mail-message-new"; text: "New Message to " + (addressMenu.name || addressMenu.email); onTriggered: web.mailto(addressMenu.email) }
-        P.MenuSeparator {}
-        P.MenuItem { icon.name: "edit-copy"; text: "Copy Email Address"; onTriggered: web.copyText(addressMenu.email) }
-        P.MenuItem { visible: addressMenu.name !== ""; icon.name: "edit-copy"; text: "Copy Name"; onTriggered: web.copyText(addressMenu.name) }
-        P.MenuItem { visible: addressMenu.name !== ""; icon.name: "edit-copy"; text: "Copy Name and Address"; onTriggered: web.copyText(addressMenu.name + " <" + addressMenu.email + ">") }
+        MacMenuItem { icon.name: "mail-message-new"; text: "New Message to " + (addressMenu.name || addressMenu.email); onTriggered: web.mailto(addressMenu.email) }
+        MacMenuSeparator {}
+        MacMenuItem { icon.name: "edit-copy"; text: "Copy Email Address"; onTriggered: web.copyText(addressMenu.email) }
+        MacMenuItem { visible: addressMenu.name !== ""; icon.name: "edit-copy"; text: "Copy Name"; onTriggered: web.copyText(addressMenu.name) }
+        MacMenuItem { visible: addressMenu.name !== ""; icon.name: "edit-copy"; text: "Copy Name and Address"; onTriggered: web.copyText(addressMenu.name + " <" + addressMenu.email + ">") }
     }
-    P.Menu {
+    AMenu {
         id: pageMenu
         property var att: null
         property string link: ""
         property bool hasSelection: false
         // Just the attachment's own choices (the Open ▾ drop-down).
         property bool attOnly: false
-        P.MenuItem { visible: !!pageMenu.att; icon.name: "document-open"; text: "Open"; onTriggered: web.attachmentClicked(pageMenu.att.m, pageMenu.att.name, false) }
-        P.MenuItem { visible: !!pageMenu.att; icon.name: "tab-new"; text: "Open in New Tab"; onTriggered: web.attachmentView(pageMenu.att.m, pageMenu.att.name, "tab") }
-        P.MenuItem { visible: !!pageMenu.att; icon.name: "window-new"; text: "Open in New Window"; onTriggered: web.attachmentView(pageMenu.att.m, pageMenu.att.name, "window") }
-        P.MenuSeparator { visible: !!pageMenu.att }
-        P.MenuItem { visible: !!pageMenu.att && /\.pdf$/i.test(pageMenu.att.name); icon.name: "document-print"; text: "Print…"; onTriggered: { if (web.store) web.store.printAttachment(pageMenu.att.m.id, pageMenu.att.name) } }
-        P.MenuItem { visible: !!pageMenu.att; icon.name: "document-save-as"; text: "Save As…"; onTriggered: web.attachmentClicked(pageMenu.att.m, pageMenu.att.name, true) }
-        P.MenuSeparator { visible: !!pageMenu.att && !pageMenu.attOnly }
-        P.MenuItem { visible: pageMenu.link !== ""; icon.name: "internet-web-browser"; text: "Open Link"; onTriggered: web.follow(pageMenu.link) }
-        P.MenuItem { visible: pageMenu.link !== ""; icon.name: "edit-copy"; text: "Copy Link"; onTriggered: { linkCopy.text = pageMenu.link.replace(/^mailto:/i, ""); linkCopy.selectAll(); linkCopy.copy() } }
-        P.MenuSeparator { visible: pageMenu.link !== "" }
-        P.MenuItem { visible: !pageMenu.attOnly; enabled: pageMenu.hasSelection; icon.name: "edit-copy"; text: "Copy"; onTriggered: web.triggerWebAction(WebEngineView.Copy) }
-        P.MenuItem { visible: !pageMenu.attOnly; icon.name: "edit-select-all"; text: "Select All"; onTriggered: web.triggerWebAction(WebEngineView.SelectAll) }
-        P.MenuSeparator { visible: !pageMenu.attOnly }
-        P.MenuItem { visible: !pageMenu.attOnly; icon.name: "edit-find"; text: "Find in Message…"; onTriggered: web.openFind() }
+        MacMenuItem { visible: !!pageMenu.att; icon.name: "document-open"; text: "Open"; onTriggered: web.attachmentClicked(pageMenu.att.m, pageMenu.att.name, false) }
+        MacMenuItem { visible: !!pageMenu.att; icon.name: "tab-new"; text: "Open in New Tab"; onTriggered: web.attachmentView(pageMenu.att.m, pageMenu.att.name, "tab") }
+        MacMenuItem { visible: !!pageMenu.att; icon.name: "window-new"; text: "Open in New Window"; onTriggered: web.attachmentView(pageMenu.att.m, pageMenu.att.name, "window") }
+        MacMenuSeparator { visible: !!pageMenu.att }
+        MacMenuItem { visible: !!pageMenu.att && /\.pdf$/i.test(pageMenu.att.name); icon.name: "document-print"; text: "Print…"; onTriggered: { if (web.store) web.store.printAttachment(pageMenu.att.m.id, pageMenu.att.name) } }
+        MacMenuItem { visible: !!pageMenu.att; icon.name: "document-save-as"; text: "Save As…"; onTriggered: web.attachmentClicked(pageMenu.att.m, pageMenu.att.name, true) }
+        MacMenuSeparator { visible: !!pageMenu.att && !pageMenu.attOnly }
+        MacMenuItem { visible: pageMenu.link !== ""; icon.name: "internet-web-browser"; text: "Open Link"; onTriggered: web.follow(pageMenu.link) }
+        MacMenuItem { visible: pageMenu.link !== ""; icon.name: "edit-copy"; text: "Copy Link"; onTriggered: { linkCopy.text = pageMenu.link.replace(/^mailto:/i, ""); linkCopy.selectAll(); linkCopy.copy() } }
+        MacMenuSeparator { visible: pageMenu.link !== "" }
+        MacMenuItem { visible: !pageMenu.attOnly; enabled: pageMenu.hasSelection; icon.name: "edit-copy"; text: "Copy"; onTriggered: web.triggerWebAction(WebEngineView.Copy) }
+        MacMenuItem { visible: !pageMenu.attOnly; icon.name: "edit-select-all"; text: "Select All"; onTriggered: web.triggerWebAction(WebEngineView.SelectAll) }
+        MacMenuSeparator { visible: !pageMenu.attOnly }
+        MacMenuItem { visible: !pageMenu.attOnly; icon.name: "edit-find"; text: "Find in Message…"; onTriggered: web.openFind() }
     }
     TextEdit { id: linkCopy; visible: false }
     function senderTrusted(m) { return web.remoteSenders.indexOf((m.fromEmail || "").toLowerCase()) >= 0 }

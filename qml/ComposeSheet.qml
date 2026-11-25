@@ -654,13 +654,13 @@ Popup {
                     id: laterBtn
                     icon: "chevronDown"; tip: "Send Later"
                     enabled: toRow.field.text.trim() !== ""
-                    onClicked: laterMenu.open(laterBtn)
-                    P.Menu {
+                    onClicked: laterMenu.popup(laterBtn, 0, laterBtn.height)
+                    AMenu {
                         id: laterMenu
-                        P.MenuItem { icon.name: "chronometer"; text: "Send in 1 Hour"; onTriggered: sheet.send(Date.now() + 3600000) }
-                        P.MenuItem { icon.name: "chronometer"; text: "Send Tonight 9:00 PM"; onTriggered: { var d = new Date(); d.setHours(21, 0, 0, 0); if (d < new Date()) d = Theme.addDays(d, 1); sheet.send(d.getTime()) } }
-                        P.MenuItem { icon.name: "chronometer"; text: "Send Tomorrow 8:00 AM"; onTriggered: { var d = Theme.addDays(new Date(), 1); d.setHours(8, 0, 0, 0); sheet.send(d.getTime()) } }
-                        P.MenuItem { icon.name: "view-calendar-day"; text: "Send Later…"; onTriggered: laterPicker.open() }
+                        MacMenuItem { icon.name: "chronometer"; text: "Send in 1 Hour"; onTriggered: sheet.send(Date.now() + 3600000) }
+                        MacMenuItem { icon.name: "chronometer"; text: "Send Tonight 9:00 PM"; onTriggered: { var d = new Date(); d.setHours(21, 0, 0, 0); if (d < new Date()) d = Theme.addDays(d, 1); sheet.send(d.getTime()) } }
+                        MacMenuItem { icon.name: "chronometer"; text: "Send Tomorrow 8:00 AM"; onTriggered: { var d = Theme.addDays(new Date(), 1); d.setHours(8, 0, 0, 0); sheet.send(d.getTime()) } }
+                        MacMenuItem { icon.name: "view-calendar-day"; text: "Send Later…"; onTriggered: laterPicker.open() }
                     }
                 }
                 Text {
@@ -719,14 +719,14 @@ Popup {
                     id: headMore
                     visible: sheet.headTight
                     text: "»"; tip: "More"
-                    onClicked: headMenu.open(headMore)
-                    P.Menu {
+                    onClicked: headMenu.popup(headMore, 0, headMore.height)
+                    AMenu {
                         id: headMenu
-                        P.MenuItem { icon.name: "mail-attachment"; text: "Attach Files…"; onTriggered: sheet.attachFiles() }
-                        P.MenuItem { icon.name: "view-fullscreen"; visible: !sheet.detached; text: sheet.inline ? "Larger (over the window)" : sheet.large ? "Smaller" : "Larger"; onTriggered: sheet.biggerOrSmaller() }
-                        P.MenuItem { icon.name: "window-new"; text: sheet.detached ? "Back into the Main Window" : "Open in a Separate Window"; onTriggered: sheet.windowOrBack() }
-                        P.MenuItem { icon.name: "document-save"; text: "Save Draft"; onTriggered: sheet.saveAndClose() }
-                        P.MenuItem { icon.name: "edit-delete"; text: "Throw Away…"; onTriggered: sheet.discard() }
+                        MacMenuItem { icon.name: "mail-attachment"; text: "Attach Files…"; onTriggered: sheet.attachFiles() }
+                        MacMenuItem { icon.name: "view-fullscreen"; visible: !sheet.detached; text: sheet.inline ? "Larger (over the window)" : sheet.large ? "Smaller" : "Larger"; onTriggered: sheet.biggerOrSmaller() }
+                        MacMenuItem { icon.name: "window-new"; text: sheet.detached ? "Back into the Main Window" : "Open in a Separate Window"; onTriggered: sheet.windowOrBack() }
+                        MacMenuItem { icon.name: "document-save"; text: "Save Draft"; onTriggered: sheet.saveAndClose() }
+                        MacMenuItem { icon.name: "edit-delete"; text: "Throw Away…"; onTriggered: sheet.discard() }
                     }
                 }
                 WindowControls { visible: sheet.detached && Qt.platform.os !== "osx"; window: ownWindow; Layout.leftMargin: 6; Layout.fillHeight: true }
