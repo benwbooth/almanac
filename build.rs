@@ -55,6 +55,7 @@ fn main() {
     let mut builder = CxxQtBuilder::new_qml_module(
         QmlModule::new("org.craft.pim").qml_files([
             cxx_qt_build::QmlFile::from("qml/Main.qml"),
+            cxx_qt_build::QmlFile::from("qml/MacMenuButton.qml"),
             cxx_qt_build::QmlFile::from("qml/Theme.qml").singleton(true),
             cxx_qt_build::QmlFile::from("qml/Icon.qml"),
             cxx_qt_build::QmlFile::from("qml/ToolButtonX.qml"),

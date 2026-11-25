@@ -159,12 +159,13 @@ ApplicationWindow {
                     anchors.rightMargin: win.macOS ? 10 : 0
                     spacing: 6
 
-                    ToolButtonX {
+                    MacMenuButton {
                         id: menuButton
-                        text: "☰"
-                        textSize: 19
+                        dark: Theme.dark
+                        fg: Theme.text
+                        menu: appMenu
                         tip: "Menu: every command, Accounts and Settings"
-                        onClicked: win.openAppMenu()
+                        onAboutToOpen: win.focusBeforeMenu = win.activeFocusItem
                     }
                     ToolButtonX {
                         icon: "sidebar"

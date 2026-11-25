@@ -235,12 +235,13 @@ Window {
                 anchors.leftMargin: w.macOS ? 78 : 10
                 anchors.rightMargin: w.macOS ? 10 : 0
                 spacing: 2
-                ToolButtonX {
+                MacMenuButton {
                     id: menuButton
-                    text: "☰"
-                    textSize: 19
+                    dark: Theme.dark
+                    fg: Theme.text
+                    menu: appMenu
                     tip: "Menu: every command for this window"
-                    onClicked: { w.focusBeforeMenu = w.activeFocusItem; appMenu.openBelow(menuButton) }
+                    onAboutToOpen: w.focusBeforeMenu = w.activeFocusItem
                 }
                 RowLayout {
                     visible: w.onMessage

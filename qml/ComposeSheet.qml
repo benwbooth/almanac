@@ -626,13 +626,14 @@ Popup {
                 anchors.fill: parent
                 anchors.leftMargin: sheet.detached && Qt.platform.os === "osx" ? 78 : 12
                 anchors.rightMargin: sheet.detached && Qt.platform.os !== "osx" ? 0 : 12
-                ToolButtonX {
+                MacMenuButton {
                     id: menuButton
                     visible: sheet.detached
-                    text: "☰"
-                    textSize: 19
+                    dark: Theme.dark
+                    fg: Theme.text
+                    menu: appMenu
                     tip: "Menu: every command for this message"
-                    onClicked: { sheet.focusBeforeMenu = ownWindow.activeFocusItem; appMenu.openBelow(menuButton) }
+                    onAboutToOpen: sheet.focusBeforeMenu = ownWindow.activeFocusItem
                 }
                 ToolButtonX {
                     id: sendButton
