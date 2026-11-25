@@ -7,6 +7,7 @@
 #include <QtGui/QIcon>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
+#include <QtCore/QSettings>
 #include <QtGui/QImage>
 #include <QtQuick/QQuickWindow>
 
@@ -91,37 +92,34 @@ public:
 };
 
 // The application object (a widgets one, so print dialogs work).
-// Icon folders whose every theme is also in another folder with an
-// icon-theme.cache, left out of the icon search. Qt checks an uncached theme
-// folder file by file (every size folder of hicolor, ~300) for each icon the
-// themes before it lack; the packages' own uncached hicolor copies in
-// XDG_DATA_DIRS made start-up check thousands of files per icon (most of a
-// slow start in a profile, 2026-11-25). The cached copies have the same icons.
-inline void craftTrimIconSearchPaths()
+// The desktop's icon theme. Without a desktop platform theme (no Plasma)
+// Qt's is plain "hicolor": no Breeze, every menu icon a miss searched file
+// by file through each package's own hicolor folder (most of a slow start,
+// 2026-11-25), and the icons that did show were whatever those packages
+// carry. hearth writes the theme to kdeglobals and GTK's settings.ini.
+inline void craftUseDesktopIconTheme()
 {
-    const QStringList paths = QIcon::themeSearchPaths();
-    auto themesIn = [](const QString& p) {
-        return QDir(p).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-    };
-    auto cached = [](const QString& p, const QString& t) {
-        return QFileInfo::exists(p + QLatin1Char('/') + t + QStringLiteral("/icon-theme.cache"));
-    };
-    QStringList keep;
-    for (const QString& p : paths) {
-        const QStringList themes = themesIn(p);
-        bool elsewhere = !themes.isEmpty() && !p.startsWith(QLatin1Char(':'));
-        for (const QString& t : themes) {
-            bool found = false;
-            for (const QString& q : paths)
-                if (q != p && cached(q, t)) { found = true; break; }
-            if (!found) { elsewhere = false; break; }
+    const QString now = QIcon::themeName();
+    if (!now.isEmpty() && now != QStringLiteral("hicolor"))
+        return;
+    QString config = qEnvironmentVariable("XDG_CONFIG_HOME");
+    if (config.isEmpty())
+        config = QDir::homePath() + QStringLiteral("/.config");
+    QString name = QSettings(config + QStringLiteral("/kdeglobals"), QSettings::IniFormat)
+                       .value(QStringLiteral("Icons/Theme")).toString();
+    if (name.isEmpty())
+        name = QSettings(config + QStringLiteral("/gtk-3.0/settings.ini"), QSettings::IniFormat)
+                   .value(QStringLiteral("Settings/gtk-icon-theme-name")).toString();
+    if (name.isEmpty() || name == now)
+        return;
+    for (const QString& dir : QIcon::themeSearchPaths()) {
+        if (QFileInfo::exists(dir + QLatin1Char('/') + name + QStringLiteral("/index.theme"))) {
+            QIcon::setThemeName(name);
+            return;
         }
-        if (!elsewhere)
-            keep << p;
     }
-    if (keep.size() != paths.size())
-        QIcon::setThemeSearchPaths(keep);
 }
+
 
 inline void craftCreateApp(const QString& plugins, const QString& session)
 {
@@ -140,7 +138,7 @@ inline void craftCreateApp(const QString& plugins, const QString& session)
     // The desktop's plugins from another Qt release would stop it starting.
     craftKeepForeignQtPluginsOut(plugins);
     new QApplication(argc, argv);
-    craftTrimIconSearchPaths();
+    craftUseDesktopIconTheme();
     qApp->installEventFilter(new CraftExposeWatch(qApp));
     craftRegisterText();
     // The menus in the desktop's global menu bar (hearth, Plasma's Global Menu).
