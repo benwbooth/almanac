@@ -195,7 +195,7 @@ fn main() {
     // Same look on every platform (desktop themes such as Breeze would
     // otherwise restyle the text fields). CRAFT_PIM_STYLE picks another one.
     let style = std::env::var("CRAFT_PIM_STYLE").unwrap_or_else(|_| "Basic".into());
-    std::env::set_var("QT_QUICK_CONTROLS_STYLE", style);
+    set_qt_env("QT_QUICK_CONTROLS_STYLE", style);
     // Scroll bars in pages and PDFs that show only while scrolling or pointed at
     // (the browser engine's overlay ones), as on a Mac. ALMANAC_CLASSIC_SCROLLBARS
     // keeps the usual ones.
@@ -241,9 +241,9 @@ fn main() {
         // locked screen or hidden window would stop the window painting).
         // Set QT_QPA_PLATFORM to take the picture from a real window instead.
         if std::env::var_os("QT_QPA_PLATFORM").is_none() {
-            std::env::set_var("QT_QPA_PLATFORM", "offscreen");
+            set_qt_env("QT_QPA_PLATFORM", "offscreen");
             if std::env::var_os("QT_QUICK_BACKEND").is_none() {
-                std::env::set_var("QT_QUICK_BACKEND", "software");
+                set_qt_env("QT_QUICK_BACKEND", "software");
             }
         }
     }
@@ -271,7 +271,7 @@ fn main() {
     let session_file = data::data_dir().join("window-session");
     let wayland = shot.is_none() && std::env::var_os("WAYLAND_DISPLAY").is_some();
     if wayland && std::env::var_os("QT_WAYLAND_ENABLE_XX_SESSION_MANAGER").is_none() {
-        std::env::set_var("QT_WAYLAND_ENABLE_XX_SESSION_MANAGER", "1");
+        set_qt_env("QT_WAYLAND_ENABLE_XX_SESSION_MANAGER", "1");
     }
     let session = if wayland { std::fs::read_to_string(&session_file).unwrap_or_default().trim().to_string() } else { String::new() };
     // Almanac's own icons where icon lookups by name search (XDG_DATA_DIRS/icons).
@@ -294,6 +294,7 @@ fn main() {
         }
         engine.load(&QUrl::from("qrc:/qt/qml/org/craft/pim/qml/Main.qml"));
         startup_mark("window built");
+        restore_launch_env();
     }
     store::qobject::craft_show_windows();
     // The PDF reader started ahead (it takes seconds the first time).
@@ -357,6 +358,47 @@ mod pdf_timing {
             let t = std::time::Instant::now();
             let n = crate::store::qobject::craft_pdf_page(&cxx_qt_lib::QString::from(path.as_str()), 0, &cxx_qt_lib::QString::from(out.display().to_string().as_str()), width);
             eprintln!("{label}: {} ms ({n} pages)", t.elapsed().as_millis());
+        }
+    }
+}
+
+/// Sets an environment variable Qt reads while starting, noting what it was
+/// (as `__APP_ORIG_<name>`: empty = unset, else "=value") so
+/// `restore_launch_env` puts it back once the window is loaded: programs this
+/// app starts get the desktop's own. (QT_QUICK_CONTROLS_STYLE=Basic leaking
+/// from our apps made KDE apps opened from them draw plain light controls,
+/// 2026-11-25.)
+fn set_qt_env(name: &str, value: impl AsRef<std::ffi::OsStr>) {
+    let note = format!("__APP_ORIG_{name}");
+    if std::env::var_os(&note).is_none() {
+        let was = std::env::var_os(name)
+            .map(|v| {
+                let mut s = std::ffi::OsString::from("=");
+                s.push(v);
+                s
+            })
+            .unwrap_or_default();
+        #[allow(unused_unsafe)]
+        unsafe { std::env::set_var(&note, was) };
+    }
+    #[allow(unused_unsafe)]
+    unsafe { std::env::set_var(name, value) };
+}
+
+/// Puts back what `set_qt_env` (or the C++ start-up) changed, once the main
+/// QML has loaded: Qt has read them all by then.
+#[allow(dead_code)]
+fn restore_launch_env() {
+    for (k, v) in std::env::vars_os() {
+        let Some(name) = k.to_str().and_then(|k| k.strip_prefix("__APP_ORIG_")).map(str::to_owned) else { continue };
+        let v = v.to_string_lossy().into_owned();
+        #[allow(unused_unsafe)]
+        unsafe {
+            match v.strip_prefix('=') {
+                Some(old) => std::env::set_var(&name, old),
+                None => std::env::remove_var(&name),
+            }
+            std::env::remove_var(&k);
         }
     }
 }

@@ -107,6 +107,9 @@ inline QString craftKeepForeignQtPluginsOut(const QString& own)
                 return QString();
         }
     }
+    // (Put back once the window is loaded: restore_launch_env in main.rs.)
+    if (!qEnvironmentVariableIsSet("__APP_ORIG_QT_PLUGIN_PATH"))
+        qputenv("__APP_ORIG_QT_PLUGIN_PATH", qEnvironmentVariableIsSet("QT_PLUGIN_PATH") ? "=" + qgetenv("QT_PLUGIN_PATH") : QByteArray());
     qputenv("QT_PLUGIN_PATH", dir.toLocal8Bit());
     return dir;
 }
